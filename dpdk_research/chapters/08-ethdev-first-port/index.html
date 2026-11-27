@@ -1,0 +1,1339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08 Your First Port | DPDK from Zero to Expert</title>
+<meta name="description" content="Drive an Ethernet port with ethdev: discover ports and their capabilities, walk the configure, queue setup, start, stop and close lifecycle, use rte_eth_rx_burst and rte_eth_tx_burst with correct mbuf ownership, see how a burst call dispatches through rte_eth_fp_ops, picture the descriptor ring, and diagnose port-initialisation errors.">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  /* ---- chapter 8 specific ---- */
+  .api-row { display: flex; flex-wrap: wrap; gap: .35rem; padding: .6rem 1rem; border-top: 1px solid var(--border); }
+  .api-row .btn { font-family: var(--font-mono); font-size: .78rem; }
+  .st-log { font-size: .82rem; padding: .5rem 1rem .8rem; min-height: 9.5rem; border-top: 1px solid var(--border); background: var(--surface); }
+  .st-line { padding: .2rem 0; border-bottom: 1px dashed var(--border); }
+  .st-line:first-child { font-weight: 600; }
+  .st-line.dim { color: var(--text-muted); }
+  .st-line .ok, .w-ok { color: var(--tip); }
+  .st-line .err, .w-err { color: var(--pitfall); }
+  .st-line .mono, .mono { font-family: var(--font-mono); font-size: .85em; }
+  .st-line .small { font-size: .78rem; font-weight: 400; }
+  .ask { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; padding: 0 1rem; font-size: .85rem; min-height: .2rem; }
+  .ask:not(:empty) { padding: .55rem 1rem; background: var(--accent-soft); border-top: 1px solid var(--border); }
+  .svg-slot.unarmed { fill: none; stroke: var(--c4); stroke-dasharray: 3 2; }
+  .stat.bad { border-color: var(--pitfall); background: var(--pitfall-bg); }
+  .cmp td, .cmp th { font-size: .88rem; }
+  .err-table td:first-child { font-family: var(--font-mono); font-size: .8rem; }
+  .fp-toggle { font-size: .85rem; padding: .5rem 1rem; border-top: 1px solid var(--border); display: flex; gap: .5rem; align-items: center; }
+  .legend-inline { font-size: .8rem; color: var(--text-muted); padding: 0 1rem .6rem; }
+  .legend-inline .sw { display: inline-block; width: .9em; height: .9em; border-radius: 2px; vertical-align: -.1em; margin: 0 .25em 0 .8em; border: 1px solid var(--border-strong); }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 08 &middot; Your First Port</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../07-mbufs/index.html"><span class="dir">&larr; Previous</span><span class="ttl">07 &middot; rte_mbuf: The Packet Buffer</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../09-virtual-devices-testpmd/index.html"><span class="dir">Next &rarr;</span><span class="ttl">09 &middot; Testing Without Hardware: Buses, devargs, Virtual PMDs and testpmd</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 08</div>
+      <h1>Your First Port: ethdev Lifecycle and the Burst API</h1>
+      <p class="chapter-subtitle">Chapters 3 to 7 gave you lcores, memory, rings, mempools and mbufs. This chapter connects them to an Ethernet port. When you finish it you can find the ports DPDK probed, read what each one can do, bring a port up in the right order, move packets with <code>rte_eth_rx_burst()</code> and <code>rte_eth_tx_burst()</code> without leaking a single mbuf, explain what happens inside those calls, and read the error a port prints when it refuses to start.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-intermediate">Intermediate</span></li>
+        <li><span class="badge">~120 min</span></li>
+        <li><span class="badge">Prerequisites: ch7</span></li>
+        <li><span class="tag api">rte_eth_dev_configure</span></li>
+        <li><span class="tag api">rte_eth_rx_queue_setup</span></li>
+        <li><span class="tag api">rte_eth_dev_start</span></li>
+        <li><span class="tag api">rte_eth_rx_burst</span></li>
+        <li><span class="tag api">rte_eth_tx_burst</span></li>
+        <li><span class="tag api">rte_strerror</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>List the ports DPDK probed, map ids to names and back, and read <code>struct rte_eth_dev_info</code>: queue and descriptor limits, offload capability masks, preferred sizes.</li>
+        <li>Bring a port through <em>configure &rarr; queue setup &rarr; start &rarr; stop &rarr; close</em>, and predict what every lifecycle call returns in every state (including <code>-EBUSY</code> and the calls that do not check anything).</li>
+        <li>Use the burst API with correct mbuf ownership: what <code>rte_eth_rx_burst()</code> gives you, what <code>rte_eth_tx_burst()</code> takes, and what you must free.</li>
+        <li>Trace one <code>rte_eth_rx_burst()</code> call through <code>rte_eth_fp_ops[]</code> to the driver, and explain why a stopped port "receives nothing" instead of failing.</li>
+        <li>Draw an Rx descriptor ring and explain <code>nb_desc</code>, the DD bit, refill, <code>imissed</code> and <code>rx_nombuf</code>.</li>
+        <li>Measure what batching buys, use <code>rte_eth_tx_buffer</code> with a drain timer, and size a mempool for a set of ports.</li>
+        <li>Diagnose the common port-initialisation failures from their exact messages.</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>code/run.sh</code>: builds the six programs with static <code>pkg-config libdpdk</code> flags and runs each one with <code>--no-pci --no-huge -m 128</code> (or 64), a unique <code>--file-prefix=ch08-*</code> and a <code>timeout</code>. Its complete output is <code>code/expected_output.txt</code>; every terminal block below is cut from it.</li>
+        <li>Virtual ports only: <code>net_null</code> (an endless source and a bottomless sink), <code>net_ring</code> (ports made of <code>rte_ring</code>s), <code>net_tap</code> (a Linux TAP interface called <code>ch08tap0</code>) and, in <code>init_errors.sh</code>, <code>virtio_user</code> talking to a <code>net_vhost</code> port in a background testpmd. ch9 explains all of them; here they are simply "a port".</li>
+        <li><code>code/init_errors.sh</code>: provokes five port-initialisation errors and captures their text.</li>
+        <li><code>dpdk-telemetry.py</code> for one query, and the prebuilt <code>$DPDK_SRC/build/examples/dpdk-skeleton</code> for comparison.</li>
+        <li>All throughput and cycle numbers were measured on this 4-core VM with software PMDs, while other jobs shared the machine. They show shapes and ratios, not what a real NIC does.</li>
+      </ul>
+    </section>
+
+    <div class="box">
+      <div class="box-title">Skeleton x-ray: the whole of <code>examples/skeleton/basicfwd.c</code>, finally</div>
+      <p>Since ch3 each chapter has opened by x-raying one piece of the smallest DPDK forwarder: <code>rte_eal_init()</code> (ch3), the memory behind it (ch4), the ring inside the mempool (ch5), <code>rte_pktmbuf_pool_create()</code> (ch6) and the mbufs it holds (ch7). The remaining lines are all <span class="key-term">ethdev</span>, the Ethernet device library, and they are this chapter:</p>
+<pre><code class="language-c">retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &amp;port_conf);   /* section 2 */
+retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &amp;nb_rxd, &amp;nb_txd);      /* section 2 */
+retval = rte_eth_rx_queue_setup(port, q, nb_rxd,
+                rte_eth_dev_socket_id(port), NULL, mbuf_pool);           /* sections 2, 3 */
+retval = rte_eth_dev_start(port);                                          /* sections 2, 5 */
+...
+const uint16_t nb_rx = rte_eth_rx_burst(port, 0, bufs, BURST_SIZE);        /* sections 4, 5 */
+const uint16_t nb_tx = rte_eth_tx_burst(port ^ 1, 0, bufs, nb_rx);         /* section 4 */
+if (unlikely(nb_tx &lt; nb_rx))                                               /* section 4 */
+        for (buf = nb_tx; buf &lt; nb_rx; buf++) rte_pktmbuf_free(bufs[buf]);</code></pre>
+      <p>Section 7 walks through the whole program and rewrites it from scratch.</p>
+    </div>
+
+    <!-- ===================================================================== -->
+    <h2 id="what-is-a-port"><span class="sec-num">1</span>What is a port?</h2>
+    <p>To an application, a <span class="key-term">port</span> is a number. Every Ethernet device that DPDK finds gets a <code>uint16_t port_id</code> starting at 0, up to <code>RTE_MAX_ETHPORTS</code> (a build-time constant). Each call in <code>lib/ethdev/rte_ethdev.h</code> takes that number as its first argument. Behind the number there is always a <span class="key-term">poll mode driver</span> (PMD): the code that knows how this particular device moves packets. For an Intel NIC it is <code>net_ice</code> or similar, talking to hardware registers through VFIO; for the devices in this chapter it is a few hundred lines of software in <code>drivers/net/null</code>, <code>drivers/net/ring</code> or <code>drivers/net/tap</code>. Your code does not change when the PMD does, which is why the whole course can run on a laptop.</p>
+    <p>Ports appear during <code>rte_eal_init()</code>. The EAL scans its buses: the PCI bus finds NICs bound to <code>vfio-pci</code>, and the virtual-device bus creates one port per <code>--vdev=</code> option. We always pass <code>--no-pci</code> on this machine (its only NIC carries the session's network and must stay with the kernel), so every port here comes from <code>--vdev</code>. How buses, probing and device arguments work is ch9.</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 270" role="img" aria-labelledby="f-layers-t">
+        <title id="f-layers-t">Layers: the application calls ethdev functions with a port id; ethdev keeps a per-port fast-path table and a device table; each port is served by a PMD, which drives software or a NIC.</title>
+        <rect class="svg-box c1" x="20" y="14" width="680" height="44"/>
+        <text class="svg-label center bold" x="360" y="30">your application (lcore threads)</text>
+        <text class="svg-label center small mono" x="360" y="47">rte_eth_rx_burst(port_id, queue_id, pkts, n)  /  rte_eth_dev_configure(port_id, ...)</text>
+        <rect class="svg-box c7" x="20" y="80" width="680" height="72"/>
+        <text class="svg-label bold" x="34" y="100">ethdev library  (lib/ethdev)</text>
+        <rect class="svg-box c5" x="40" y="108" width="300" height="36"/>
+        <text class="svg-label center small mono" x="190" y="126">rte_eth_fp_ops[port]: fast path (sec. 5)</text>
+        <rect class="svg-box c5" x="380" y="108" width="300" height="36"/>
+        <text class="svg-label center small mono" x="530" y="126">rte_eth_devices[port]: ops, data, state</text>
+        <rect class="svg-box c4" x="20" y="174" width="160" height="40"/>
+        <text class="svg-label center small mono" x="100" y="194">net_null (port 0)</text>
+        <rect class="svg-box c4" x="200" y="174" width="160" height="40"/>
+        <text class="svg-label center small mono" x="280" y="194">net_ring (port 1)</text>
+        <rect class="svg-box c4" x="380" y="174" width="160" height="40"/>
+        <text class="svg-label center small mono" x="460" y="194">net_tap (port 2)</text>
+        <rect class="svg-box c4 dashed" x="560" y="174" width="140" height="40"/>
+        <text class="svg-label center small mono" x="630" y="194">net_ice (real NIC)</text>
+        <text class="svg-label center small muted" x="100" y="234">makes and eats mbufs</text>
+        <text class="svg-label center small muted" x="280" y="234">rte_ring in, rte_ring out</text>
+        <rect class="svg-box c6" x="390" y="224" width="140" height="34"/>
+        <text class="svg-label center small" x="460" y="241">Linux TAP ch08tap0</text>
+        <text class="svg-label center small muted" x="630" y="234">registers + DMA (ch23)</text>
+        <path class="svg-arrow c7" d="M360,58 L360,78"/>
+        <path class="svg-arrow c7" d="M190,144 L100,172"/>
+        <path class="svg-arrow c7" d="M190,144 L280,172"/>
+        <path class="svg-arrow c7" d="M530,144 L460,172"/>
+        <path class="svg-arrow c7 dashed" d="M530,144 L630,172"/>
+        <path class="svg-arrow c6" d="M460,214 L460,222"/>
+      </svg>
+      <figcaption><span class="fig-num"></span>A port id selects a PMD. The application only ever sees the ethdev API; the PMD behind each port can be pure software or a real NIC. The two per-port tables are explained in section 5.</figcaption>
+    </figure>
+
+    <h3 id="discovery">Finding ports and their names</h3>
+    <ul>
+      <li><code>rte_eth_dev_count_avail()</code> returns how many ports are usable. <code>RTE_ETH_FOREACH_DEV(p)</code> loops over their ids. It skips ports that are <em>owned</em> by someone else, for example the member ports that a bonding or failsafe PMD has taken over (ch12), so do not assume ids are 0, 1, 2 without gaps (exercise 1).</li>
+      <li><code>rte_eth_dev_get_name_by_port(port, name, size)</code> gives the device name, such as <code>"net_null0"</code>. <strong>26.11 added the <code>size</code> argument</strong>; two-argument code from older tutorials no longer compiles. <code>rte_eth_dev_get_port_by_name()</code> goes the other way. <code>RTE_ETH_NAME_MAX_LEN</code> is always a big enough buffer.</li>
+      <li><code>rte_eth_dev_is_valid_port(port)</code> returns 1 for a port that exists; after <code>rte_eth_dev_close()</code> it returns 0.</li>
+      <li><code>rte_eth_dev_socket_id(port)</code> is the NUMA node the device is attached to, or <code>SOCKET_ID_ANY</code> (-1) when unknown; pass it to the queue setup calls so queue memory lands near the device.</li>
+    </ul>
+
+    <h3 id="dev-info">What can this port do? <code>rte_eth_dev_info_get()</code></h3>
+    <p><code>rte_eth_dev_info_get(port, &amp;info)</code> fills a <code>struct rte_eth_dev_info</code> with the driver's answers. It is the first thing a portable program reads, because every limit in it differs between PMDs. <code>code/port_explorer.c</code> prints the most useful fields:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/port_explorer.c (capabilities)</span><span class="lang">C</span></div>
+<pre><code class="language-c">	ret = rte_eth_dev_info_get(port, &amp;info);
+	if (ret != 0) {
+		report(&quot;rte_eth_dev_info_get&quot;, ret);
+		return;
+	}
+	printf(&quot;  driver           %s\n&quot;, info.driver_name);
+	printf(&quot;  queues           max_rx=%u max_tx=%u\n&quot;,
+	       info.max_rx_queues, info.max_tx_queues);
+	printf(&quot;  rx_desc_lim      min=%u max=%u align=%u   tx_desc_lim min=%u max=%u align=%u\n&quot;,
+	       info.rx_desc_lim.nb_min, info.rx_desc_lim.nb_max, info.rx_desc_lim.nb_align,
+	       info.tx_desc_lim.nb_min, info.tx_desc_lim.nb_max, info.tx_desc_lim.nb_align);
+	printf(&quot;  preferred        rx ring=%u burst=%u   tx ring=%u burst=%u  (0 = no preference)\n&quot;,
+	       info.default_rxportconf.ring_size, info.default_rxportconf.burst_size,
+	       info.default_txportconf.ring_size, info.default_txportconf.burst_size);
+	printf(&quot;  mtu              min=%u max=%u   max_rx_pktlen=%u  min_rx_bufsize=%u\n&quot;,
+	       info.min_mtu, info.max_mtu, info.max_rx_pktlen, info.min_rx_bufsize);
+	print_offloads(&quot;rx_offload_capa&quot;, info.rx_offload_capa, rte_eth_dev_rx_offload_name);
+	print_offloads(&quot;tx_offload_capa&quot;, info.tx_offload_capa, rte_eth_dev_tx_offload_name);
+	printf(&quot;  rss              reta_size=%u key=%u B flow_type_rss_offloads=0x%&quot; PRIx64 &quot;\n&quot;,
+	       info.reta_size, info.hash_key_size, info.flow_type_rss_offloads);</code></pre>
+    </div>
+    <p>The offload masks are bit sets; <code>rte_eth_dev_rx_offload_name()</code> and <code>rte_eth_dev_tx_offload_name()</code> turn one bit into its name. Here is what three different PMDs answer, plus a <code>virtio_user</code> port from <code>init_errors.sh</code>:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (port_explorer, first port)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./port_explorer -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-ports --vdev=net_null0 --vdev=net_ring0 --vdev=net_tap0,iface=ch08tap0</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch08-ports/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+rte_eth_dev_count_avail() = 3
+
+=== port 0: &quot;net_null0&quot; (get_port_by_name -&gt; 0, valid=1, socket=0) ===
+  driver           net_null
+  queues           max_rx=1024 max_tx=1024
+  rx_desc_lim      min=0 max=65535 align=1   tx_desc_lim min=0 max=65535 align=1
+  preferred        rx ring=0 burst=0   tx ring=0 burst=0  (0 = no preference)
+  mtu              min=46 max=65535   max_rx_pktlen=4294967295  min_rx_bufsize=0
+  rx_offload_capa  0x0000000000000000 (none)
+  tx_offload_capa  0x000000000000c000 MT_LOCKFREE MULTI_SEGS
+  rss              reta_size=128 key=40 B flow_type_rss_offloads=0x2003ffffc</pre>
+    </div>
+    <div class="table-wrap">
+      <table class="compact cmp">
+        <thead><tr><th>field (measured here)</th><th>net_null</th><th>net_ring</th><th>net_tap</th><th>virtio_user</th></tr></thead>
+        <tbody>
+          <tr><td><code>max_rx_queues</code></td><td class="num">1024</td><td class="num">16</td><td class="num">64</td><td class="num">1</td></tr>
+          <tr><td><code>rx_desc_lim</code> min / max / align</td><td>0 / 65535 / 1</td><td>0 / 65535 / 1</td><td>0 / 65535 / 1</td><td><strong>32 / 32768 / 1</strong></td></tr>
+          <tr><td><code>rx_offload_capa</code></td><td>none</td><td>SCATTER</td><td>IPV4/UDP/TCP_CKSUM, SCATTER</td><td>VLAN_STRIP, UDP/TCP_CKSUM, TCP_LRO, SCATTER</td></tr>
+          <tr><td><code>tx_offload_capa</code></td><td>MT_LOCKFREE, MULTI_SEGS</td><td>MULTI_SEGS</td><td>IPV4/UDP/TCP_CKSUM, TCP_TSO, MULTI_SEGS</td><td>VLAN_INSERT, UDP/TCP_CKSUM, MULTI_SEGS</td></tr>
+          <tr><td><code>reta_size</code> (RSS, ch15)</td><td class="num">128</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td><code>default_rxportconf.ring_size</code></td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Things worth noticing. <strong>Software PMDs advertise no descriptor limits at all</strong> (min 0, max 65535, which is simply the default ethdev fills in), so any <code>nb_desc</code> "works" on them and a bug only shows up on real hardware; virtio_user is the first one that says no (section 9). A preferred ring or burst size of 0 means "no preference": ethdev then falls back to 512 descriptors if you pass <code>nb_desc = 0</code>. And capabilities are only <em>possibilities</em>: every offload is off until you request it in <code>rte_eth_conf</code> or the queue configuration (offloads are ch19).</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="lifecycle"><span class="sec-num">2</span>The port lifecycle</h2>
+    <p>A probed port cannot move packets yet. You must tell it how many queues you want, give each receive queue a mempool to take buffers from, and start it. The order is fixed:</p>
+    <ol>
+      <li><strong><code>rte_eth_dev_configure(port, nb_rxq, nb_txq, &amp;conf)</code></strong> sets the number of receive and transmit queues and the port-wide configuration. An all-zero <code>struct rte_eth_conf</code> is valid and means: no RSS, no offloads, default MTU (1500). ethdev checks the counts against <code>max_rx_queues</code>/<code>max_tx_queues</code> and every requested offload against the capability masks, records everything in the device's shared data and calls the PMD's <code>dev_configure</code>. <em>26.11 detail:</em> asking for RSS (<code>rxmode.mq_mode = RTE_ETH_MQ_RX_RSS</code>) with more than one Rx queue on a PMD that reports no <code>flow_type_rss_offloads</code> is now rejected; mask <code>rss_hf</code> with the capability (ch15).</li>
+      <li><strong><code>rte_eth_rx_queue_setup(port, q, nb_desc, socket, rxconf, mempool)</code></strong> once per Rx queue and <strong><code>rte_eth_tx_queue_setup(port, q, nb_desc, socket, txconf)</code></strong> once per Tx queue. <code>nb_desc</code> is the ring size in descriptors (section 3); <code>0</code> means "the driver's default". <code>socket</code> is where to allocate the ring, normally <code>rte_eth_dev_socket_id(port)</code>. <code>rxconf</code>/<code>txconf</code> may be <code>NULL</code>, meaning <code>info.default_rxconf</code>/<code>default_txconf</code>. The <code>mempool</code> is where the PMD gets every receive buffer from, for the lifetime of the queue.</li>
+      <li><strong><code>rte_eth_dev_adjust_nb_rx_tx_desc(port, &amp;nb_rxd, &amp;nb_txd)</code></strong>, between the two steps above, clamps your ring sizes to <code>rx_desc_lim</code>/<code>tx_desc_lim</code> and rounds them to <code>nb_align</code>. Calling it costs nothing and turns a startup failure on unknown hardware into a smaller ring.</li>
+      <li><strong><code>rte_eth_dev_start(port)</code></strong> calls the PMD's <code>dev_start</code>, re-applies MAC addresses and promiscuous/all-multicast settings, and then, as its last step, copies the PMD's burst functions into the fast-path table (<code>eth_dev_fp_ops_setup()</code>, section 5). From this moment <code>rte_eth_rx_burst()</code> reaches the driver.</li>
+      <li><strong><code>rte_eth_dev_stop(port)</code></strong> first puts dummy functions back into the fast-path table, then calls the PMD's <code>dev_stop</code>. Configuration and queues are kept; you may reconfigure, set queues up again, or start again.</li>
+      <li><strong><code>rte_eth_dev_close(port)</code></strong> (only when stopped) frees the queues and the driver's private data and releases the port id.</li>
+    </ol>
+
+    <h3 id="state-widget">Try it: the state machine</h3>
+    <p>Each button below is one API call on port 0 (a net_null port). The return values and log lines are the ones the real library printed in <code>lifecycle_rules</code> (next subsection). Watch the blue panel: it is the entry <code>rte_eth_fp_ops[0]</code> that every <code>rte_eth_rx_burst(0, ...)</code> call reads. Tick <em>predict first</em> to guess each return value before you see it.</p>
+    <div class="widget" id="w-state">
+      <div class="widget-head"><span class="widget-title">ethdev port state machine (port 0, net_null)</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <svg viewBox="0 0 720 320" role="img" aria-label="Six port states connected by API calls, and the fp_ops entry for port 0"></svg>
+      </div>
+      <div class="api-row">
+        <button class="btn small" type="button" data-api="configure">configure()</button>
+        <button class="btn small" type="button" data-api="setup">rx/tx_queue_setup()</button>
+        <button class="btn small primary" type="button" data-api="start">start()</button>
+        <button class="btn small" type="button" data-api="rx">rx_burst()</button>
+        <button class="btn small" type="button" data-api="stop">stop()</button>
+        <button class="btn small" type="button" data-api="close">close()</button>
+      </div>
+      <div class="ask" id="w-state-ask" aria-live="polite"></div>
+      <div class="st-log" id="w-state-log" aria-live="polite"></div>
+      <div class="controls">
+        <label><input type="checkbox" id="w-state-predict"> predict first</label>
+        <span class="grow"></span>
+        <span class="readout">state: <b id="w-state-now">probed</b></span>
+        <button class="btn small" type="button" id="w-state-reset">&#8634; Reset</button>
+      </div>
+    </div>
+    <p>Things to try: call <code>rx_burst()</code> before <code>start()</code>; call <code>configure()</code> on a started port; call <code>start()</code> straight after <code>configure()</code> without setting up queues; close a started port.</p>
+
+    <h3 id="rules">The rules, measured</h3>
+    <p><code>code/lifecycle_rules.c</code> makes the wrong calls on purpose. Run with <code>--log-level=lib.ethdev:info</code>, ethdev explains each refusal in a log line just above the return value:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (lifecycle_rules on net_null)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./lifecycle_rules -l 0 --no-pci --no-huge -m 64 --file-prefix=ch08-rules --vdev=net_null0 --log-level=lib.ethdev:info</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch08-rules/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+port 0 driver net_null
+state: probed, not configured
+<span class="hl">ETHDEV: Device with port_id=0 is not configured.</span>
+<span class="err">  rte_eth_dev_start                        -&gt;  -22 Invalid argument</span>
+  rte_eth_dev_configure(1 rxq, 1 txq)      -&gt;    0 
+state: configured, queues NOT set up
+<span class="hl">ETHDEV: Invalid Rx queue_id=1</span>
+<span class="err">  rte_eth_rx_queue_setup(q1)  [only 1 rxq] -&gt;  -22 Invalid argument</span>
+  rte_eth_dev_start  [no queues!]          -&gt;    0 
+  rte_eth_dev_stop                         -&gt;    0 
+  rte_eth_rx_queue_setup(q0)               -&gt;    0 
+  rte_eth_tx_queue_setup(q0)               -&gt;    0 
+  rte_eth_dev_start                        -&gt;    0 
+state: started
+<span class="hl">ETHDEV: Device with port_id=0 already started</span>
+  rte_eth_dev_start  [again]               -&gt;    0 
+<span class="hl">ETHDEV: Port 0 must be stopped to allow configuration</span>
+<span class="err">  rte_eth_dev_configure                    -&gt;  -16 Device or resource busy</span>
+<span class="err">  rte_eth_rx_queue_setup(q0)               -&gt;  -16 Device or resource busy</span>
+<span class="hl">ETHDEV: Cannot close started device (port 0)</span>
+<span class="err">  rte_eth_dev_close  [while started]       -&gt;  -22 Invalid argument</span>
+  rte_eth_dev_stop                         -&gt;    0 
+state: stopped
+<span class="hl">ETHDEV: Device with port_id=0 already stopped</span>
+  rte_eth_dev_stop  [again]                -&gt;    0 
+  rte_eth_dev_configure(1, 1)              -&gt;    0 
+  rte_eth_rx_queue_setup(q0)               -&gt;    0 
+  rte_eth_dev_close                        -&gt;    0 
+state: closed (port id released)
+  rte_eth_dev_is_valid_port                -&gt;    0 
+<span class="hl">ETHDEV: Invalid port_id=0</span>
+<span class="err">  rte_eth_dev_configure                    -&gt;  -19 No such device</span></pre>
+    </div>
+    <p class="output-caption">Read it as a rule table. Not configured: start is <code>-EINVAL</code>. Started: configure and queue setup are <code>-EBUSY</code> (queue setup would be allowed on a PMD with the <code>RUNTIME_RX_QUEUE_SETUP</code> capability, ch12), close is <code>-EINVAL</code>. A second start or stop is harmless and returns 0. Closed: the id is gone, so everything is <code>-ENODEV</code>.</p>
+    <div class="callout pitfall"><div class="callout-title">Pitfall: ethdev does not check everything</div>
+      <p>Two lines in that output deserve a second look. <strong><code>rte_eth_dev_start</code> with no queues set up returned 0.</strong> ethdev does not verify that you set up every queue you configured; the PMD runs with missing queue structures and the first burst call on them reads garbage. And the call order matters more than the return codes suggest: calling <code>rte_eth_rx_queue_setup()</code> <em>before</em> <code>rte_eth_dev_configure()</code> is answered differently by different PMDs:</p>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (the same early call on two PMDs)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./lifecycle_rules -l 0 --no-pci --no-huge -m 64 --file-prefix=ch08-rules --vdev=net_null0 --log-level=lib.ethdev:info -- --early-setup</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch08-rules/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+port 0 driver net_null
+state: probed, not configured
+<span class="hl">ETHDEV: Device with port_id=0 is not configured.</span>
+<span class="err">  rte_eth_dev_start                        -&gt;  -22 Invalid argument</span>
+  (calling rte_eth_rx_queue_setup before configure...)
+<span class="dim">[exit status 139]</span>
+<span class="prompt">$ </span><span class="cmd">./lifecycle_rules -l 0 --no-pci --no-huge -m 64 --file-prefix=ch08-rules --vdev=net_tap0,iface=ch08tap1 --log-level=lib.ethdev:info -- --early-setup</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch08-rules/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+port 0 driver net_tap
+state: probed, not configured
+<span class="hl">ETHDEV: Device with port_id=0 is not configured.</span>
+<span class="err">  rte_eth_dev_start                        -&gt;  -22 Invalid argument</span>
+  (calling rte_eth_rx_queue_setup before configure...)
+<span class="hl">ETHDEV: Invalid Rx queue_id=0</span>
+<span class="err">  rte_eth_rx_queue_setup(q0)               -&gt;  -22 Invalid argument</span></pre>
+    </div>
+    <p class="output-caption">On net_tap ethdev rejects the call (<code>Invalid Rx queue_id=0</code>, <code>-EINVAL</code>). On net_null the process dies with SIGSEGV (exit status 139). gdb puts the crash in <code>eth_dev_rxq_release()</code>, called from <code>rte_eth_rx_queue_setup()</code>: the null PMD sets <code>data-&gt;nb_rx_queues = 1</code> when it is created, so the queue-id check passes, but the queue array is still <code>NULL</code> because only <code>rte_eth_dev_configure()</code> allocates it. Same API, same mistake, two outcomes. Always configure first.</p>
+
+    <h3 id="deferred">Preview: starting one queue at a time</h3>
+    <p>Normally <code>rte_eth_dev_start()</code> starts every queue. Setting <code>rxconf.rx_deferred_start = 1</code> (or <code>txconf.tx_deferred_start</code>) asks the PMD to leave that queue stopped, and you start it later with <code>rte_eth_dev_rx_queue_start(port, q)</code>, while the rest of the port runs. <code>port_explorer</code> tries it on all three PMDs:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (deferred start: net_null, then net_tap)</span></div>
+<pre><span class="hl">ETHDEV: Deferred start requested, but driver does not support Rx queue start</span>
+<span class="err">  rx_queue_setup(q0, deferred_start) -&gt; -95 (Operation not supported)</span>
+  rx_queue_setup(q0, deferred_start) -&gt; 0
+  rte_eth_dev_start                  -&gt; 0
+<span class="hl">ETHDEV: Queue 0 of device with port_id=2 already started</span>
+  rte_eth_dev_rx_queue_start(q0)     -&gt; 0
+  rte_eth_dev_rx_queue_stop(q0)      -&gt; 0</pre>
+    </div>
+    <p class="output-caption">net_null and net_ring have no <code>rx_queue_start</code> operation, so ethdev refuses the request at queue setup with <code>-ENOTSUP</code>. net_tap accepts it but then reports <em>"Queue 0 ... already started"</em>: its <code>dev_start</code> marks every queue started and ignores the deferred flag. Deferred start is a request that the PMD implements, or does not. The lab with per-queue start/stop and runtime queue setup is in ch12.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="descriptors"><span class="sec-num">3</span>Descriptor rings in one picture</h2>
+    <p>What is a "queue" on a real NIC, and what does <code>nb_desc</code> count? A receive queue is a <span class="key-term">descriptor ring</span>: an array of <code>nb_desc</code> small records in memory that both the NIC and the PMD can read and write. Each <span class="key-term">descriptor</span> holds the physical (IOVA, ch4) address of one empty mbuf data buffer. The NIC and the software chase each other around the ring:</p>
+    <ul>
+      <li>The <strong>NIC owns the head</strong>. When a frame arrives it takes the next descriptor, DMAs the frame into that buffer, writes the length, checksum status, RSS hash and so on back into the descriptor, and sets its <span class="key-term">DD bit</span> ("descriptor done").</li>
+      <li>The <strong>software owns the tail</strong>. <code>rte_eth_rx_burst()</code> is the PMD looking at descriptors from its tail onwards: every descriptor with DD set is a received packet. For each one it allocates a fresh mbuf from the queue's mempool, writes the new buffer's address into the descriptor (<span class="key-term">refill</span> or re-arm), and hands the full mbuf to you. Now and then it tells the NIC how far it has refilled by writing a tail register.</li>
+      <li>If frames arrive faster than the application polls, the NIC catches up with the tail and finds no armed descriptor. It must drop the frame and counts it: that is <code>imissed</code> in <code>rte_eth_stats</code>. If the mempool is empty, the refill fails: the PMD stops, leaves the packet in the ring and counts <code>rx_nombuf</code>; soon afterwards the ring fills and <code>imissed</code> rises too.</li>
+    </ul>
+    <p>So <code>nb_desc</code> is how many packets the NIC can buffer while your lcore is busy elsewhere. A bigger ring absorbs longer gaps (bursts, a slow packet, a page fault) at the cost of memory and cache footprint. Transmit rings work the same way in reverse: the PMD fills descriptors and bumps the tail, the NIC sends and marks them done, and the PMD frees the sent mbufs <em>later</em>, in batches, when it needs the slots again. The full hardware view, with real descriptor formats and thresholds, is ch23.</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 230" role="img" aria-labelledby="f-desc-t">
+        <title id="f-desc-t">An Rx descriptor ring of 8 entries: three done descriptors between the software tail and the NIC head, five armed descriptors waiting for frames.</title>
+        <text class="svg-title" x="20" y="22">Rx ring, nb_desc = 8: what the NIC and the PMD each look at</text>
+        <g>
+          <rect class="svg-slot full" x="60" y="70" width="70" height="56" rx="4"/>
+          <rect class="svg-slot full" x="140" y="70" width="70" height="56" rx="4"/>
+          <rect class="svg-slot full" x="220" y="70" width="70" height="56" rx="4"/>
+          <rect class="svg-slot" x="300" y="70" width="70" height="56" rx="4"/>
+          <rect class="svg-slot" x="380" y="70" width="70" height="56" rx="4"/>
+          <rect class="svg-slot" x="460" y="70" width="70" height="56" rx="4"/>
+          <rect class="svg-slot" x="540" y="70" width="70" height="56" rx="4"/>
+          <rect class="svg-slot" x="620" y="70" width="70" height="56" rx="4"/>
+        </g>
+        <text class="svg-label center small bold" x="95" y="92">DD=1</text><text class="svg-label center small" x="95" y="110">len 64</text>
+        <text class="svg-label center small bold" x="175" y="92">DD=1</text><text class="svg-label center small" x="175" y="110">len 1514</text>
+        <text class="svg-label center small bold" x="255" y="92">DD=1</text><text class="svg-label center small" x="255" y="110">len 60</text>
+        <text class="svg-label center small" x="335" y="92">DD=0</text><text class="svg-label center small mono" x="335" y="110">buf@iova</text>
+        <text class="svg-label center small" x="415" y="92">DD=0</text><text class="svg-label center small mono" x="415" y="110">buf@iova</text>
+        <text class="svg-label center small" x="495" y="92">DD=0</text><text class="svg-label center small mono" x="495" y="110">buf@iova</text>
+        <text class="svg-label center small" x="575" y="92">DD=0</text><text class="svg-label center small mono" x="575" y="110">buf@iova</text>
+        <text class="svg-label center small" x="655" y="92">DD=0</text><text class="svg-label center small mono" x="655" y="110">buf@iova</text>
+        <path class="svg-arrow c1" d="M95,165 L95,130"/>
+        <text class="svg-label center small bold" x="95" y="180">SW tail</text>
+        <text class="svg-label center small muted" x="95" y="196">rx_burst reads from here</text>
+        <path class="svg-arrow c4" d="M335,40 L335,66"/>
+        <text class="svg-label center small bold" x="335" y="34">NIC head: next frame goes here</text>
+        <path class="svg-arrow c2 dashed" d="M175,165 L175,130"/>
+        <text class="svg-label small muted" x="190" y="160">refill: new mbuf from the pool</text>
+        <text class="svg-label small muted" x="300" y="150">armed: an empty buffer waiting for the NIC</text>
+        <text class="svg-label small muted" x="300" y="166">the index wraps from 7 back to 0</text>
+        <text class="svg-label small" x="300" y="200">head catches tail = ring full &#8594; frame dropped, imissed++</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>Packets wait in the ring between the NIC head and the software tail. Each <code>rx_burst()</code> consumes done descriptors from the tail and refills them with fresh buffers.</figcaption>
+    </figure>
+
+    <div class="widget" id="w-desc">
+      <div class="widget-head"><span class="widget-title">Simplified Rx descriptor ring: arrivals vs polling</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <svg viewBox="0 0 680 300" role="img" aria-label="Circular Rx descriptor ring with NIC head and software tail pointers"></svg>
+        <div class="legend-inline"><span class="sw" style="background:var(--surface-2)"></span>armed (empty buffer) <span class="sw" style="background:var(--c3-soft);border-color:var(--c3)"></span>done (DD set, packet waiting) <span class="sw" style="border:1px dashed var(--c4)"></span>no buffer</div>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">arrived</div><div class="stat-value" id="d-arr">0</div></div>
+          <div class="stat"><div class="stat-label">delivered (rx_burst)</div><div class="stat-value" id="d-del">0</div></div>
+          <div class="stat"><div class="stat-label">refilled</div><div class="stat-value" id="d-ref">0</div></div>
+          <div class="stat"><div class="stat-label">imissed</div><div class="stat-value" id="d-miss">0</div></div>
+          <div class="stat"><div class="stat-label">rx_nombuf</div><div class="stat-value" id="d-nomb">0</div></div>
+          <div class="stat"><div class="stat-label">poll capacity</div><div class="stat-value" id="d-cap">-</div></div>
+        </div>
+      </div>
+      <div class="controls">
+        <span class="grow"></span>
+        <label>arrivals <input type="range" id="d-rate" min="1" max="30" value="6"> <output id="d-rate-o"></output></label>
+        <label>poll every <input type="range" id="d-poll" min="1" max="20" value="5"> <output id="d-poll-o"></output></label>
+        <label>burst <input type="range" id="d-burst" min="1" max="16" value="4"> <output id="d-burst-o"></output></label>
+        <label>nb_desc <input type="range" id="d-size" min="8" max="32" step="8" value="16"> <output id="d-size-o"></output></label>
+        <label><input type="checkbox" id="d-empty"> mempool empty</label>
+      </div>
+    </div>
+    <p>Experiments: raise <em>arrivals</em> above the <em>poll capacity</em> (burst &divide; poll interval) and watch <code>imissed</code> climb once the head reaches the tail. Then keep the average below capacity but poll rarely with a big burst: a small ring overflows between polls while a larger <code>nb_desc</code> absorbs the gap. Finally tick <em>mempool empty</em>: refills fail, <code>rx_nombuf</code> counts, done descriptors pile up, and then <code>imissed</code> starts too. That is what a leaking application looks like from the NIC (section 4).</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="burst-api"><span class="sec-num">4</span>The burst API and who owns which mbuf</h2>
+    <p>The two functions that move packets are deliberately simple:</p>
+<pre><code class="language-c">uint16_t rte_eth_rx_burst(uint16_t port_id, uint16_t queue_id,
+                          struct rte_mbuf **rx_pkts, const uint16_t nb_pkts);
+uint16_t rte_eth_tx_burst(uint16_t port_id, uint16_t queue_id,
+                          struct rte_mbuf **tx_pkts, uint16_t nb_pkts);</code></pre>
+    <ul>
+      <li><strong><code>rte_eth_rx_burst()</code> never blocks.</strong> It returns between 0 and <code>nb_pkts</code> packets that are ready <em>now</em> and writes their mbuf pointers into <code>rx_pkts[0..n-1]</code>. Returning fewer than you asked for, including 0, is normal and is not an error. From that moment <strong>the application owns those mbufs</strong>: it must pass each one on (to <code>tx_burst</code>, a ring, another library) or free it. The header asks for <code>nb_pkts</code> divisible by 8 "to work with any driver", because vector receive paths process descriptors 4 or 8 at a time.</li>
+      <li><strong><code>rte_eth_tx_burst()</code> may accept fewer packets than you offer.</strong> It returns how many it placed in the transmit ring, always a prefix: <code>tx_pkts[0..ret-1]</code> now belong to the PMD, which frees them after the NIC has sent them. <strong><code>tx_pkts[ret..nb_pkts-1]</code> are still yours.</strong> Free them, retry them later, or count them as drops; forgetting them is the classic DPDK leak.</li>
+      <li><strong>One queue, one lcore.</strong> The burst functions take no locks. Two lcores may poll <em>different</em> queues of the same port in parallel, but never the same queue, unless the PMD advertises <code>RTE_ETH_TX_OFFLOAD_MT_LOCKFREE</code> (net_null does). Multi-queue designs are ch15.</li>
+      <li><strong>Polling means 100% CPU.</strong> The forwarding loop calls <code>rx_burst</code> forever, even when it returns 0, so <code>top</code> shows the lcore at 100% on an idle link. That is by design; ch22 covers interrupt and power-saving modes.</li>
+    </ul>
+
+    <div class="widget" id="w-own">
+      <div class="widget-head"><span class="widget-title">mbuf ownership in a forwarding loop</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <svg viewBox="0 0 720 245" role="img" aria-label="48 mbufs moving between mempool, Rx ring, the application, the Tx ring and a leak pile"></svg>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">last step</div><div class="stat-value" style="font-size:.8rem;font-family:var(--font-sans)" id="o-phase">-</div></div>
+          <div class="stat"><div class="stat-label">tx ring</div><div class="stat-value" id="o-txcap">0</div></div>
+          <div class="stat"><div class="stat-label">accepted by tx_burst</div><div class="stat-value" id="o-sent">0</div></div>
+          <div class="stat"><div class="stat-label">refused (unsent tail)</div><div class="stat-value" id="o-unsent">0</div></div>
+          <div class="stat"><div class="stat-label">failed refills</div><div class="stat-value" id="o-nomb">0</div></div>
+        </div>
+      </div>
+      <div class="controls">
+        <span class="grow"></span>
+        <label><input type="checkbox" id="o-free" checked> free the unsent tail</label>
+        <label>burst <input type="range" id="o-burst" min="2" max="8" value="6"> <output id="o-burst-o"></output></label>
+        <label>Tx ring <input type="range" id="o-cap" min="4" max="16" value="8"> <output id="o-cap-o"></output></label>
+        <label>NIC sends <input type="range" id="o-drain" min="1" max="8" value="3"> <output id="o-drain-o"></output></label>
+      </div>
+    </div>
+    <p>The loop repeats four steps: <code>rx_burst</code> (buffers leave the Rx ring, the PMD refills it from the pool), <code>tx_burst</code> (as many as fit go into the Tx ring), handle the unsent tail, and the NIC sends some packets so the PMD can free them. With "NIC sends" lower than the burst size the Tx ring stays full and <code>tx_burst</code> refuses part of every burst. Untick <em>free the unsent tail</em>: refused mbufs fall onto the leak pile, the pool drains, refills start failing and the receive side stops. Nothing crashes; the port just goes quiet.</p>
+
+    <h3 id="ring-cable">The same thing with real ports: <code>ring_cable.c</code></h3>
+    <p><code>rte_eth_from_rings()</code> (in <code>drivers/net/ring/rte_eth_ring.h</code>, installed with DPDK) makes an ethdev port out of existing <code>rte_ring</code>s. Two ports wired crosswise make a cable: what A transmits, B receives. Each <code>rte_ring</code> of size 64 holds 63 packets (ch5), so the cable is also a Tx queue that can fill up.</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/ring_cable.c (building the cable, part 2)</span><span class="lang">C</span></div>
+<pre><code class="language-c">	/* Port A receives from B2A and transmits into A2B; port B the reverse. */
+	int pa = rte_eth_from_rings(&quot;cableA&quot;, &amp;b2a, 1, &amp;a2b, 1, rte_socket_id());
+	int pb = rte_eth_from_rings(&quot;cableB&quot;, &amp;a2b, 1, &amp;b2a, 1, rte_socket_id());
+	...
+	unsigned n = make_numbered(mp, pkts, 100);
+	uint16_t sent = rte_eth_tx_burst(pa, 0, pkts, n);
+	printf(&quot;  tx_burst(100) accepted %u; pkts[%u..%u] are still OURS\n&quot;,
+	       sent, sent, n - 1);
+	pool_line(&quot;after tx, before free:&quot;, mp, a2b);
+	rte_pktmbuf_free_bulk(&amp;pkts[sent], n - sent);     /* the correct thing */</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (ring_cable --leak)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./ring_cable -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-cable -- --leak</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch08-cable/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+ports: A=0 (cableA)  B=1 (cableB), cable capacity 63 packets
+
+Part 1: 3 bursts of 32 numbered packets A -&gt; B
+  burst 0: tx_burst accepted 32/32, B rx_burst got 32 (seq 0..31)
+  burst 1: tx_burst accepted 32/32, B rx_burst got 32 (seq 32..63)
+  burst 2: tx_burst accepted 32/32, B rx_burst got 32 (seq 64..95)
+<span class="ok">  received 96, out-of-order 0</span>
+
+Part 2: send 100 packets without reading the other end
+  before:                      pool avail=511 in-use=  0   cable A2B holds 0
+  tx_burst(100) accepted 63; pkts[63..99] are still OURS
+  after tx, before free:       pool avail=411 in-use=100   cable A2B holds 63
+  after freeing the tail:      pool avail=448 in-use= 63   cable A2B holds 63
+  B drained 63 packets
+  after draining B:            pool avail=511 in-use=  0   cable A2B holds 0
+
+Part 3 (--leak): same as part 2 but never free the unsent tail
+  round  1: sent 63, leaked 37   pool avail=474 in-use= 37
+  round  2: sent 63, leaked 37   pool avail=437 in-use= 74
+  round  3: sent 63, leaked 37   pool avail=400 in-use=111
+  round  4: sent 63, leaked 37   pool avail=363 in-use=148
+  round  5: sent 63, leaked 37   pool avail=326 in-use=185
+  round  6: sent 63, leaked 37   pool avail=289 in-use=222
+  round  7: sent 63, leaked 37   pool avail=252 in-use=259
+  round  8: sent 63, leaked 37   pool avail=215 in-use=296
+  round  9: sent 63, leaked 37   pool avail=178 in-use=333
+  round 10: sent 63, leaked 37   pool avail=141 in-use=370
+  round 11: sent 63, leaked 37   pool avail=104 in-use=407
+  round 12: sent 63, leaked 37   pool avail= 67 in-use=444
+<span class="err">  round 13: rte_pktmbuf_alloc_bulk(100) FAILED - pool exhausted</span>
+
+<span class="err">end: pool avail=67 of 511 (LEAK)</span></pre>
+    </div>
+    <p class="output-caption">Part 1: sequence numbers arrive once and in order. Part 2: <code>tx_burst(100)</code> accepts 63; the pool shows 100 mbufs in use until we free the 37-packet tail, then 63 (the ones in the cable), then 0 after B drains them. Part 3 forgets the tail: 37 mbufs vanish per round, and in round 13 <code>rte_pktmbuf_alloc_bulk()</code> fails. Also notice that <code>net_ring</code> does not free packets still sitting in its rings when the port stops; drain them first.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="fp-ops"><span class="sec-num">5</span>Inside the call: <code>rte_eth_fp_ops</code></h2>
+    <p><code>rte_eth_rx_burst()</code> is not a function in the DPDK library. It is a <code>static inline</code> function in <code>rte_ethdev.h</code>, compiled into your program. Here is its body from the 26.11 header, with the debug-only blocks shortened:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">lib/ethdev/rte_ethdev.h (rte_eth_rx_burst, abridged)</span><span class="lang">C</span></div>
+<pre data-lines data-hl="8,9,13"><code class="language-c">static inline uint16_t
+rte_eth_rx_burst(uint16_t port_id, uint16_t queue_id,
+		 struct rte_mbuf **rx_pkts, const uint16_t nb_pkts)
+{
+	/* #ifdef RTE_ETHDEV_DEBUG_RX: port_id / queue_id range checks */
+
+	/* fetch pointer to queue data */
+	p = &amp;rte_eth_fp_ops[port_id];
+	qd = p-&gt;rxq.data[queue_id];
+
+	/* #ifdef RTE_ETHDEV_DEBUG_RX: RTE_ETH_VALID_PORTID_OR_ERR_RET, qd != NULL */
+
+	nb_rx = p-&gt;rx_pkt_burst(qd, rx_pkts, nb_pkts);
+	rte_mbuf_history_mark_bulk(rx_pkts, nb_rx, RTE_MBUF_HISTORY_OP_RX);
+
+#ifdef RTE_ETHDEV_RXTX_CALLBACKS
+	cb = rte_atomic_load_explicit(&amp;p-&gt;rxq.clbk[queue_id], rte_memory_order_relaxed);
+	if (unlikely(cb != NULL))
+		nb_rx = rte_eth_call_rx_callbacks(port_id, queue_id, rx_pkts, nb_rx, nb_pkts, cb);
+#endif
+	/* trace point: rx_burst_nonempty / rx_burst_empty */
+	return nb_rx;
+}</code></pre>
+    </div>
+    <p><code>rte_eth_fp_ops</code> is a flat array with one <code>struct rte_eth_fp_ops</code> per port (<code>lib/ethdev/rte_ethdev_core.h</code>). Since DPDK 21.11 it is the only thing the inline fast path touches; the full device structure <code>rte_eth_devices[]</code> and the driver ops behind it are private to the library, so drivers can change without breaking your binary's ABI. Each element is cache-aligned and exactly two 64-byte cache lines on a 64-bit machine:</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 170" role="img" aria-labelledby="f-fpo-t">
+        <title id="f-fpo-t">struct rte_eth_fp_ops layout: first cache line holds Rx queue data, callbacks and Rx function pointers; second holds the Tx equivalents.</title>
+        <text class="svg-title" x="20" y="20">struct rte_eth_fp_ops (one per port, 128 bytes)</text>
+        <rect class="svg-box c5" x="20" y="34" width="680" height="54"/>
+        <text class="svg-label bold" x="30" y="52">cache line 0: Rx</text>
+        <text class="svg-label small mono" x="30" y="74">rxq.data | rxq.clbk | rx_pkt_burst | rx_queue_count | rx_descriptor_status | recycle_rx_descriptors_refill | reserved1[2]</text>
+        <rect class="svg-box c1" x="20" y="98" width="680" height="54"/>
+        <text class="svg-label bold" x="30" y="116">cache line 1: Tx</text>
+        <text class="svg-label small mono" x="30" y="138">txq.data | txq.clbk | tx_pkt_burst | tx_pkt_prepare | tx_descriptor_status | recycle_tx_mbufs_reuse | tx_queue_count | reserved2[1]</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>An Rx-only lcore touches one cache line of ethdev state per port, a forwarding lcore two. <code>rxq.data</code> points at the array of per-queue driver structures.</figcaption>
+    </figure>
+    <p>The step-through below follows one call. Tick <em>port stopped</em> to see what changes when the port is not started: only one function pointer and one data pointer, both swapped by <code>eth_dev_fp_ops_reset()</code> in <code>lib/ethdev/ethdev_private.c</code>.</p>
+    <div class="widget" id="w-fp">
+      <div class="widget-head"><span class="widget-title">One rte_eth_rx_burst() call, step by step</span><span class="badge">predict, then step</span></div>
+      <div class="widget-body">
+        <svg viewBox="0 0 720 300" role="img" aria-label="Call path from rte_eth_rx_burst through rte_eth_fp_ops to the PMD"></svg>
+      </div>
+      <div class="fp-toggle"><label><input type="checkbox" id="fp-stopped"> port stopped (or never started)</label></div>
+    </div>
+    <p>What a not-ready port does, captured from <code>port_explorer</code> calling <code>rx_burst</code> before configure:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (dummy rx function)</span></div>
+<pre><span class="hl">ETHDEV: lcore 0 called rx_pkt_burst for not ready port 0</span>
+<span class="dim">0: ./port_explorer (rte_dump_stack+0x42) [55ec167a76a2]</span>
+<span class="dim">1: ./port_explorer (55ec1646d000+0x95d80) [55ec16502d80]</span>
+<span class="dim">2: ./port_explorer (55ec1646d000+0xada5d) [55ec1651aa5d]</span>
+<span class="dim">3: ./port_explorer (main+0x15f) [55ec1651345f]</span>
+<span class="dim">4: /lib/x86_64-linux-gnu/libc.so.6 (7f54ad000000+0x2a1ca) [7f54ad02a1ca]</span>
+<span class="dim">5: /lib/x86_64-linux-gnu/libc.so.6 (__libc_start_main+0x8b) [7f54ad02a28b]</span>
+<span class="dim">6: ./port_explorer (_start+0x25) [55ec1651a6b5]</span>
+  rx_burst before configure        -&gt; 0, rte_errno=95 (Operation not supported)</pre>
+    </div>
+    <p class="output-caption">The dummy logs once (with a stack dump that shows who called it), sets <code>rte_errno = ENOTSUP</code> and returns 0. The warning is re-armed every time the port is stopped, so <code>port_explorer</code> sees it again after <code>rte_eth_dev_stop()</code>. A loop that ignores <code>rte_errno</code> just sees "no packets": the classic "my app receives nothing" when someone forgot <code>rte_eth_dev_start()</code>.</p>
+    <div class="callout warning"><div class="callout-title">Warning: stop is not synchronised with your lcores</div><p><code>rte_eth_dev_stop()</code> swaps the pointers and then tears the queues down, but it cannot know whether another lcore is inside <code>rx_burst</code> at that moment. Stop your forwarding lcores first (a quit flag, then <code>rte_eal_mp_wait_lcore()</code>), then stop the port. Graceful shutdown is covered in ch12.</p></div>
+
+    <!-- ===================================================================== -->
+    <h2 id="burst-size"><span class="sec-num">6</span>Burst size, batching and the Tx buffer</h2>
+    <p>Every call costs something whatever it carries: the fp_ops lookup, the indirect call, the driver's setup, and on a real NIC the MMIO write of the tail register, which can cost more than the rest together. Passing many packets per call spreads that fixed cost. A simple model is <em>cycles per packet = a / B + c</em>, where <em>B</em> is the burst size, <em>a</em> the fixed cost of one rx+tx call pair and <em>c</em> the cost of each packet. <code>burst_sweep.c</code> measures the rx&rarr;tx loop on a net_null port for B = 1 to 128:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/burst_sweep.c (one measurement)</span><span class="lang">C</span></div>
+<pre><code class="language-c">	uint64_t t0 = rte_rdtsc_precise();
+	while (done &lt; PKTS_RUN) {
+		uint16_t n = rte_eth_rx_burst(port, 0, pkts, b);
+		uint16_t s = rte_eth_tx_burst(port, 0, pkts, n);
+		if (unlikely(s &lt; n))                 /* never on net_null, but */
+			rte_pktmbuf_free_bulk(&amp;pkts[s], n - s);  /* always handle it */
+		done += n;
+	}
+	uint64_t t1 = rte_rdtsc_precise();
+	return (double)(t1 - t0) / done;</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (burst_sweep: median of 5 runs, 2,097,152 packets each)</span></div>
+<pre>TSC 2.700 GHz, 2097152 packets per run, 5 runs per burst size, port 0 (net_null)
+ burst  cyc/pkt med        min        max   Mpps (med)
+     1        49.61      49.14      66.58         54.4
+     2        33.88      33.81      34.58         79.7
+     4        21.36      21.22      21.94        126.4
+     8        17.84      17.34      18.16        151.4
+    16        23.94      23.92      23.95        112.8
+    32        25.24      25.21      25.30        107.0
+    64        28.86      28.74      29.36         93.6
+   128        29.60      29.57      29.80         91.2
+fit: cycles/pkt = 23.6 / burst + 22.9   (fixed cost per rx+tx call pair ~24 cycles, per-packet cost ~22.9 cycles)</pre>
+    </div>
+    <div class="widget" id="w-burst" data-sweep="[[1, 49.61, 49.14, 66.58], [2, 33.88, 33.81, 34.58], [4, 21.36, 21.22, 21.94], [8, 17.84, 17.34, 18.16], [16, 23.94, 23.92, 23.95], [32, 25.24, 25.21, 25.3], [64, 28.86, 28.74, 29.36], [128, 29.6, 29.57, 29.8]]" data-fit="[23.6, 22.9]">
+      <div class="widget-head"><span class="widget-title">Burst amortisation: measured points and the a/B + c model</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <svg viewBox="0 0 640 300" role="img" aria-label="Cycles per packet versus burst size, measured medians with min-max bars and an adjustable model curve"></svg>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">measured at B</div><div class="stat-value"><span id="b-meas">-</span><span class="stat-unit">cyc/pkt</span></div></div>
+          <div class="stat"><div class="stat-label">model at B</div><div class="stat-value"><span id="b-model">-</span><span class="stat-unit">cyc/pkt</span></div></div>
+          <div class="stat"><div class="stat-label">fixed-cost share</div><div class="stat-value" id="b-fixed">-</div></div>
+          <div class="stat"><div class="stat-label">loop rate (measured)</div><div class="stat-value"><span id="b-mpps">-</span><span class="stat-unit">Mpps</span></div></div>
+          <div class="stat"><div class="stat-label">model error (rms)</div><div class="stat-value"><span id="b-rms">-</span><span class="stat-unit">cyc</span></div></div>
+        </div>
+      </div>
+      <div class="controls">
+        <label>burst B <input type="range" id="b-b" min="0" max="7" value="5"> <output id="b-b-o"></output></label>
+        <span class="grow"></span>
+        <label>a (per call pair) <input type="range" id="b-a" min="0" max="60" step="0.1"> <output id="b-a-o"></output></label>
+        <label>c (per packet) <input type="range" id="b-c" min="0" max="40" step="0.1"> <output id="b-c-o"></output></label>
+        <button class="btn small" type="button" id="b-fit">least-squares fit</button>
+      </div>
+    </div>
+    <p>Orange dots are the measured medians with min&ndash;max bars; the purple curve is the model and the dashed line its floor <em>c</em>. The bar next to the cursor splits the model's cost at the chosen B into the fixed part (blue) and the per-packet part (green). Drag <em>a</em> and <em>c</em> to fit the points yourself, then compare with the least-squares fit.</p>
+    <p>What the measurement says. From B = 1 to 8 the cost per packet falls from about 50 to under 20 cycles: the fixed cost is being shared, exactly as the model predicts. Above 8 the measured cost rises again to 25&ndash;30 cycles, which the simple model cannot follow (look at the rms error). Larger bursts keep more mbufs in flight and touch more cache lines per call, and net_null's own allocate-and-free work grows with B; we have not profiled which effect dominates here, and ch22 reuses this data when it does. On real NICs the fixed cost is much larger (a doorbell write to the device) and vector Rx paths want at least 32, which is why 32 is the standard burst size in DPDK samples and in testpmd.</p>
+
+    <h3 id="tx-buffer">Batching single packets: <code>rte_eth_tx_buffer</code></h3>
+    <p>Some code produces packets one at a time: a router deciding the output port per packet, for example (l2fwd in ch10 does this). Calling <code>tx_burst</code> with one packet each time pays the full fixed cost per packet. ethdev offers a tiny helper that collects packets per port and queue and sends them as one burst:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/my_skeleton.c (Tx buffer setup, then use in the loop)</span><span class="lang">C</span></div>
+<pre><code class="language-c">		/* A Tx buffer for this port (it is the *destination* buffer). */
+		txb[port] = rte_zmalloc_socket(&quot;txbuf&quot;, RTE_ETH_TX_BUFFER_SIZE(TXBUF_SIZE),
+					       0, rte_eth_dev_socket_id(port));
+		if (txb[port] == NULL)
+			return -ENOMEM;
+		rte_eth_tx_buffer_init(txb[port], TXBUF_SIZE);
+		rte_eth_tx_buffer_set_err_callback(txb[port], txbuf_unsent,
+						   &amp;st[port].dropped);
+	...
+				/* One packet at a time into the buffer; a flush
+				 * (= one tx_burst) happens when it is full. The
+				 * return value is how many that flush sent. */
+				for (uint16_t i = 0; i &lt; nb_rx; i++) {
+					uint16_t sent = rte_eth_tx_buffer(dst, 0, txb[dst], bufs[i]);
+					if (sent) {
+						st[dst].tx += sent;
+						st[dst].tx_calls++;
+					}
+				}
+	...
+		/* Drain timer: never leave packets in a half-full buffer for long. */
+		if (use_txbuf &amp;&amp; now - last_drain &gt; drain) {
+			RTE_ETH_FOREACH_DEV(port) {
+				uint16_t sent = rte_eth_tx_buffer_flush(port, 0, txb[port]);
+				if (sent) {
+					st[port].tx += sent;
+					st[port].tx_calls++;
+				}
+			}
+			last_drain = now;</code></pre>
+    </div>
+    <ul>
+      <li><code>RTE_ETH_TX_BUFFER_SIZE(n)</code> is the allocation size for a buffer of <code>n</code> packets; <code>rte_eth_tx_buffer_init(buf, n)</code> initialises it.</li>
+      <li><code>rte_eth_tx_buffer(port, q, buf, m)</code> adds one packet. When the buffer is full it calls <code>rte_eth_tx_buffer_flush()</code> and returns the number that flush sent; otherwise it returns 0.</li>
+      <li>Packets the flush could not send go to the error callback. The default one frees them silently; <code>rte_eth_tx_buffer_set_err_callback()</code> installs your own (ours counts them). <code>rte_eth_tx_buffer_count_callback</code> is a ready-made "free and count" callback.</li>
+      <li>A buffer that never fills never sends. Always add a <strong>drain timer</strong>: flush every buffer when, say, 100&nbsp;&micro;s have passed since the last flush. Without it a quiet link holds its last few packets forever.</li>
+    </ul>
+    <div class="table-wrap">
+      <table class="compact cmp">
+        <thead><tr><th>my_skeleton run (2 net_null ports, 1 lcore)</th><th class="num">forwarded per port</th><th class="num">packets per tx_burst call</th></tr></thead>
+        <tbody>
+          <tr><td>burst 32, direct <code>tx_burst</code></td><td class="num">42.7&ndash;43.1 Mpps</td><td class="num">32.0</td></tr>
+          <tr><td>burst 4, direct <code>tx_burst</code></td><td class="num">37.0&ndash;38.1 Mpps</td><td class="num">4.0</td></tr>
+          <tr><td>burst 4, <code>rte_eth_tx_buffer</code> (32) + 100 &micro;s drain</td><td class="num">29.1&ndash;29.7 Mpps</td><td class="num">31.9</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="output-caption">Ranges are the per-second samples of one run each (3 or 4 samples), taken from <code>expected_output.txt</code>. The Tx buffer does what it promises, 32 packets per call instead of 4, yet it is <em>slower</em> here: net_null's <code>tx_burst</code> is so cheap that the per-packet bookkeeping of <code>rte_eth_tx_buffer()</code> costs more than the calls it saves. On a NIC, where each call ends with a doorbell write, the trade usually goes the other way. Measure; do not assume.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="skeleton"><span class="sec-num">7</span>The skeleton, rewritten from scratch</h2>
+    <p><code>code/my_skeleton.c</code> is <code>examples/skeleton/basicfwd.c</code> with everything this chapter added: every return value checked and explained with <code>rte_strerror()</code>, a computed pool size, per-second statistics, a burst-size option, the Tx buffer mode and a clean shutdown on SIGINT. Its structure:</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 250" role="img" aria-labelledby="f-skel-t">
+        <title id="f-skel-t">Call graph of my_skeleton: main calls rte_eal_init, counts ports, creates the pool, calls port_init for each port, runs lcore_main until a signal, then stops and closes ports.</title>
+        <rect class="svg-box c1" x="20" y="100" width="90" height="44"/>
+        <text class="svg-label center bold" x="65" y="122">main()</text>
+        <rect class="svg-box c7" x="140" y="14" width="210" height="34"/><text class="svg-label center small mono" x="245" y="31">rte_eal_init (ch3)</text>
+        <rect class="svg-box c7" x="140" y="58" width="210" height="34"/><text class="svg-label center small mono" x="245" y="75">count ports: even, &#8805; 2</text>
+        <rect class="svg-box c2" x="140" y="102" width="210" height="34"/><text class="svg-label center small mono" x="245" y="119">pktmbuf_pool_create (ch6)</text>
+        <rect class="svg-box c4" x="140" y="146" width="210" height="34"/><text class="svg-label center small mono" x="245" y="163">port_init() per port</text>
+        <rect class="svg-box c1" x="140" y="190" width="210" height="34"/><text class="svg-label center small mono" x="245" y="207">lcore_main() until signal</text>
+        <rect class="svg-box c7" x="390" y="146" width="320" height="34"/>
+        <text class="svg-label center small mono" x="550" y="163">configure, adjust, setup, start</text>
+        <rect class="svg-box c7" x="390" y="190" width="320" height="34"/>
+        <text class="svg-label center small mono" x="550" y="207">rx_burst(p), tx_burst(p^1), free</text>
+        <rect class="svg-box c7 dashed" x="390" y="58" width="320" height="34"/>
+        <text class="svg-label center small mono" x="550" y="75">on exit: flush, stop, close</text>
+        <path class="svg-arrow c7" d="M110,112 L138,31"/>
+        <path class="svg-arrow c7" d="M110,116 L138,75"/>
+        <path class="svg-arrow c7" d="M110,122 L138,119"/>
+        <path class="svg-arrow c7" d="M110,128 L138,163"/>
+        <path class="svg-arrow c7" d="M110,134 L138,207"/>
+        <path class="svg-arrow c7" d="M350,163 L388,163"/>
+        <path class="svg-arrow c7" d="M350,207 L388,207"/>
+        <path class="svg-arrow c7 dashed" d="M350,200 C368,150 368,100 388,80"/>
+      </svg>
+      <figcaption><span class="fig-num"></span>The forwarder in seven boxes. Everything before <code>lcore_main()</code> is control path and may be slow; everything inside it is the fast path.</figcaption>
+    </figure>
+
+    <h3 id="pool-sizing">Sizing the mempool for a port</h3>
+    <p>Every Rx descriptor holds an mbuf <em>all the time</em> (it is armed with one), every Tx descriptor can hold one until the PMD frees it, every lcore's mempool cache can hide up to <code>cache_size</code> of them (ch6), and the loop holds one burst. So the pool needs at least</p>
+    <p class="center"><code>nb_ports &times; (nb_rxd + nb_txd) + nb_lcores &times; (cache_size + burst)</code></p>
+    <p>For two ports with 1024 + 1024 descriptors, one lcore, cache 250 and a 256-entry burst array that is 2 &times; 2048 + 506 = 4602, which <code>my_skeleton</code> rounds up to 2<sup>13</sup> &minus; 1 = 8191 (the best size for a ring-backed pool, ch6). Too small a pool does not fail at startup: it shows up later as <code>rx_nombuf</code> and <code>imissed</code>.</p>
+
+    <h3 id="skeleton-code">The code</h3>
+    <div class="tabs">
+      <div class="tab-list">
+        <button class="tab-btn" data-tab="pi">port_init()</button>
+        <button class="tab-btn" data-tab="lm">lcore_main()</button>
+        <button class="tab-btn" data-tab="sd">main() and shutdown</button>
+        <button class="tab-btn" data-tab="mk">Makefile</button>
+        <button class="tab-btn" data-tab="rs">run.sh</button>
+      </div>
+      <div class="tab-panel" data-tab="pi"><pre><code class="language-c">static int
+port_init(uint16_t port, struct rte_mempool *mp)
+{
+	struct rte_eth_conf conf;
+	struct rte_eth_dev_info info;
+	struct rte_eth_txconf txconf;
+	uint16_t nb_rxd = NB_RXD, nb_txd = NB_TXD;
+	int ret;
+
+	if (!rte_eth_dev_is_valid_port(port))
+		return -EINVAL;
+
+	ret = rte_eth_dev_info_get(port, &amp;info);
+	if (ret != 0)
+		return ret;
+
+	/* An all-zero rte_eth_conf means: no RSS, no offloads, default MTU. */
+	memset(&amp;conf, 0, sizeof(conf));
+	/* MBUF_FAST_FREE: we promise all mbufs come from one pool and have
+	 * refcnt 1, so the PMD may free them in bulk. Only ask if supported. */
+	if (info.tx_offload_capa &amp; RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
+		conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
+
+	/* 1 Rx queue and 1 Tx queue. */
+	ret = rte_eth_dev_configure(port, 1, 1, &amp;conf);
+	if (ret != 0)
+		return ret;
+
+	/* Clamp the ring sizes to what the PMD supports. */
+	ret = rte_eth_dev_adjust_nb_rx_tx_desc(port, &amp;nb_rxd, &amp;nb_txd);
+	if (ret != 0)
+		return ret;
+
+	/* Rx queue 0: the PMD fills its descriptors with mbufs from mp. Put the
+	 * queue memory on the NIC&#x27;s NUMA node (SOCKET_ID_ANY if unknown). */
+	ret = rte_eth_rx_queue_setup(port, 0, nb_rxd, rte_eth_dev_socket_id(port),
+				     NULL, mp);
+	if (ret &lt; 0)
+		return ret;
+
+	/* Tx queue 0: start from the PMD&#x27;s defaults, add our port offloads. */
+	txconf = info.default_txconf;
+	txconf.offloads = conf.txmode.offloads;
+	ret = rte_eth_tx_queue_setup(port, 0, nb_txd, rte_eth_dev_socket_id(port),
+				     &amp;txconf);
+	if (ret &lt; 0)
+		return ret;
+
+	if (use_txbuf) {
+		/* A Tx buffer for this port (it is the *destination* buffer). */
+		txb[port] = rte_zmalloc_socket(&quot;txbuf&quot;, RTE_ETH_TX_BUFFER_SIZE(TXBUF_SIZE),
+					       0, rte_eth_dev_socket_id(port));
+		if (txb[port] == NULL)
+			return -ENOMEM;
+		rte_eth_tx_buffer_init(txb[port], TXBUF_SIZE);
+		rte_eth_tx_buffer_set_err_callback(txb[port], txbuf_unsent,
+						   &amp;st[port].dropped);
+	}
+
+	/* Start: from here on rte_eth_fp_ops[port] points at the PMD. */
+	ret = rte_eth_dev_start(port);
+	if (ret &lt; 0)
+		return ret;
+
+	struct rte_ether_addr mac;
+	ret = rte_eth_macaddr_get(port, &amp;mac);
+	if (ret != 0)
+		return ret;
+	printf(&quot;Port %u (%s): MAC &quot; RTE_ETHER_ADDR_PRT_FMT &quot;, %u rxd, %u txd\n&quot;,
+	       port, info.driver_name, RTE_ETHER_ADDR_BYTES(&amp;mac), nb_rxd, nb_txd);
+
+	/* Accept every frame, not only those for our MAC. Some PMDs (net_null)
+	 * are always promiscuous and return -ENOTSUP for *disable*; enable is
+	 * fine everywhere here. */
+	return rte_eth_promiscuous_enable(port);
+}</code></pre></div>
+      <div class="tab-panel" data-tab="lm"><pre><code class="language-c">lcore_main(void)
+{
+	struct rte_mbuf *bufs[MAX_BURST];
+	const uint64_t hz = rte_get_tsc_hz();
+	const uint64_t drain = hz * DRAIN_US / 1000000;
+	uint64_t start = rte_get_tsc_cycles(), next_print = start + hz, last_drain = start;
+	uint16_t port;
+
+	printf(&quot;\nlcore %u forwarding (burst %u, %s). Ctrl+C to quit.\n&quot;,
+	       rte_lcore_id(), burst, use_txbuf ? &quot;tx buffer&quot; : &quot;direct tx_burst&quot;);
+
+	while (!force_quit) {
+		RTE_ETH_FOREACH_DEV(port) {
+			uint16_t dst = port ^ 1;      /* 0&lt;-&gt;1, 2&lt;-&gt;3, ... */
+
+			/* rx_burst returns 0..burst mbufs that are now OURS. */
+			uint16_t nb_rx = rte_eth_rx_burst(port, 0, bufs, burst);
+			if (unlikely(nb_rx == 0))
+				continue;
+			st[port].rx += nb_rx;
+
+			if (!use_txbuf) {
+				/* tx_burst may accept fewer than asked. It now
+				 * owns bufs[0..nb_tx-1]; we still own the rest. */
+				uint16_t nb_tx = rte_eth_tx_burst(dst, 0, bufs, nb_rx);
+				st[dst].tx += nb_tx;
+				st[dst].tx_calls++;
+				if (unlikely(nb_tx &lt; nb_rx)) {
+					st[dst].dropped += nb_rx - nb_tx;
+					rte_pktmbuf_free_bulk(&amp;bufs[nb_tx], nb_rx - nb_tx);
+				}
+			} else {
+				/* One packet at a time into the buffer; a flush
+				 * (= one tx_burst) happens when it is full. The
+				 * return value is how many that flush sent. */
+				for (uint16_t i = 0; i &lt; nb_rx; i++) {
+					uint16_t sent = rte_eth_tx_buffer(dst, 0, txb[dst], bufs[i]);
+					if (sent) {
+						st[dst].tx += sent;
+						st[dst].tx_calls++;
+					}
+				}
+			}
+		}
+
+		uint64_t now = rte_get_tsc_cycles();
+		/* Drain timer: never leave packets in a half-full buffer for long. */
+		if (use_txbuf &amp;&amp; now - last_drain &gt; drain) {
+			RTE_ETH_FOREACH_DEV(port) {
+				uint16_t sent = rte_eth_tx_buffer_flush(port, 0, txb[port]);
+				if (sent) {
+					st[port].tx += sent;
+					st[port].tx_calls++;
+				}
+			}
+			last_drain = now;
+		}
+		if (now &gt;= next_print) {
+			print_stats((double)(now - start) / hz);
+			next_print += hz;
+		}
+	}
+}</code></pre></div>
+      <div class="tab-panel" data-tab="sd"><pre><code class="language-c">	/* We forward p &lt;-&gt; p^1, so we need an even, non-zero number of ports. */
+	nb_ports = rte_eth_dev_count_avail();
+	if (nb_ports &lt; 2 || (nb_ports &amp; 1))
+		rte_exit(EXIT_FAILURE, &quot;need an even number of ports (&gt;= 2), found %u\n&quot;,
+			 nb_ports);
+
+	/* Pool sizing: every descriptor can hold an mbuf, plus each lcore&#x27;s
+	 * cache and one burst in flight. Rounded up to 2^n - 1 for the ring. */
+	unsigned need = nb_ports * (NB_RXD + NB_TXD) +
+			rte_lcore_count() * (CACHE_SIZE + MAX_BURST) +
+			(use_txbuf ? nb_ports * TXBUF_SIZE : 0);
+	unsigned nb_mbufs = rte_align32pow2(need + 1) - 1;
+	printf(&quot;mbuf pool: need %u -&gt; creating %u mbufs (%u ports)\n&quot;,
+	       need, nb_mbufs, nb_ports);
+	struct rte_mempool *mp = rte_pktmbuf_pool_create(&quot;ch08_skel&quot;, nb_mbufs,
+			CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	if (mp == NULL)
+		rte_exit(EXIT_FAILURE, &quot;cannot create mbuf pool: %s\n&quot;,
+			 rte_strerror(rte_errno));
+
+	RTE_ETH_FOREACH_DEV(port) {
+		ret = port_init(port, mp);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE, &quot;port %u init failed: %s\n&quot;,
+				 port, rte_strerror(-ret));
+	}
+
+	if (rte_lcore_count() &gt; 1)
+		printf(&quot;note: only the main lcore forwards; other lcores idle.\n&quot;);
+
+	lcore_main();
+
+	/* Graceful shutdown: flush buffers, stop (fast path -&gt; dummies), close.
+	 * Stopping a port makes the PMD give back the mbufs held by its rings. */
+	uint16_t ids[RTE_MAX_ETHPORTS], cnt = 0;
+	RTE_ETH_FOREACH_DEV(port)
+		ids[cnt++] = port;
+	for (uint16_t i = 0; i &lt; cnt; i++) {
+		port = ids[i];
+		if (use_txbuf) {
+			rte_eth_tx_buffer_flush(port, 0, txb[port]);
+			rte_free(txb[port]);
+		}
+		printf(&quot;port %u: app rx=%&quot; PRIu64 &quot; tx=%&quot; PRIu64 &quot; dropped=%&quot; PRIu64
+		       &quot; tx_burst calls=%&quot; PRIu64 &quot;\n&quot;, port, st[port].rx, st[port].tx,
+		       st[port].dropped, st[port].tx_calls);
+		ret = rte_eth_dev_stop(port);
+		if (ret != 0)
+			printf(&quot;rte_eth_dev_stop(%u): %s\n&quot;, port, rte_strerror(-ret));
+		rte_eth_dev_close(port);
+	}
+	printf(&quot;mbufs back in pool: %u of %u%s\n&quot;, rte_mempool_avail_count(mp),
+	       nb_mbufs, rte_mempool_avail_count(mp) == nb_mbufs ? &quot; (no leak)&quot; : &quot; (LEAK!)&quot;);
+	rte_mempool_free(mp);
+	rte_eal_cleanup();
+	return 0;
+}</code></pre></div>
+      <div class="tab-panel" data-tab="mk"><pre><code class="language-make"># SPDX-License-Identifier: BSD-3-Clause
+# Chapter 8 Makefile. Run &quot;source &lt;dpdk-env.sh&gt;&quot; first so that pkg-config
+# finds libdpdk.pc. Every program links DPDK statically.
+
+PKGCONF ?= pkg-config
+
+ifneq ($(shell $(PKGCONF) --exists libdpdk &amp;&amp; echo 0),0)
+$(error &quot;no installation of DPDK found (is PKG_CONFIG_PATH set?)&quot;)
+endif
+
+# No experimental or internal API is used in this chapter.
+CFLAGS += -O2 -g -Wall -Wextra $(shell $(PKGCONF) --cflags libdpdk)
+LDLIBS  = $(shell $(PKGCONF) --libs --static libdpdk) -lpthread
+
+APPS = port_explorer lifecycle_rules my_skeleton burst_sweep ring_cable
+SOLS = skeleton_pairs
+
+all: $(APPS) $(SOLS)
+
+%: %.c
+	$(CC) $(CFLAGS) $&lt; -o $@ $(LDLIBS)
+
+%: solutions/%.c
+	$(CC) $(CFLAGS) $&lt; -o $@ $(LDLIBS)
+
+clean:
+	rm -f $(APPS) $(SOLS)
+
+.PHONY: all clean</code></pre></div>
+      <div class="tab-panel" data-tab="rs"><pre><code class="language-bash">#!/usr/bin/env bash
+# SPDX-License-Identifier: BSD-3-Clause
+# Chapter 8: build and run every example, the exercise solution, the shipped
+# dpdk-skeleton and init_errors.sh. To refresh the captured output:
+#     ./run.sh 2&gt;&amp;1 | tee expected_output.txt
+#
+# All runs: --no-pci, --no-huge -m 128 (no hugepages needed), a unique
+# --file-prefix=ch08-*, timeout -s INT. Ports are virtual: net_null, net_ring,
+# net_tap (interface ch08tap0, removed by the PMD on close) and, inside
+# init_errors.sh, virtio_user + net_vhost over a temporary socket.
+set -u
+cd &quot;$(dirname &quot;$0&quot;)&quot;
+
+ENV_SH=${ENV_SH:-/tmp/claude-0/-home-user-ai-lab/fae9d2b5-bcbe-5be9-a4f0-08ae6c821ee6/scratchpad/dpdk-env.sh}
+# shellcheck disable=SC1090
+[ -f &quot;$ENV_SH&quot; ] &amp;&amp; source &quot;$ENV_SH&quot;
+E=$DPDK_SRC/build/examples
+
+PREFIXES=&quot;ch08-ports ch08-skel ch08-sweep ch08-cable ch08-sk ch08-pairs ch08-tel ch08-dbg ch08-rules&quot;
+TPID=&quot;&quot;
+cleanup() {
+	[ -n &quot;$TPID&quot; ] &amp;&amp; kill -INT &quot;$TPID&quot; 2&gt;/dev/null &amp;&amp; wait &quot;$TPID&quot; 2&gt;/dev/null
+	for p in $PREFIXES; do
+		rm -rf &quot;/var/run/dpdk/$p&quot; &quot;/run/dpdk/$p&quot;
+		rm -f /dev/hugepages/&quot;$p&quot;map_* 2&gt;/dev/null
+	done
+	ip link del ch08tap0 2&gt;/dev/null
+	ip link del ch08tap1 2&gt;/dev/null
+}
+trap cleanup EXIT INT TERM
+
+make -s all || { echo &quot;build failed&quot;; exit 1; }
+
+# run &lt;secs&gt; &lt;binary&gt; &lt;args...&gt;: print the command, run it bounded, strip ANSI
+run() {
+	local secs=$1 bin=$2; shift 2
+	echo
+	echo &quot;\$ $bin $*&quot; | sed &quot;s#$E#\$E#&quot;
+	timeout -s INT -k 5 &quot;$secs&quot; stdbuf -oL &quot;$bin&quot; &quot;$@&quot; 2&gt;&amp;1 | sed &#x27;s/\x1b\[[0-9;]*m//g&#x27;
+	local rc=${PIPESTATUS[0]}
+	[ &quot;$rc&quot; -ne 0 ] &amp;&amp; [ &quot;$rc&quot; -ne 124 ] &amp;&amp; echo &quot;[exit status $rc]&quot;
+	[ &quot;$rc&quot; -eq 124 ] &amp;&amp; echo &quot;[stopped by SIGINT from timeout after ${secs}s]&quot;
+	return 0
+}
+
+EAL=&quot;--no-pci --no-huge -m 128&quot;
+run 20 ./port_explorer -l 0 $EAL --file-prefix=ch08-ports \
+	--vdev=net_null0 --vdev=net_ring0 --vdev=net_tap0,iface=ch08tap0
+# the lifecycle rules: wrong-order calls on net_null, then the early
+# queue-setup call on net_null (crashes, exit 139) and on net_tap (-EINVAL)
+run 10 ./lifecycle_rules -l 0 --no-pci --no-huge -m 64 --file-prefix=ch08-rules \
+	--vdev=net_null0 --log-level=lib.ethdev:info
+run 10 ./lifecycle_rules -l 0 --no-pci --no-huge -m 64 --file-prefix=ch08-rules \
+	--vdev=net_null0 --log-level=lib.ethdev:info -- --early-setup
+run 10 ./lifecycle_rules -l 0 --no-pci --no-huge -m 64 --file-prefix=ch08-rules \
+	--vdev=net_tap0,iface=ch08tap1 --log-level=lib.ethdev:info -- --early-setup
+run 5 ./my_skeleton -l 1 $EAL --file-prefix=ch08-skel --vdev=net_null0 --vdev=net_null1
+run 4 ./my_skeleton -l 1 $EAL --file-prefix=ch08-skel --vdev=net_null0 --vdev=net_null1 -- --burst 4
+run 4 ./my_skeleton -l 1 $EAL --file-prefix=ch08-skel --vdev=net_null0 --vdev=net_null1 -- --burst 4 --tx-buffer
+run 20 ./burst_sweep -l 0 $EAL --file-prefix=ch08-sweep --vdev=net_null0
+run 20 ./ring_cable -l 0 $EAL --file-prefix=ch08-cable
+run 20 ./ring_cable -l 0 $EAL --file-prefix=ch08-cable -- --leak
+# &quot;when it doesn&#x27;t work&quot; 1: one telemetry query against a running forwarder
+echo
+echo &quot;\$ ./my_skeleton ... --file-prefix=ch08-tel &amp;   # background, 5 s&quot;
+timeout -s INT -k 5 5 ./my_skeleton -l 1 $EAL --file-prefix=ch08-tel \
+	--vdev=net_null0 --vdev=net_null1 &gt; /dev/null 2&gt;&amp;1 &amp;
+TPID=$!
+sleep 2
+echo &quot;\$ echo /ethdev/stats,0 | dpdk-telemetry.py -f ch08-tel&quot;
+echo &quot;/ethdev/stats,0&quot; | python3 -I &quot;$(command -v dpdk-telemetry.py)&quot; -f ch08-tel 2&gt;&amp;1 | tail -1
+wait &quot;$TPID&quot; 2&gt;/dev/null; TPID=&quot;&quot;
+# &quot;when it doesn&#x27;t work&quot; 2: debug logs from ethdev and the PMD
+echo
+echo &quot;\$ ./port_explorer -l 0 $EAL --file-prefix=ch08-dbg --vdev=net_null0 --log-level=lib.ethdev:debug --log-level=pmd.net.null:debug | grep -E &#x27;ETH_NULL|ETHDEV&#x27;&quot;
+timeout -s INT -k 5 10 ./port_explorer -l 0 $EAL --file-prefix=ch08-dbg --vdev=net_null0 \
+	--log-level=lib.ethdev:debug --log-level=pmd.net.null:debug 2&gt;&amp;1 | grep -E &#x27;^(ETH_NULL|ETHDEV)&#x27;
+# the shipped sample, for comparison (stdbuf -oL keeps its output when killed)
+run 6 &quot;$E/dpdk-skeleton&quot; -l 1 $EAL --file-prefix=ch08-sk --vdev=net_null0 --vdev=net_null1
+# exercise 1 solution: explicit pairing with a gap in the port ids
+run 10 ./skeleton_pairs -l 1 $EAL --file-prefix=ch08-pairs --vdev=net_null0 --vdev=net_null1 \
+	--vdev=net_null2 --vdev=net_null3 --vdev=net_null4 -- --exclude 2
+
+echo
+echo &quot;\$ ./init_errors.sh&quot;
+./init_errors.sh</code></pre></div>
+    </div>
+    <p>Note <code>port ^ 1</code>: XOR with 1 pairs 0 with 1, 2 with 3 and so on. It is compact, and it is wrong as soon as port ids have gaps (exercise 1).</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (my_skeleton, burst 32)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./my_skeleton -l 1 --no-pci --no-huge -m 128 --file-prefix=ch08-skel --vdev=net_null0 --vdev=net_null1</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch08-skel/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+mbuf pool: need 4602 -&gt; creating 8191 mbufs (2 ports)
+Port 0 (net_null): MAC 36:B7:12:4C:1C:16, 1024 rxd, 1024 txd
+Port 1 (net_null): MAC BE:F8:67:72:CA:2E, 1024 rxd, 1024 txd
+
+lcore 1 forwarding (burst 32, direct tx_burst). Ctrl+C to quit.
+<span class="dim">[  1.0s] port 0: rx    42.84 Mpps  tx    42.84 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=42836992 opackets=42836992 rx_nombuf=0</span>
+<span class="dim">[  1.0s] port 1: rx    42.84 Mpps  tx    42.84 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=42836992 opackets=42836992 rx_nombuf=0</span>
+<span class="dim">[  2.0s] port 0: rx    42.95 Mpps  tx    42.95 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=85782848 opackets=85782848 rx_nombuf=0</span>
+<span class="dim">[  2.0s] port 1: rx    42.95 Mpps  tx    42.95 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=85782848 opackets=85782848 rx_nombuf=0</span>
+<span class="dim">[  3.0s] port 0: rx    42.72 Mpps  tx    42.72 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=128507552 opackets=128507552 rx_nombuf=0</span>
+<span class="dim">[  3.0s] port 1: rx    42.72 Mpps  tx    42.72 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=128507552 opackets=128507552 rx_nombuf=0</span>
+<span class="dim">[  4.0s] port 0: rx    43.06 Mpps  tx    43.06 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=171570176 opackets=171570176 rx_nombuf=0</span>
+<span class="dim">[  4.0s] port 1: rx    43.06 Mpps  tx    43.06 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=171570176 opackets=171570176 rx_nombuf=0</span>
+
+Signal 2 received, stopping...
+port 0: app rx=208894464 tx=208894464 dropped=0 tx_burst calls=6527952
+port 1: app rx=208894464 tx=208894464 dropped=0 tx_burst calls=6527952
+<span class="ok">mbufs back in pool: 8191 of 8191 (no leak)</span></pre>
+    </div>
+    <p class="output-caption">Two software ports forward about 43 million packets per second each on one lcore (single run; an earlier run on a quieter machine showed 52). The application counters and the PMD's <code>ipackets</code>/<code>opackets</code> agree because nothing is dropped. On exit every one of the 8191 mbufs is back in the pool. SIGINT came from <code>timeout</code>, which signals both the process and its process group; the handler reports it once.</p>
+    <p>The shipped sample, for comparison:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (dpdk-skeleton, prebuilt)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">$E/dpdk-skeleton -l 1 --no-pci --no-huge -m 128 --file-prefix=ch08-sk --vdev=net_null0 --vdev=net_null1</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch08-sk/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+Port 0 MAC: 62 f2 e5 0d 29 7a
+Port 1 MAC: 26 a2 f8 10 9d 64
+
+Core 1 forwarding packets. [Ctrl+C to quit]
+<span class="dim">[stopped by SIGINT from timeout after 6s]</span></pre>
+    </div>
+    <p class="output-caption"><code>basicfwd.c</code> prints the MACs and then nothing: no statistics, and <code>lcore_main()</code> is <code>__rte_noreturn</code>, so it never stops or closes its ports. Fine for a sample, not for a program you have to debug. <code>stdbuf -oL</code> is what keeps even these lines when the process is killed with its stdout redirected.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="link-stats"><span class="sec-num">8</span>Link, MAC and the 26.11 statistics model</h2>
+    <ul>
+      <li><code>rte_eth_link_get_nowait(port, &amp;link)</code> reads <code>struct rte_eth_link</code> (speed, duplex, autoneg, status) without waiting; <code>rte_eth_link_get()</code> may wait up to several seconds for autonegotiation on a real NIC, so keep it out of the fast path. <code>rte_eth_link_to_str()</code> formats it: <code>Link up at 10 Gbps FDX Fixed None</code> for the virtual ports here. Both are marked "warn unused result": check the return value.</li>
+      <li><code>rte_eth_macaddr_get()</code> gives the port's MAC (net_null and net_tap make up a random one, net_ring reports zeros). <code>rte_eth_promiscuous_enable()</code> makes the port accept frames for any destination MAC; forwarders need it, and forgetting it is why "testpmd receives but my app does not" on net_tap (testpmd enables it by default).</li>
+      <li><code>rte_eth_stats_get(port, &amp;st)</code> fills <code>struct rte_eth_stats</code>. In 26.11 it contains <strong>only port totals</strong>: <code>ipackets, opackets, ibytes, obytes, imissed, ierrors, oerrors, rx_nombuf</code>. The per-queue arrays (<code>q_ipackets[]</code>...) and the queue-stats mapping API are gone; per-queue counters are now <em>extended statistics</em> (xstats) with names like <code>rx_q0_packets</code>. Port control, xstats by id, events and live reconfiguration are ch12.</li>
+    </ul>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (port_explorer: net_ring after 8 tx and 4 polls)</span></div>
+<pre>  link             Link up at 10 Gbps FDX Fixed None
+  mac              00:00:00:00:00:00
+  rte_eth_promiscuous_enable         -&gt; 0
+  tx_burst(8) accepted 8; 4 x rx_burst(32) returned 8 in total
+  stats            ipackets=8 opackets=8 ibytes=0 obytes=0 imissed=0 ierrors=0 oerrors=0 rx_nombuf=0
+  xstats           12 counters; per-queue ones: rx_q0_packets=8 rx_q0_bytes=0 tx_q0_packets=8 tx_q0_bytes=0</pre>
+    </div>
+    <p class="output-caption">A single net_ring port loops back to itself, so the 8 frames sent come back on rx. Its <code>ibytes</code>/<code>obytes</code> stay 0: net_ring only counts packets. Every PMD fills the counters it can; read <code>doc/guides/nics/features/&lt;pmd&gt;.ini</code> to see which "Basic stats" and "Extended stats" a driver claims.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="when-it-fails"><span class="sec-num">9</span>When it doesn't work</h2>
+    <div class="box">
+      <div class="box-title">When it doesn't work: a five-step checklist</div>
+      <ol>
+        <li><strong>Check every return value</strong> and print it: <code>rte_strerror(-ret)</code> for functions that return <code>-errno</code>, <code>rte_strerror(rte_errno)</code> for functions that return NULL or a count (<code>rte_pktmbuf_pool_create</code>, a burst that returns 0). <code>rte_strerror()</code> also knows DPDK's own codes such as <code>E_RTE_SECONDARY</code> (<code>lib/eal/include/rte_errno.h</code>).</li>
+        <li><strong>Turn the logs up</strong>: <code>--log-level=lib.ethdev:debug</code> and <code>--log-level=pmd.net.null:debug</code> (or <code>'pmd.net.*:debug'</code>). Most refusals in this chapter print an <code>ETHDEV:</code> line saying why.</li>
+        <li><strong>Read the counters</strong>: <code>rte_eth_stats_get()</code> and xstats. <code>imissed</code> rising means you poll too slowly or the ring is too small; <code>rx_nombuf</code> means the pool is empty (leak or too small); <code>oerrors</code>, or <code>tx_burst</code> returning less than offered, means the Tx side is full.</li>
+        <li><strong>Ask testpmd</strong> to do the same thing (ch9): <code>show port info 0</code>, <code>show port stats 0</code>. If testpmd works and your program does not, compare their configuration.</li>
+        <li><strong>Ask the running process</strong> through telemetry, without stopping it (ch13 covers the tool):</li>
+      </ol>
+      <div class="terminal" data-copy>
+        <div class="term-bar"><span class="title">code/expected_output.txt (telemetry and debug logs)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">echo /ethdev/stats,0 | dpdk-telemetry.py -f ch08-tel</span>
+{&quot;/ethdev/stats&quot;: {&quot;ipackets&quot;: 96894944, &quot;opackets&quot;: 96894944, &quot;ibytes&quot;: 6201276416, &quot;obytes&quot;: 6201276416, &quot;imissed&quot;: 0, &quot;ierrors&quot;: 0, &quot;oerrors&quot;: 0, &quot;rx_nombuf&quot;: 0}}
+<span class="prompt">$ </span><span class="cmd">./port_explorer -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-dbg --vdev=net_null0 --log-level=lib.ethdev:debug --log-level=pmd.net.null:debug | grep -E &#x27;ETH_NULL|ETHDEV&#x27;</span>
+<span class="hl">ETH_NULL: rte_pmd_null_probe(): Initializing pmd_null for net_null0</span>
+<span class="hl">ETH_NULL: rte_pmd_null_probe(): Configure pmd_null: packet size is 64, packet copy is disabled</span></pre>
+      </div>
+    </div>
+
+    <h3 id="init-errors">Port-initialisation errors, captured</h3>
+    <p><code>code/init_errors.sh</code> causes each failure on purpose. This is part 2 of the course's startup-error catalogue (part 1, EAL and memory, is in ch4; part 3, multi-process, in ch16; ch13 merges them into one table).</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (init_errors.sh)</span></div>
+<pre>=== E1: no ports ===================================================
+<span class="prompt">$ </span><span class="cmd">dpdk-testpmd -l 0,1 --no-pci --no-huge -m 256 --file-prefix=ch08-ie-nop -- --total-num-mbufs=4096 --stats-period 1</span>
+testpmd: No probed ethernet devices
+io packet forwarding - ports=0 - cores=0 - streams=0 - NUMA support enabled, MP allocation mode: native
+  nb forwarding cores=1 - nb forwarding ports=0
+<span class="prompt">$ </span><span class="cmd">./my_skeleton -l 1 --no-pci --no-huge -m 128 --file-prefix=ch08-ie-nop</span>
+<span class="dim">EAL: Error - exiting with code: 1</span>
+<span class="err">need an even number of ports (&gt;= 2), found 0</span>
+
+=== E2: the mbuf pool does not fit in memory =======================
+<span class="prompt">$ </span><span class="cmd">dpdk-testpmd -l 0,1 --no-pci --no-huge -m 256 --file-prefix=ch08-ie-tp --vdev=net_null0 -- --stats-period 1</span>
+testpmd: create a new mbuf pool &lt;mb_pool_0&gt;: n=155456, size=2176, socket=0
+<span class="dim">EAL: Error - exiting with code: 1</span>
+<span class="err">Creation of mbuf pool for socket 0 failed: Cannot allocate memory</span>
+<span class="prompt">$ </span><span class="cmd">dpdk-testpmd ... same, plus --total-num-mbufs=8192</span>
+testpmd: create a new mbuf pool &lt;mb_pool_0&gt;: n=8192, size=2176, socket=0
+Port 0: 1E:35:2B:75:0A:FD
+<span class="prompt">$ </span><span class="cmd">./my_skeleton -l 1 --no-pci --no-huge -m 16 --file-prefix=ch08-ie-pool --vdev=net_null0 --vdev=net_null1</span>
+mbuf pool: need 4602 -&gt; creating 8191 mbufs (2 ports)
+<span class="dim">EAL: Error - exiting with code: 1</span>
+<span class="err">cannot create mbuf pool: Cannot allocate memory</span>
+
+=== E3: nb_desc outside dev_info.rx_desc_lim =======================
+<span class="dim"># net_null advertises no limits (min 0, max 65535, align 1): nb_desc=1 is accepted</span>
+<span class="prompt">$ </span><span class="cmd">./port_explorer -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-ie-null --vdev=net_null0 -- --nb-desc 1 --no-adjust</span>
+  rx_desc_lim      min=0 max=65535 align=1   tx_desc_lim min=0 max=65535 align=1
+  rte_eth_rx_queue_setup(q0, 1)      -&gt; 0
+  rte_eth_tx_queue_setup(q0, 1)      -&gt; 0
+<span class="err">  rx_queue_setup(q0, deferred_start) -&gt; -95 (Operation not supported)</span>
+<span class="dim"># virtio_user needs a vhost-user backend: start testpmd with net_vhost0 in the background</span>
+<span class="prompt">$ </span><span class="cmd">./port_explorer -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-ie-desc --vdev=virtio_user0,path=$WORK/ch08vh.sock,queues=1 -- --nb-desc 1 --no-adjust</span>
+  driver           net_virtio_user
+  rx_desc_lim      min=32 max=32768 align=1   tx_desc_lim min=32 max=32768 align=1
+<span class="hl">ETHDEV: Invalid value for nb_rx_desc(=1), should be: &lt;= 32768, &gt;= 32, and a product of 1</span>
+<span class="err">  rte_eth_rx_queue_setup(q0, 1)      -&gt; -22 (Invalid argument)</span>
+<span class="dim"># the same with rte_eth_dev_adjust_nb_rx_tx_desc(): 1 is clamped to nb_min</span>
+<span class="prompt">$ </span><span class="cmd">./port_explorer ... --file-prefix=ch08-ie-desc2 ... -- --nb-desc 1</span>
+  descriptors asked 1 -&gt; using rx=32 tx=32
+  rte_eth_rx_queue_setup(q0, 32)     -&gt; 0
+  rte_eth_tx_queue_setup(q0, 32)     -&gt; 0
+  rte_eth_dev_start                  -&gt; 0
+<span class="err">  rx_queue_setup(q0, deferred_start) -&gt; -95 (Operation not supported)</span>
+
+=== E4 + E5: configure while started, deferred start unsupported ====
+<span class="prompt">$ </span><span class="cmd">./port_explorer -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-ie-null --vdev=net_null0</span>
+<span class="hl">ETHDEV: Port 0 must be stopped to allow configuration</span>
+<span class="err">  rte_eth_dev_configure while started -&gt; -16 (Device or resource busy)</span>
+<span class="hl">ETHDEV: Deferred start requested, but driver does not support Rx queue start</span>
+<span class="err">  rx_queue_setup(q0, deferred_start) -&gt; -95 (Operation not supported)</span>
+
+init_errors.sh done</pre>
+    </div>
+    <div class="table-wrap">
+      <table class="err-table compact">
+        <thead><tr><th>exact message</th><th>cause</th><th>fix</th></tr></thead>
+        <tbody>
+          <tr><td>testpmd: No probed ethernet devices</td><td>No port at all: no <code>--vdev</code>, and <code>--no-pci</code> (or no NIC bound to vfio-pci). testpmd carries on with 0 ports; your own program should stop.</td><td>Add <code>--vdev=net_null0</code>, or bind a NIC (ch9 sidebar). Check <code>rte_eth_dev_count_avail()</code> first thing after <code>rte_eal_init()</code>.</td></tr>
+          <tr><td>Creation of mbuf pool for socket 0 failed: Cannot allocate memory</td><td>testpmd's default pool (155456 mbufs of 2176 bytes, about 340 MB) does not fit in <code>--no-huge -m 256</code>.</td><td><code>--total-num-mbufs=8192</code> (this course always passes 4096..16384), or more memory.</td></tr>
+          <tr><td>cannot create mbuf pool: Cannot allocate memory</td><td>Your own pool (8191 mbufs, about 19 MB) does not fit in <code>-m 16</code>. <code>rte_pktmbuf_pool_create()</code> returns NULL and sets <code>rte_errno</code>.</td><td>Size the pool with the formula in section 7 and give the EAL enough memory (ch4).</td></tr>
+          <tr><td>ETHDEV: Invalid value for nb_rx_desc(=1), should be: &lt;= 32768, &gt;= 32, and a product of 1</td><td><code>nb_desc</code> outside <code>dev_info.rx_desc_lim</code>; returns <code>-EINVAL</code>. Software PMDs accept anything, so this appears first on virtio or real NICs.</td><td>Call <code>rte_eth_dev_adjust_nb_rx_tx_desc()</code> before queue setup (it turned 1 into 32 above).</td></tr>
+          <tr><td>ETHDEV: Port 0 must be stopped to allow configuration</td><td><code>rte_eth_dev_configure()</code> on a started port: <code>-EBUSY</code>.</td><td><code>rte_eth_dev_stop()</code>, reconfigure, set queues up again, start.</td></tr>
+          <tr><td>ETHDEV: Deferred start requested, but driver does not support Rx queue start</td><td><code>rx_deferred_start = 1</code> on a PMD without queue start/stop: <code>-ENOTSUP</code> at queue setup.</td><td>Check the PMD (<code>doc/guides/nics/features/*.ini</code>, "Queue start/stop") or do not defer.</td></tr>
+          <tr><td>ETHDEV: lcore 0 called rx_pkt_burst for not ready port 0</td><td>Burst call on a port that is not started (or already stopped). Returns 0, <code>rte_errno = ENOTSUP</code>.</td><td>Start the port; stop lcores before stopping ports.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ===================================================================== -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong>The pool slowly empties and the port goes quiet</strong>: the unsent tail of <code>rte_eth_tx_burst()</code> is never freed. Always handle <code>nb_tx &lt; nb_rx</code>. Watch <code>rte_mempool_avail_count()</code> and <code>rx_nombuf</code>.</li>
+      <li><strong>"My app receives nothing" and no error</strong>: the port was never started, or was stopped, so the dummy burst function returns 0. Look for the <em>not ready port</em> log line and check <code>rte_errno</code>.</li>
+      <li><strong>Queue setup before configure</strong>: <code>-EINVAL</code> on some PMDs, a segmentation fault on net_null in 26.11. Configure first, always.</li>
+      <li><strong>Starting a port with queues not set up returns 0</strong>: ethdev does not check. Set up every queue you configured.</li>
+      <li><strong>A descriptor count that works on net_null fails on hardware</strong>: software PMDs have no limits. Use <code>rte_eth_dev_adjust_nb_rx_tx_desc()</code>.</li>
+      <li><strong>Two lcores polling the same queue</strong>: corrupted rings, lost or duplicated mbufs, no error. One queue per lcore (ch15), unless the PMD says <code>MT_LOCKFREE</code>.</li>
+      <li><strong>Packets stuck in a Tx buffer</strong>: <code>rte_eth_tx_buffer()</code> only sends when the buffer is full. Add a drain timer and flush on shutdown.</li>
+      <li><strong>Old code does not compile</strong>: <code>rte_eth_dev_get_name_by_port()</code> takes a size in 26.11; <code>struct rte_eth_stats</code> has no <code>q_ipackets[]</code>; flags use the <code>RTE_ETH_</code> prefix.</li>
+      <li><strong>Hand-written app on net_tap sees no kernel traffic</strong>: promiscuous mode is off by default. Call <code>rte_eth_promiscuous_enable()</code>.</li>
+      <li><strong>Stopping a port while an lcore is still in <code>rx_burst</code></strong>: undefined. Signal the lcores, wait for them, then stop.</li>
+    </ul>
+
+    <!-- ===================================================================== -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="1" data-explain="tx_burst returns how many of the first packets it took; the rest, pkts[n..31], still belong to you and must be freed or retried.">
+        <div class="q-text"><code>rte_eth_tx_burst(p, 0, pkts, 32)</code> returns 20. Who owns <code>pkts[20..31]</code>?</div>
+        <div class="q-opts">
+          <button class="q-opt">The PMD; it will send them when the ring has room</button>
+          <button class="q-opt">The application; it must free or resend them</button>
+          <button class="q-opt">Nobody; the PMD already freed them</button>
+        </div>
+      </div>
+      <div class="q" data-answer="2" data-explain="Stop swaps rte_eth_fp_ops[port] to the dummy functions; dummy_eth_rx_burst logs once, sets rte_errno=ENOTSUP and returns 0.">
+        <div class="q-text">An lcore keeps calling <code>rte_eth_rx_burst()</code> after another thread called <code>rte_eth_dev_stop()</code> (and the lcore was not in the call at that moment). What does it get?</div>
+        <div class="q-opts">
+          <button class="q-opt">-ENODEV</button>
+          <button class="q-opt">A segmentation fault</button>
+          <button class="q-opt">0, with rte_errno set to ENOTSUP</button>
+        </div>
+      </div>
+      <div class="q" data-answer="0" data-explain="Configure is refused with -EBUSY ('Port 0 must be stopped to allow configuration') while the port is started.">
+        <div class="q-text">What does <code>rte_eth_dev_configure()</code> return on a started port?</div>
+        <div class="q-opts">
+          <button class="q-opt">-EBUSY</button>
+          <button class="q-opt">0, and the new configuration applies at once</button>
+          <button class="q-opt">-EINVAL</button>
+        </div>
+      </div>
+      <div class="q" data-answer="1" data-explain="imissed counts frames the NIC had to drop because no armed descriptor was free: the ring was full because software did not poll fast enough.">
+        <div class="q-text">On a real NIC <code>imissed</code> keeps rising while <code>rx_nombuf</code> stays 0. The most likely cause?</div>
+        <div class="q-opts">
+          <button class="q-opt">The mempool is too small</button>
+          <button class="q-opt">The application does not poll that queue fast enough for the arrival rate (or the ring is too small for its bursts)</button>
+          <button class="q-opt">The application leaks the unsent tail of tx_burst</button>
+        </div>
+      </div>
+      <div class="q" data-answer="2" data-explain="Two ports x (1024+1024) = 4096 descriptors plus 2 x (256+32) = 576 for caches and bursts: 4672, so 8191 (2^13-1) is the next good ring-friendly size.">
+        <div class="q-text">Two ports, 1024 Rx and 1024 Tx descriptors each, two lcores, cache 256, burst 32. Which pool size is the smallest safe choice of the form 2<sup>n</sup>&minus;1?</div>
+        <div class="q-opts">
+          <button class="q-opt">2047</button>
+          <button class="q-opt">4095</button>
+          <button class="q-opt">8191</button>
+        </div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span></div>
+      <p>Make the forwarder pair any even number of ports, 1st with 2nd, 3rd with 4th, and so on, using only ports that really exist. Test with five net_null ports where port 2 is closed before pairing. Why does <code>port ^ 1</code> fail there?</p>
+      <details><summary>Hint</summary><p>Collect the ids from <code>RTE_ETH_FOREACH_DEV</code> into an array first, then build a <code>peer[]</code> table from consecutive array entries.</p></details>
+      <details><summary>Solution</summary><p>See <code>code/solutions/skeleton_pairs.c</code>; <code>run.sh</code> runs it with <code>-- --exclude 2</code>:</p>
+        <div class="terminal" data-copy><div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre>closing port 2 to leave a gap in the port ids
+pair: port 0 &lt;-&gt; port 1   (p^1 would have given 0 &lt;-&gt; 1)
+pair: port 3 &lt;-&gt; port 4   (p^1 would have given 3 &lt;-&gt; 2)
+port 0: rx 23126624  tx 23126624  (peer 1)
+port 1: rx 23126624  tx 23126624  (peer 0)
+port 3: rx 23126624  tx 23126624  (peer 4)
+port 4: rx 23126624  tx 23126624  (peer 3)
+pool avail after close: 8191 of 8191</pre></div>
+        <p>With port 2 gone, <code>3 ^ 1 = 2</code> names a port that no longer exists; the table pairs 3 with 4.</p>
+      </details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span></div>
+      <p>In <code>ring_cable.c</code>, drop the <code>rte_pktmbuf_free_bulk()</code> of the unsent tail and send 100 packets per round into the 63-packet cable. Before you run it, predict in which round allocation fails with a 511-mbuf pool. Then run <code>./ring_cable ... -- --leak</code> and check.</p>
+      <details><summary>Hint</summary><p>Each round leaks 100 &minus; 63 = 37 mbufs (B drains the 63 that were accepted). The round fails when fewer than 100 are left.</p></details>
+      <details><summary>Solution</summary><p>After 12 rounds 511 &minus; 12 &times; 37 = 67 mbufs are left, less than 100, so round 13 fails; the output above shows exactly that. Bonus: the program would also fail if you leaked only 1 per round, just much later. That is why leaks pass short tests.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag medium">medium</span></div>
+      <p>Run <code>my_skeleton</code> with <code>--burst 4</code>, with and without <code>--tx-buffer</code>, and compare packets per <code>tx_burst</code> call and throughput. Then change <code>DRAIN_US</code> to 1000 and to 10 and explain what changes and what does not on net_null.</p>
+      <details><summary>Hint</summary><p>With net_null the receive side always returns a full burst, so the buffer fills long before the drain timer fires. The timer matters only on a link that goes quiet; try <code>--vdev=net_null0,no-rx=1</code> on the receive side to see when it is the only thing that sends.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4 <span class="tag stretch">stretch</span></div>
+      <p>Open <code>lib/ethdev/rte_ethdev.h</code> at <code>rte_eth_tx_burst()</code> and explain each line, as section 5 did for Rx. Why are Tx callbacks called <em>before</em> the driver while Rx callbacks are called <em>after</em> it? What does <code>RTE_MBUF_HISTORY_OP_TX_BUSY</code> record?</p>
+    </div>
+
+    <!-- ===================================================================== -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li>A port is a <code>uint16_t</code> id backed by a PMD. Discover ports with <code>rte_eth_dev_count_avail()</code> and <code>RTE_ETH_FOREACH_DEV</code>, and read <code>rte_eth_dev_info_get()</code> before choosing queue counts, ring sizes or offloads.</li>
+        <li>Lifecycle: configure &rarr; (adjust) &rarr; rx/tx queue setup &rarr; start &rarr; stop &rarr; close. Started ports refuse reconfiguration (<code>-EBUSY</code>); some mistakes are not checked at all, so follow the order.</li>
+        <li><code>rx_burst</code> hands you 0..n mbufs that you now own; <code>tx_burst</code> takes a prefix and leaves the rest with you. Free the unsent tail.</li>
+        <li>A burst call is two loads and an indirect call through <code>rte_eth_fp_ops[port]</code>, with no validity checks. Start installs the PMD's functions; stop installs dummies that return 0.</li>
+        <li>An Rx queue is a descriptor ring the NIC fills from the head and the PMD empties and refills from the tail. Polling too slowly shows up as <code>imissed</code>, an empty pool as <code>rx_nombuf</code>.</li>
+        <li>Batching shares the fixed cost of each call (measured here: about 50 cycles/packet at burst 1, under 20 at burst 8 on net_null). <code>rte_eth_tx_buffer</code> batches single packets but needs a drain timer.</li>
+        <li>In 26.11 <code>rte_eth_stats</code> holds port totals only; per-queue counters are xstats.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Programmer's Guide, Poll Mode Driver. <span class="src-path">doc/guides/prog_guide/ethdev/ethdev.rst</span></li>
+        <li>Sample Applications User Guide, Basic Forwarding. <span class="src-path">doc/guides/sample_app_ug/skeleton.rst</span> and <span class="src-path">examples/skeleton/basicfwd.c</span></li>
+        <li>The public API: <code>rte_eth_dev_configure</code>, <code>rte_eth_rx_queue_setup</code>, <code>rte_eth_rx_burst</code> (inline, around line 6183), <code>rte_eth_tx_burst</code> (around line 6522), the Tx buffer helpers and <code>struct rte_eth_stats</code>. <span class="src-path">lib/ethdev/rte_ethdev.h</span></li>
+        <li><code>struct rte_eth_fp_ops</code>. <span class="src-path">lib/ethdev/rte_ethdev_core.h</span></li>
+        <li>Dummy burst functions, <code>eth_dev_fp_ops_reset()</code> and <code>eth_dev_fp_ops_setup()</code>. <span class="src-path">lib/ethdev/ethdev_private.c</span></li>
+        <li>Lifecycle checks: <code>rte_eth_dev_configure</code>, <code>rte_eth_dev_start</code>, <code>rte_eth_dev_stop</code>, <code>rte_eth_dev_close</code>, the <code>nb_desc</code> checks in <code>rte_eth_rx_queue_setup</code>. <span class="src-path">lib/ethdev/rte_ethdev.c</span></li>
+        <li>The simplest PMD: <code>eth_null_rx</code>, <code>eth_null_tx</code>, <code>eth_dev_info</code>. <span class="src-path">drivers/net/null/rte_eth_null.c</span></li>
+        <li><code>rte_eth_from_rings()</code>. <span class="src-path">drivers/net/ring/rte_eth_ring.h</span>, <span class="src-path">drivers/net/ring/rte_eth_ring.c</span></li>
+        <li><code>rte_strerror()</code>, <code>rte_errno</code>. <span class="src-path">lib/eal/include/rte_errno.h</span></li>
+        <li>PMD feature matrix. <span class="src-path">doc/guides/nics/features.rst</span>, <span class="src-path">doc/guides/nics/features/*.ini</span></li>
+        <li>Course research note on ethdev. <span class="src-path">research/05-ethdev.md</span> (in the course folder)</li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../07-mbufs/index.html"><span class="dir">&larr; Previous</span><span class="ttl">07 &middot; rte_mbuf: The Packet Buffer</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../09-virtual-devices-testpmd/index.html"><span class="dir">Next &rarr;</span><span class="ttl">09 &middot; Testing Without Hardware: Buses, devargs, Virtual PMDs and testpmd</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script src="ch08.js"></script>
+</body>
+</html>

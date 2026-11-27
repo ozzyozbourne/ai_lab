@@ -1,0 +1,1047 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>05 rte_ring | DPDK from Zero to Expert</title>
+<meta name="description" content="The DPDK ring: a fixed-size lock-free FIFO between cores. The API families, the head/tail algorithm with free-running 32-bit indexes, SP/SC, MP/MC, RTS and HTS sync modes, element rings, peek and zero-copy, and the staged-ordered ring (SORING).">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  /* Chapter 5 only. Colours come from course.css variables. */
+  .ch5-out { margin: .6rem 1rem 0; font-size: .88rem; line-height: 1.5; color: var(--text); }
+  .ch5-out .odo-bad { color: var(--c4); font-weight: 600; }
+  .g-stats { padding: .4rem 1rem 0; font-size: .85rem; color: var(--text-muted); }
+  .g-legend { display: flex; flex-wrap: wrap; gap: .3rem .9rem; padding: .5rem 1rem 0; font-size: .8rem; color: var(--text-muted); }
+  .g-legend .sw { display: inline-block; width: .9em; height: .9em; border-radius: 2px; vertical-align: -.1em; margin-right: .3em; }
+  .ch5-select { font-size: .85rem; padding: .25rem .4rem; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text); }
+  .primer { border: 1px solid var(--border); border-left: 4px solid var(--c5); border-radius: var(--radius); background: var(--surface); padding: .8rem 1.1rem; margin: 1.4rem 0; }
+  .primer .box-title { color: var(--c5); font-weight: 700; margin-bottom: .3rem; }
+  .bars-title { font-size: .85rem; font-weight: 600; color: var(--heading); padding: .8rem 1rem 0; }
+  .wide-svg { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .wide-svg > svg { min-width: 560px; display: block; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 05 &middot; rte_ring</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../04-memory-hugepages/index.html"><span class="dir">&larr; Previous</span><span class="ttl">04 &middot; Memory: Hugepages, Memzones, rte_malloc and IOVA</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../06-mempools/index.html"><span class="dir">Next &rarr;</span><span class="ttl">06 &middot; rte_mempool and rte_stack</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 05</div>
+      <h1>rte_ring: Lock-Free Queues Between Cores</h1>
+      <p class="chapter-subtitle">Every time one DPDK core hands work to another, a ring is involved: mempools keep their free buffers in a ring, pipeline stages pass packets through rings, and the <code>net_ring</code> driver turns a ring into an Ethernet port. After this chapter you can create and use rings, explain exactly how two cores enqueue into the same ring without a lock, pick the right sync mode for your threads, and use the element, peek, zero-copy and staged-ordered variants.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-intermediate">Intermediate</span></li>
+        <li><span class="badge">~80 min</span></li>
+        <li><span class="badge">Prerequisites: ch3, ch4</span></li>
+        <li><span class="tag api">rte_ring_create</span></li>
+        <li><span class="tag api">rte_ring_enqueue_burst</span></li>
+        <li><span class="tag api">rte_ring_dequeue_bulk</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Create, look up, inspect and free a ring, and explain why a ring of <code>count</code> slots holds <code>count - 1</code> objects unless you pass <code>RING_F_EXACT_SZ</code>.</li>
+        <li>Choose between the single-object, <em>bulk</em> (all or nothing) and <em>burst</em> (as many as possible) calls, and read their return values correctly.</li>
+        <li>Walk through the head/tail algorithm for one and for two producers, including the compare-and-swap race, and explain why the indexes are 32-bit numbers that are never reset.</li>
+        <li>Pick a sync mode (SP/SC, MP/MC, RTS, HTS) from how your threads are scheduled, and measure the difference on this machine, including the collapse of MP/MC when threads are preempted.</li>
+        <li>Use element rings, the peek API and the zero-copy API, and know when the staged-ordered ring (SORING) is the better tool.</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>code/run.sh</code>: builds and runs the five programs and two exercise solutions; its output is <code>code/expected_output.txt</code>.</li>
+        <li><code>--no-huge -m 64 --no-pci</code>: rings need neither hugepages nor a NIC, so every run here uses ordinary memory and no devices.</li>
+        <li><code>--lcores='(0-3)@1'</code>: the EAL option from ch3 that puts four lcores on one CPU. We use it to simulate an overcommitted machine.</li>
+        <li><code>rte_ring_dump()</code>: prints a ring's flags, size and the four indexes.</li>
+      </ul>
+    </section>
+
+    <!-- ===================================================== 1 -->
+    <h2 id="why"><span class="sec-num">1</span>Why DPDK needs its own queue</h2>
+    <p>In ch3 you launched functions on several lcores. As soon as those lcores cooperate, one of them has to give work to another: an Rx core hands packets to a worker, the worker hands them to a Tx core, and every core returns used buffers to a shared pool. In a normal program you would use a queue protected by a mutex. At 10 to 100 million packets per second that does not work: taking and releasing a lock costs tens of nanoseconds even without contention, and if the thread holding the lock is descheduled, everyone else waits.</p>
+    <p>DPDK's answer is the <span class="key-term">rte_ring</span>: a <strong>fixed-size, first-in first-out queue of pointers</strong> (or of small fixed-size elements) that several cores can use at the same time <strong>without a lock</strong>. Its design comes from FreeBSD's <code>buf_ring.h</code>. Its properties are:</p>
+    <ul>
+      <li><strong>Fixed size</strong>, chosen at creation. Nothing is allocated on the data path.</li>
+      <li><strong>FIFO</strong>: objects come out in the order they went in.</li>
+      <li><strong>Pointers, not data</strong>: a ring of mbufs moves 8-byte pointers. The packets themselves never move (ch7).</li>
+      <li><strong>Lockless</strong>: producers coordinate with one atomic compare-and-swap per call, not per object.</li>
+      <li><strong>Batched</strong>: one call can move 32 objects for little more than the cost of one. You will measure this.</li>
+      <li><strong>Named</strong>: the ring lives in a memzone called <code>RG_&lt;name&gt;</code> (ch4), so another part of the program, or a secondary process (ch16), can find it with <code>rte_ring_lookup()</code>.</li>
+    </ul>
+
+    <figure class="diagram">
+      <div class="wide-svg">
+      <svg viewBox="0 0 720 210" role="img" aria-labelledby="f1t"><title id="f1t">Where rings appear: between pipeline lcores, inside a mempool, and as the net_ring port</title>
+        <rect class="svg-box c4" x="10" y="40" width="80" height="50"/><text class="svg-label center bold" x="50" y="65">NIC Rx</text>
+        <rect class="svg-box c1" x="120" y="40" width="90" height="50"/><text class="svg-label center bold" x="165" y="58">lcore 1</text><text class="svg-label small center" x="165" y="76">Rx + classify</text>
+        <g><rect class="svg-box c5" x="240" y="48" width="120" height="34"/>
+          <rect class="svg-slot full" x="250" y="55" width="16" height="20"/><rect class="svg-slot full" x="270" y="55" width="16" height="20"/><rect class="svg-slot full" x="290" y="55" width="16" height="20"/><rect class="svg-slot" x="310" y="55" width="16" height="20"/><rect class="svg-slot" x="330" y="55" width="16" height="20"/>
+          <text class="svg-label small center" x="300" y="100">rte_ring "work"</text></g>
+        <rect class="svg-box c1" x="390" y="40" width="90" height="50"/><text class="svg-label center bold" x="435" y="58">lcore 2</text><text class="svg-label small center" x="435" y="76">worker</text>
+        <rect class="svg-box c5" x="510" y="48" width="80" height="34"/><text class="svg-label small center" x="550" y="66">rte_ring "tx"</text>
+        <rect class="svg-box c1" x="620" y="40" width="90" height="50"/><text class="svg-label center bold" x="665" y="58">lcore 3</text><text class="svg-label small center" x="665" y="76">Tx</text>
+        <path class="svg-arrow c3 flow" d="M90,65 L117,65"/><path class="svg-arrow c3 flow" d="M210,65 L237,65"/><path class="svg-arrow c3 flow" d="M360,65 L387,65"/><path class="svg-arrow c3 flow" d="M480,65 L507,65"/><path class="svg-arrow c3 flow" d="M590,65 L617,65"/>
+        <rect class="svg-box c2" x="240" y="140" width="250" height="50"/><text class="svg-label center bold" x="365" y="158">rte_mempool "mbuf_pool" (ch6)</text>
+        <text class="svg-label small center" x="365" y="177">free buffers sit in rte_ring "MP_mbuf_pool"</text>
+        <path class="svg-arrow c2 dashed" d="M165,90 L250,140"/><path class="svg-arrow c2 dashed" d="M665,90 L480,140"/>
+        <text class="svg-label small muted" x="130" y="128">get buffers</text><text class="svg-label small muted" x="560" y="128">put buffers back</text>
+      </svg></div>
+      <figcaption><span class="fig-num"></span>Rings carry pointers between pipeline stages (purple) and also hold a mempool's free buffers (green). Every arrow is an enqueue or a dequeue on some ring.</figcaption>
+    </figure>
+
+    <!-- ===================================================== 2 -->
+    <h2 id="first-ring"><span class="sec-num">2</span>Your first ring: create, inspect, free</h2>
+    <p>The ring API is declared in <code>lib/ring/rte_ring.h</code> (pointer rings) and <code>lib/ring/rte_ring_elem.h</code> (element rings). Most functions are <code>static inline</code>: the fast path is compiled into your program, with no function call into the library.</p>
+    <pre><code class="language-c">struct rte_ring *rte_ring_create(const char *name, unsigned int count,
+                                 int socket_id, unsigned int flags);
+void             rte_ring_free(struct rte_ring *r);
+struct rte_ring *rte_ring_lookup(const char *name);</code></pre>
+    <ul>
+      <li><code>name</code> must be unique. A second <code>rte_ring_create()</code> with the same name returns NULL with <code>rte_errno = EEXIST</code>.</li>
+      <li><code>count</code> must be a power of two (up to 2<sup>31</sup>), otherwise NULL and <code>EINVAL</code>. The usable <span class="key-term">capacity</span> is <code>count - 1</code>: one slot always stays empty (section 5 explains why, and how <code>RING_F_EXACT_SZ</code> changes it).</li>
+      <li><code>socket_id</code> is the NUMA node for the memory (<code>SOCKET_ID_ANY</code> or <code>rte_socket_id()</code>).</li>
+      <li><code>flags</code> choose the default <em>sync mode</em> for each side (section 6). 0 means multi-producer, multi-consumer.</li>
+    </ul>
+    <p>The status functions read the indexes and never block: <code>rte_ring_count()</code>, <code>rte_ring_free_count()</code>, <code>rte_ring_full()</code>, <code>rte_ring_empty()</code>, <code>rte_ring_get_size()</code>, <code>rte_ring_get_capacity()</code>, and <code>rte_ring_dump(FILE *, r)</code> for debugging. On a ring that other cores are using, their answers can be stale the moment they return; use them for statistics, not for decisions such as "the ring is not full, so my enqueue will succeed".</p>
+
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/ring_basics.c (part A)</span><span class="lang">C</span></div>
+<pre data-lines data-start="77" data-hl="77,86,89,98,102,105,110"><code class="language-c">    struct rte_ring *r = rte_ring_create("demo", 16, SOCKET_ID_ANY, 0);
+    if (r == NULL)
+        rte_exit(EXIT_FAILURE, "rte_ring_create: %s\n",
+             rte_strerror(rte_errno));
+    printf("  size=%u capacity=%u (one slot is kept empty)\n",
+           rte_ring_get_size(r), rte_ring_get_capacity(r));
+
+    /* Same name again: names are unique (the ring lives in a memzone
+     * called "RG_demo"). */
+    struct rte_ring *dup = rte_ring_create("demo", 16, SOCKET_ID_ANY, 0);
+    printf("  create(\"demo\") again   -&gt; %s, rte_errno=%d (%s)\n",
+           dup ? "ring" : "NULL", rte_errno, rte_strerror(rte_errno));
+    struct rte_ring *bad = rte_ring_create("bad", 10, SOCKET_ID_ANY, 0);
+    printf("  create(count=10)       -&gt; %s, rte_errno=%d (%s)\n",
+           bad ? "ring" : "NULL", rte_errno, rte_strerror(rte_errno));
+    printf("  rte_ring_lookup(\"demo\") -&gt; %s\n",
+           rte_ring_lookup("demo") == r ? "same pointer" : "different!");
+
+    show(r, "fresh ring:");
+
+    /* Fill 13 of the 15 usable slots, then ask for 4 more. */
+    n = rte_ring_enqueue_bulk(r, objs, 13, &amp;free_space);
+    printf("  enqueue_bulk(13)  -&gt; %2u  free_space=%u\n", n, free_space);
+    show(r, "after 13:");
+
+    n = rte_ring_enqueue_bulk(r, objs + 13, 4, &amp;free_space);
+    printf("  enqueue_bulk(4)   -&gt; %2u  (all or nothing: 4 &gt; %u free)\n",
+           n, free_space);
+    n = rte_ring_enqueue_burst(r, objs + 13, 4, &amp;free_space);
+    printf("  enqueue_burst(4)  -&gt; %2u  (as many as fit) free_space=%u\n",
+           n, free_space);
+    show(r, "ring is now full:");
+
+    ret = rte_ring_enqueue(r, objs[20]);
+    printf("  enqueue(1 obj)    -&gt; %d (-ENOBUFS = %d)\n", ret, -ENOBUFS);
+
+    /* Dequeue side mirrors it. */
+    n = rte_ring_dequeue_bulk(r, out, 20, &amp;avail);</code></pre>
+    </div>
+
+    <!-- ===================================================== 3 -->
+    <h2 id="families"><span class="sec-num">3</span>Single, bulk and burst: three ways to call</h2>
+    <p>Every enqueue and dequeue function name is built from three choices:</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Choice</th><th>Options</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>How many</td><td>(none), <code>_bulk</code>, <code>_burst</code></td><td>One object: returns <code>0</code> or <code>-ENOBUFS</code> (enqueue) / <code>-ENOENT</code> (dequeue). <strong>Bulk</strong>: exactly <code>n</code> or nothing, returns <code>n</code> or <code>0</code>. <strong>Burst</strong>: as many as possible, returns <code>0..n</code>.</td></tr>
+          <tr><td>Who</td><td>(none), <code>mp_</code>/<code>sp_</code>, <code>mc_</code>/<code>sc_</code></td><td>No prefix: use the mode chosen by the flags at create time (recommended). A prefix forces a mode: <code>rte_ring_sp_enqueue_burst()</code> is only safe if you are the only producer.</td></tr>
+          <tr><td>What</td><td>(none), <code>_elem</code></td><td>Pointer ring (<code>void *</code> objects) or element ring (any size that is a multiple of 4 bytes; section 8).</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>So <code>rte_ring_enqueue_burst(r, objs, n, &amp;free_space)</code> enqueues up to <code>n</code> pointers using the ring's default producer mode, and <code>rte_ring_dequeue_bulk(r, objs, n, &amp;available)</code> dequeues exactly <code>n</code> or none. The last argument is optional (pass NULL): after the call it holds how much room (enqueue) or how many objects (dequeue) are left.</p>
+    <p>Use <strong>bulk</strong> when the objects belong together and a partial transfer would be harder to handle than a retry, for example when a mempool refills its per-core cache (ch6). Use <strong>burst</strong> on the packet path: take what is there, process it, come back. Try both on a 16-slot ring:</p>
+
+    <div class="widget" id="w-bulk">
+      <div class="widget-head"><span class="widget-title">Bulk vs burst on a ring with 15 usable slots</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="wide-svg"><svg viewBox="0 0 680 180" role="img" aria-label="Two copies of the same ring; the top uses a bulk call, the bottom a burst call"></svg></div>
+      </div>
+      <div class="controls">
+        <label>call <select id="bb-dir" class="ch5-select"><option value="enq">enqueue</option><option value="deq">dequeue</option></select></label>
+        <label>already in ring <input type="range" id="bb-fill" min="0" max="15" value="13"> <output id="bb-fill-o"></output></label>
+        <label>n requested <input type="range" id="bb-n" min="1" max="20" value="4"> <output id="bb-n-o"></output></label>
+      </div>
+    </div>
+    <p class="output-caption">Purple slots are what this call adds, green slots what it removes; the red box is what the call could not move. With 13 objects in the ring and <code>n = 4</code>, bulk moves nothing and burst moves 2: exactly what <code>ring_basics</code> prints below.</p>
+
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 1, part A)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./ring_basics -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch05-basic</span>
+<span class="hl">== Part A: one ring of 16 slots, used by one thread ==</span>
+  size=16 capacity=15 (one slot is kept empty)
+<span class="err">RING: Cannot reserve memory</span>
+  create("demo") again   -&gt; NULL, rte_errno=17 (File exists)
+<span class="err">RING: Requested number of elements is invalid, must be power of 2, and not exceed 2147483647</span>
+  create(count=10)       -&gt; NULL, rte_errno=22 (Invalid argument)
+  rte_ring_lookup("demo") -&gt; same pointer
+  fresh ring:                        count=0   free=15  full=0 empty=1
+  enqueue_bulk(13)  -&gt; 13  free_space=2
+  after 13:                          count=13  free=2   full=0 empty=0
+  enqueue_bulk(4)   -&gt;  0  (all or nothing: 4 &gt; 2 free)
+  enqueue_burst(4)  -&gt;  2  (as many as fit) free_space=0
+  ring is now full:                  count=15  free=0   full=1 empty=0
+  enqueue(1 obj)    -&gt; -105 (-ENOBUFS = -105)
+  dequeue_bulk(20)  -&gt;  0  available=15
+  dequeue_burst(20) -&gt; 15  available=0  first=100 last=114
+  dequeue(1 obj)    -&gt; -2 (-ENOENT = -2)
+  empty again:                       count=0   free=15  full=0 empty=1
+  rte_ring_dump():
+ring &lt;demo&gt;@0x1040f3c80
+  flags=0
+  size=16
+  capacity=15
+  used=0
+  avail=15
+  cons.sync_type=MT
+  cons.head=15
+  cons.tail=15
+  prod.sync_type=MT
+  prod.head=15
+  prod.tail=15
+  after rte_ring_free, lookup("demo") -&gt; NULL</pre>
+    </div>
+    <p class="output-caption">The two <code>RING:</code> lines are DPDK's log messages for the two failed creates. Notice in the dump that <code>head</code> and <code>tail</code> are 15 although the ring is empty: the indexes only ever grow (section 5).</p>
+
+    <div class="callout pitfall"><div class="callout-title">Pitfall: the two return conventions</div>
+      <p>Bulk and burst return a <strong>count</strong> (0 means failure for bulk). The single-object calls return <strong>0 on success</strong> and a negative errno. Code such as <code>if (rte_ring_enqueue_bulk(r, objs, n, NULL) &lt; 0)</code> never detects a failure, and <code>if (!rte_ring_enqueue(r, obj))</code> treats success as failure.</p></div>
+
+    <h3 id="producer-consumer">Two lcores: a producer and a consumer</h3>
+    <p>Part B of the same program is the shape of every ring user: the main lcore enqueues the numbers 1 to 8,000,000 (cast to <code>void *</code>: a pointer ring never dereferences what it carries) in bursts of 32; a worker lcore dequeues bursts and checks the order. When the ring is full the producer simply tries again; when it is empty the consumer calls <code>rte_pause()</code> and polls again. Neither ever sleeps.</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/ring_basics.c (consumer)</span><span class="lang">C</span></div>
+<pre data-lines data-start="143" data-hl="151-152"><code class="language-c">static int
+consumer(void *arg __rte_unused)
+{
+    void *burst[BURST];
+    uint64_t expect = 1;
+
+    while (cres.received &lt; N_OBJS) {
+        /* Burst: take whatever is there, up to BURST. */
+        unsigned int n = rte_ring_dequeue_burst(pipe_ring, burst,
+                            BURST, NULL);
+        if (n == 0) {
+            cres.empty_polls++;
+            rte_pause();
+            continue;
+        }
+        for (unsigned int i = 0; i &lt; n; i++) {
+            uint64_t v = P2U(burst[i]);
+            if (v != expect)
+                cres.out_of_order++;
+            expect = v + 1;
+            cres.sum += v;
+        }
+        cres.received += n;
+    }
+    return 0;
+}</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (sections 1 and 1b)</span></div>
+<pre><span class="hl">== Part B: lcore 0 -&gt; ring -&gt; lcore 1, 8000000 objects, flags=0 ==</span>
+  prod sync type=0 cons sync type=0 (0=MT 1=ST 2=RTS 3=HTS)
+<span class="ok">  received=8000000 out_of_order=0 sum OK</span>
+  producer saw a full ring 822191 times, consumer saw an empty ring 82272 times
+  28.4 cycles per object, 95.0 Mobj/s (TSC 2700 MHz)
+<span class="dim">[exit code 0]</span>
+<span class="hl">--- the same program built with -DPIPE_FLAGS="RING_F_SP_ENQ|RING_F_SC_DEQ" (exercise 1):</span>
+<span class="hl">== Part B: lcore 0 -&gt; ring -&gt; lcore 1, 8000000 objects, flags=0x0001|0x0002 ==</span>
+  prod sync type=1 cons sync type=1 (0=MT 1=ST 2=RTS 3=HTS)
+<span class="ok">  received=8000000 out_of_order=0 sum OK</span>
+  producer saw a full ring 285948 times, consumer saw an empty ring 5984 times
+  17.3 cycles per object, 155.9 Mobj/s (TSC 2700 MHz)
+<span class="dim">[exit code 0]</span></pre>
+    </div>
+    <p class="output-caption">Nothing was lost or reordered. The SP/SC build moved the same 8 million objects for fewer cycles per object, because it skips the atomic compare-and-swap (one run each; section 7 measures properly). The full-ring count is high because this producer is faster than the consumer.</p>
+
+    <!-- ===================================================== 4 -->
+    <h2 id="inside"><span class="sec-num">4</span>Inside the ring: two heads and two tails</h2>
+    <p>A <code>struct rte_ring</code> (in <code>lib/ring/rte_ring_core.h</code>) is a header followed directly by the slot table. The header has three parts, each on its own cache lines: the constant fields, the <strong>producer</strong> indexes and the <strong>consumer</strong> indexes. Keeping producer and consumer data apart means a producer core writing <code>prod.head</code> does not keep stealing the cache line that a consumer core is reading (that effect, false sharing, is covered in ch14).</p>
+
+    <figure class="diagram">
+      <div class="wide-svg">
+      <svg viewBox="0 0 720 170" role="img" aria-labelledby="f2t"><title id="f2t">Memory layout of struct rte_ring: 384-byte header then the slot table</title>
+        <rect class="svg-box c7" x="10" y="40" width="130" height="56"/><text class="svg-label small center bold" x="75" y="58">offset 0</text><text class="svg-label small center mono" x="75" y="76">name flags size</text><text class="svg-label small center mono" x="75" y="90">mask capacity</text>
+        <rect class="svg-box ghost" x="140" y="40" width="40" height="56"/><text class="svg-label small center muted" x="160" y="70">guard</text>
+        <rect class="svg-box c1" x="180" y="40" width="130" height="56"/><text class="svg-label small center bold" x="245" y="58">offset 128: prod</text><text class="svg-label small center mono" x="245" y="76">head  tail</text><text class="svg-label small center mono" x="245" y="90">sync_type</text>
+        <rect class="svg-box ghost" x="310" y="40" width="40" height="56"/><text class="svg-label small center muted" x="330" y="70">guard</text>
+        <rect class="svg-box c2" x="350" y="40" width="130" height="56"/><text class="svg-label small center bold" x="415" y="58">offset 256: cons</text><text class="svg-label small center mono" x="415" y="76">head  tail</text><text class="svg-label small center mono" x="415" y="90">sync_type</text>
+        <rect class="svg-box ghost" x="480" y="40" width="40" height="56"/><text class="svg-label small center muted" x="500" y="70">guard</text>
+        <rect class="svg-box c5" x="520" y="40" width="190" height="56"/><text class="svg-label small center bold" x="615" y="58">offset 384: slot table</text><text class="svg-label small center mono" x="615" y="76">ring[0] ... ring[size-1]</text><text class="svg-label small center mono" x="615" y="90">(&amp;r[1])</text>
+        <text class="svg-label small muted" x="10" y="25">sizeof(struct rte_ring) = 384 (measured by ring_wrap); RTE_CACHE_GUARD lines keep the parts apart</text>
+        <text class="svg-label small" x="180" y="122">producers write prod.head / prod.tail,</text><text class="svg-label small" x="180" y="138">and only read cons.tail</text>
+        <text class="svg-label small" x="350" y="122">consumers write cons.head / cons.tail,</text><text class="svg-label small" x="350" y="138">and only read prod.tail</text>
+      </svg></div>
+      <figcaption><span class="fig-num"></span>The ring header. The producer side and the consumer side each own one <code>struct rte_ring_headtail { head; tail; sync_type; }</code> and only read one value from the other side.</figcaption>
+    </figure>
+
+    <p>Each side has two indexes. The <span class="key-term">head</span> marks how far that side has <em>reserved</em>; the <span class="key-term">tail</span> marks how far it has <em>finished</em>. Between head and tail are slots that some thread is busy writing (producer side) or reading (consumer side). An enqueue is three steps:</p>
+    <ol>
+      <li><strong>Move the head</strong>: read <code>prod.head</code> and <code>cons.tail</code>, compute the free space, and advance <code>prod.head</code> by <code>n</code>. That reserves <code>n</code> slots.</li>
+      <li><strong>Copy</strong> the objects into the reserved slots.</li>
+      <li><strong>Move the tail</strong>: set <code>prod.tail</code> to the new head. Only now can consumers see the objects, because consumers compute what is available from <code>prod.tail</code>.</li>
+    </ol>
+    <p>A dequeue is the mirror image with <code>cons.head</code>, <code>prod.tail</code> and <code>cons.tail</code>. With a single producer, step 1 is a plain store. With several, two producers may read the same head at the same time; they settle it with a <strong>compare-and-swap</strong>, and they must finish step 3 <strong>in the order they reserved</strong>. Step through it, and answer the questions before each step is revealed:</p>
+
+    <div class="widget" id="w-clock">
+      <div class="widget-head"><span class="widget-title">Ring clock face: SP enqueue, SC dequeue, then a two-producer CAS race</span><span class="badge">predict, then step</span></div>
+      <div class="widget-body">
+        <div class="wide-svg"><svg viewBox="0 0 680 385" role="img" aria-label="A 16-slot ring drawn as a circle with the four indexes, and the local variables of two cores"></svg></div>
+      </div>
+    </div>
+    <p class="output-caption">Blue dots are the producer indexes, green the consumer indexes; hollow = head, filled = tail. The slot an index points at is <code>index &amp; mask</code>.</p>
+
+    <div class="primer" id="atomics-primer">
+      <div class="box-title">Atomics primer: just enough for rings (ch14 has the full story)</div>
+      <p><strong>Compare-and-swap (CAS)</strong> is a single CPU instruction (<code>lock cmpxchg</code> on x86) that does, atomically: "if <code>*p == expected</code>, store <code>desired</code> and report success; otherwise copy the current <code>*p</code> into <code>expected</code> and report failure". Two cores can never both succeed in moving the head from 4 to 5. The loser gets the new value for free and retries. DPDK spells it <code>rte_atomic_compare_exchange_strong_explicit()</code>, a wrapper over C11 <code>atomic_compare_exchange_strong_explicit()</code>.</p>
+      <p><strong>Memory ordering.</strong> CPUs and compilers may reorder memory accesses that look independent. For a ring that would be fatal: if the store to <code>prod.tail</code> became visible before the store of the object into its slot, a consumer could read garbage. Two annotations prevent it:</p>
+      <ul>
+        <li>a <strong>release</strong> store (to the tail) guarantees that every write before it in program order is visible to anyone who sees the new tail;</li>
+        <li>an <strong>acquire</strong> load (of the other side's tail) guarantees that reads after it in program order see everything the releasing thread wrote before its release.</li>
+      </ul>
+      <p>A producer's release of <code>prod.tail</code> pairs with the consumer's acquire of <code>prod.tail</code>, and the consumer's release of <code>cons.tail</code> pairs with the producer's acquire of <code>cons.tail</code>. That is all the synchronisation a ring needs. DPDK 26.11 no longer has <code>rte_smp_wmb()</code>/<code>rte_smp_rmb()</code>: CPU-to-CPU ordering is written with <code>rte_atomic_*_explicit(..., rte_memory_order_release/acquire)</code> or <code>rte_atomic_thread_fence()</code>.</p>
+    </div>
+
+    <p>Here is the real multi-producer head move from DPDK 26.11. The comments A0, A1 and R1 label the acquire/release pairs; the loop is the retry you predicted in the widget:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">lib/ring/rte_ring_c11_pvt.h</span><span class="lang">C</span></div>
+<pre data-lines data-start="128" data-hl="129-130,141-142,170-174"><code class="language-c">     */
+    *old_head = rte_atomic_load_explicit(&amp;d-&gt;head,
+            rte_memory_order_acquire);
+    do {
+        /* Reset n to the initial burst count */
+        n = max;
+
+        /*
+         * A1: Establishes a synchronizing edge with R0.
+         * Ensures that other thread's memory effects on
+         * ring elements array is observed by the time
+         * this thread observes its tail update.
+         */
+        stail = rte_atomic_load_explicit(&amp;s-&gt;tail,
+                    rte_memory_order_acquire);
+
+        /* The subtraction is done between two unsigned 32bits value
+         * (the result is always modulo 32 bits even if we have
+         * *old_head &gt; s-&gt;tail). So 'entries' is always between 0
+         * and capacity (which is &lt; size).
+         */
+        *entries = (capacity + stail - *old_head);
+
+        /* check that we have enough room in ring */
+        if (unlikely(n &gt; *entries))
+            n = (behavior == RTE_RING_QUEUE_FIXED) ?
+                    0 : *entries;
+
+        if (n == 0)
+            return 0;
+
+        *new_head = *old_head + n;
+        /* on failure, *old_head is updated */
+        /*
+         * R1/A2.
+         * R1: Establishes a synchronizing edge with A0 of a
+         * different thread.
+         * A2: Establishes a synchronizing edge with R1 of a
+         * different thread to observe same value for stail
+         * observed by that thread on CAS failure (to retry
+         * with an updated *old_head).
+         */
+        success = rte_atomic_compare_exchange_strong_explicit(
+                    &amp;d-&gt;head, old_head, *new_head,
+                    rte_memory_order_release,
+                    rte_memory_order_acquire);
+    } while (unlikely(!success));
+    return n;</code></pre>
+    </div>
+    <p>And the tail update. In MP mode (<code>single == 0</code>) it first waits until the tail reaches this thread's old head, which is the "core 2 spins" step of the widget:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">lib/ring/rte_ring_elem_pvt.h</span><span class="lang">C</span></div>
+<pre data-lines data-start="296" data-hl="304-306,313"><code class="language-c">static __rte_always_inline void
+__rte_ring_update_tail(struct rte_ring_headtail *ht, uint32_t old_val,
+               uint32_t new_val, uint32_t single)
+{
+    /*
+     * If there are other enqueues/dequeues in progress that preceded us,
+     * we need to wait for them to complete
+     */
+    if (!single)
+        rte_wait_until_equal_32((uint32_t *)(uintptr_t)&amp;ht-&gt;tail, old_val,
+            rte_memory_order_relaxed);
+
+    /*
+     * R0: Establishes a synchronizing edge with load-acquire of tail at A1.
+     * Ensures that memory effects by this thread on ring elements array
+     * is observed by a different thread of the other type.
+     */
+    rte_atomic_store_explicit(&amp;ht-&gt;tail, new_val, rte_memory_order_release);
+}</code></pre>
+    </div>
+    <p>The whole enqueue is these three calls in a row (<code>__rte_ring_do_enqueue_elem</code> in the same file): <code>__rte_ring_move_prod_head()</code>, <code>__rte_ring_enqueue_elems()</code> (the copy, with wrap-around handled), <code>__rte_ring_update_tail()</code>. Notice that the CAS is done once per <em>call</em>, whatever <code>n</code> is. That is why bursts are cheap.</p>
+
+    <!-- ===================================================== 5 -->
+    <h2 id="indexes"><span class="sec-num">5</span>32-bit indexes that are never reset</h2>
+    <p>A textbook circular buffer keeps its indexes between 0 and size-1 and wraps them by hand. DPDK does not. The four indexes are <code>uint32_t</code> values that only ever increase, overflowing from 4,294,967,295 back to 0. The slot is <code>index &amp; mask</code>, where <code>mask = size - 1</code>; that is why size must be a power of two. Counting works because unsigned subtraction in C is modulo 2<sup>32</sup>:</p>
+    <pre><code class="language-c">entries = prod_tail - cons_head;               /* what a consumer can take   */
+free    = capacity + cons_tail - prod_head;    /* what a producer can add    */</code></pre>
+    <p>Both stay correct when one index has wrapped and the other has not, as long as the distance between them never exceeds the size. And this is the reason for the empty slot: if the ring could hold <code>size</code> objects, "full" (<code>prod - cons == size</code>) and "empty" would be told apart only by the distance, and a capacity of size-1 keeps the arithmetic simple and branch-free. Try the wrap:</p>
+
+    <div class="widget" id="w-odo">
+      <div class="widget-head"><span class="widget-title">Modulo-2<sup>32</sup> odometer: an 8-slot ring (mask 7, capacity 7)</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="wide-svg"><svg viewBox="0 0 560 210" role="img" aria-label="Two 32-bit counters and an 8-slot ring"></svg></div>
+        <div class="ch5-out odo-out" aria-live="polite"></div>
+      </div>
+      <div class="controls">
+        <button class="btn small primary" type="button" data-act="enq">enqueue 3</button>
+        <button class="btn small" type="button" data-act="deq">dequeue 2</button>
+        <button class="btn small" type="button" data-act="jump">jump to 2<sup>32</sup> - 5</button>
+        <button class="btn small" type="button" data-act="reset">reset</button>
+      </div>
+    </div>
+    <p class="output-caption">Press "jump", then enqueue: <code>prod.tail</code> wraps to a small number while <code>cons.head</code> is still huge, yet <code>entries</code> stays right. The red line shows what signed 64-bit arithmetic would have said.</p>
+
+    <p><code>ring_wrap.c</code> shows the same on a real ring. Part 2 pokes all four indexes of an <em>empty</em> ring to 2<sup>32</sup>-2 (reading <code>r-&gt;prod.head</code> is harmless, but writing it is only acceptable in a demo) and enqueues 5. Part 3 compares capacities:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 2)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./ring_wrap -l 0 --no-pci --no-huge -m 64 --file-prefix=ch05-wrap</span>
+<span class="hl">== 1. 1000 x (enqueue 3, dequeue 3) on an 8-slot ring ==</span>
+  size=8 mask=0x7 capacity=7
+  fresh:                       prod.head=0          prod.tail=0          cons.head=0          cons.tail=0         
+                               slots: prod 0, cons 0 (index &amp; mask 7); prod.tail - cons.head = 0
+  round 0: slots used 0,1,2
+  round 1: slots used 3,4,5
+  round 2: slots used 6,7,0
+  after 1000 rounds:           prod.head=3000       prod.tail=3000       cons.head=3000       cons.tail=3000      
+                               slots: prod 0, cons 0 (index &amp; mask 7); prod.tail - cons.head = 0
+  after enqueue 2 more:        prod.head=3002       prod.tail=3002       cons.head=3000       cons.tail=3000      
+                               slots: prod 2, cons 0 (index &amp; mask 7); prod.tail - cons.head = 2
+  rte_ring_dump():
+ring &lt;wrap8&gt;@0x1040f3cc0
+  flags=3
+  size=8
+  capacity=7
+  used=2
+  avail=5
+  cons.sync_type=ST
+  cons.head=3000
+  cons.tail=3000
+  prod.sync_type=ST
+  prod.head=3002
+  prod.tail=3002
+
+<span class="hl">== 2. crossing 2^32: indexes start at UINT32_MAX - 1 ==</span>
+  before:                      prod.head=4294967294 prod.tail=4294967294 cons.head=4294967294 cons.tail=4294967294
+                               slots: prod 6, cons 6 (index &amp; mask 7); prod.tail - cons.head = 0
+  enqueue_bulk(5) -&gt; 5
+  after enqueue 5:             prod.head=3          prod.tail=3          cons.head=4294967294 cons.tail=4294967294
+                               slots: prod 3, cons 6 (index &amp; mask 7); prod.tail - cons.head = 5
+  rte_ring_count()=5 free=2  (prod.tail &lt; cons.head, but 3 - 4294967294 = 5 modulo 2^32)
+  dequeue_bulk(5) -&gt; 5, values: 1 2 3 4 5  (FIFO order kept across the wrap)
+  after dequeue 5:             prod.head=3          prod.tail=3          cons.head=3          cons.tail=3         
+                               slots: prod 3, cons 3 (index &amp; mask 7); prod.tail - cons.head = 0
+
+<span class="hl">== 3. capacity: count vs RING_F_EXACT_SZ ==</span>
+  name      count flags              size capacity    memsize
+  c8            8 0                     8        7        512
+  c8x           8 RING_F_EXACT_SZ      16        8        576
+<span class="err">RING: Requested number of elements is invalid, must be power of 2, and not exceed 2147483647</span>
+  c1000      1000 0                 -&gt; NULL, rte_errno=22 (Invalid argument)
+  c1000x     1000 RING_F_EXACT_SZ    1024     1000       8640
+  c1024      1024 0                  1024     1023       8640
+  c1024x     1024 RING_F_EXACT_SZ    2048     1024      16832
+  sizeof(struct rte_ring)=384 (header; the slot table follows it)
+<span class="dim">[exit code 0]</span></pre>
+    </div>
+    <p class="output-caption">After 1000 rounds of "3 in, 3 out" the indexes are at 3000 on an 8-slot ring. Across the 2<sup>32</sup> boundary, <code>3 - 4294967294 = 5</code> and the FIFO order survives. <code>RING_F_EXACT_SZ</code> rounds the table up to the next power of two <em>above</em> the count, so 1000 gives capacity exactly 1000, and 1024 gives a 2048-slot table: twice the memory for one extra object.</p>
+
+    <div class="callout tip"><div class="callout-title">Tip: sizing a ring</div>
+      <p>Pass a power of two and accept capacity size-1, or pass <code>RING_F_EXACT_SZ</code> when the capacity itself must be exact (for example, "exactly as many entries as mbufs in my pool"). <code>rte_ring_get_memsize(count)</code> tells you the bytes needed if you want to place a ring in your own memory with <code>rte_ring_init()</code>.</p></div>
+
+    <!-- ===================================================== 6 -->
+    <h2 id="sync-modes"><span class="sec-num">6</span>Sync modes: SP/SC, MP/MC, RTS and HTS</h2>
+    <p>The producer side and the consumer side each have a <span class="key-term">sync mode</span>, chosen by <code>flags</code> at create time and reported by <code>rte_ring_get_prod_sync_type()</code> / <code>rte_ring_get_cons_sync_type()</code> as an <code>enum rte_ring_sync_type</code>. The two sides are independent: "many producers, one consumer" is <code>RING_F_SC_DEQ</code> alone.</p>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Mode (enum value)</th><th>Flags</th><th>How the head and tail move</th><th>Use when</th></tr></thead>
+        <tbody>
+          <tr><td>ST (1)</td><td><code>RING_F_SP_ENQ</code> / <code>RING_F_SC_DEQ</code></td><td>Plain loads and stores, no CAS, no waiting.</td><td>Exactly one thread on that side, ever.</td></tr>
+          <tr><td>MT (0, default)</td><td>none</td><td>32-bit CAS on head; then spin until the tail equals your old head; store tail.</td><td>Several threads, each pinned to its own CPU (the normal DPDK setup).</td></tr>
+          <tr><td>MT_RTS (2)</td><td><code>RING_F_MP_RTS_ENQ</code> / <code>RING_F_MC_RTS_DEQ</code></td><td><em>Relaxed tail sync</em>: head and tail are 64-bit <code>{pos, cnt}</code> pairs, two 64-bit CAS per call. A finishing thread only bumps <code>tail.cnt</code>; the tail position moves when the <em>last</em> in-flight operation finishes. Nobody waits for a specific earlier thread. <code>htd_max</code> (default capacity/8) caps how far head may run ahead of tail.</td><td>More threads than CPUs: VMs, containers, shared machines.</td></tr>
+          <tr><td>MT_HTS (3)</td><td><code>RING_F_MP_HTS_ENQ</code> / <code>RING_F_MC_HTS_DEQ</code></td><td><em>Head/tail sync</em>: head and tail form one 64-bit value; a thread may move the head only when head == tail. Operations on that side are fully serialised.</td><td>Overcommitted threads; and required for the multi-thread peek and zero-copy APIs (section 8).</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="preemption">Why preemption hurts MP/MC</h3>
+    <p>DPDK assumes each lcore owns a CPU. The MP/MC algorithm leans on that: a thread that has moved the head will finish its copy and its tail store within nanoseconds. But if the operating system deschedules it between step 1 and step 3, every producer that reserved <em>after</em> it has to wait for it at step 3, spinning on the tail for the rest of its own timeslice (milliseconds). The same applies to a thread that has reserved and is itself waiting: if it is preempted, everybody behind it waits too. This is the <span class="key-term">lock-waiter preemption</span> problem, and RTS and HTS were added in DPDK 20.05 to avoid it:</p>
+    <ul>
+      <li><strong>RTS</strong>: nobody waits for a particular earlier thread, so producers that are not preempted keep completing operations (until head is <code>htd_max</code> ahead of tail). Their objects become visible to consumers once the preempted thread finishes.</li>
+      <li><strong>HTS</strong>: a waiting thread has not reserved anything, so preempting a <em>waiter</em> blocks nobody. Only one operation is in flight at a time. If the thread inside the operation is preempted, the others still wait, exactly like a lock holder being preempted.</li>
+    </ul>
+    <p>The animation runs a toy model of three producers. Each enqueue is reserve (1 tick), copy (2 ticks), publish (1 tick). T2 is preempted for 16 ticks in the middle of a copy. Switch the mode and watch the red and amber ticks:</p>
+
+    <div class="widget" id="w-gantt">
+      <div class="widget-head"><span class="widget-title">Sync-mode Gantt: a producer is preempted</span><span class="badge">animation</span></div>
+      <div class="widget-body">
+        <div class="wide-svg"><svg class="gantt" viewBox="0 0 680 260" role="img" aria-label="Timeline of three producer threads under the selected sync mode"></svg></div>
+        <div class="g-legend">
+          <span><span class="sw" style="background:var(--c1)"></span>reserve (move head)</span>
+          <span><span class="sw" style="background:var(--c3)"></span>copy</span>
+          <span><span class="sw" style="background:var(--c2)"></span>publish (tail)</span>
+          <span><span class="sw" style="background:var(--c4)"></span>spin: wait for earlier tail</span>
+          <span><span class="sw" style="background:var(--c6)"></span>CAS lost / wait for head</span>
+          <span><span class="sw" style="background:var(--c7-soft);border:1px solid var(--c7)"></span>descheduled</span>
+          <span><span class="sw" style="background:var(--c5)"></span>tail line: objects visible to consumers</span>
+        </div>
+        <div class="g-stats" aria-live="polite"></div>
+        <div class="bars-title">Measured here: ring_modes_bench, symmetric workload, burst 32 (median of 5 runs, Mobj/s; hover a bar for min/max)</div>
+        <div class="wide-svg"><svg class="bars" viewBox="0 0 680 170" role="img" aria-label="Measured throughput of MP/MC, RTS and HTS with 3 lcores on 3 CPUs and with 4 lcores on 1 CPU"></svg></div>
+        <div class="g-legend"><span><span class="sw" style="background:var(--c1)"></span>3 lcores on 3 CPUs (section 3c)</span><span><span class="sw" style="background:var(--c3)"></span>4 lcores time-sharing 1 CPU (section 3d)</span></div>
+      </div>
+      <div class="controls">
+        <label>mode <select id="g-mode" class="ch5-select"><option value="mp">MP/MC</option><option value="rts">RTS</option><option value="hts">HTS</option></select></label>
+        <label><input type="checkbox" id="g-pre" checked> preempt T2</label>
+      </div>
+    </div>
+    <p class="output-caption">The Gantt is a model (one tick is an arbitrary unit), but the bars are real: with four lcores on one CPU, MP/MC drops to 40.6 Mobj/s while RTS and HTS keep 287 and 315. On three real CPUs the picture is different again, which is why you measure.</p>
+
+    <!-- ===================================================== 7 -->
+    <h2 id="bench"><span class="sec-num">7</span>Measuring the modes on this machine</h2>
+    <p><code>ring_modes_bench.c</code> creates a 1024-slot ring in each mode, runs it for a fixed 100 ms of TSC time, repeats every point 5 times and prints the median with min and max. A fixed <em>time</em> rather than a fixed number of objects matters for the overcommitted runs: with preempted MP/MC producers a fixed-count run could take minutes. Two workloads:</p>
+    <ul>
+      <li><strong>producer/consumer</strong> (default): every lcore but the last enqueues, the last lcore dequeues. SP/SC runs with one producer only, since an ST ring must not be shared.</li>
+      <li><strong>symmetric</strong> (<code>-- -s</code>, the workload of DPDK's own <code>app/test/test_ring_stress_impl.h</code>): the ring starts half full and every lcore dequeues a burst and enqueues it back, so the ring never fills or empties and only synchronisation limits throughput.</li>
+    </ul>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/ring_modes_bench.c (the two worker loops)</span><span class="lang">C</span></div>
+<pre data-lines data-start="92" data-hl="99,113,137,141"><code class="language-c">static void
+produce(void)
+{
+    wait_go();
+    while (rte_rdtsc() &lt; deadline) {
+        /* Default call: dispatches on the sync mode set by the flags
+         * at create time (SP, MP, RTS or HTS). */
+        if (rte_ring_enqueue_burst(ring, objs, burst, NULL) == 0)
+            rte_pause();
+    }
+    rte_atomic_fetch_add_explicit(&amp;prod_done, 1, rte_memory_order_release);
+}
+
+static void
+consume(void)
+{
+    void *out[MAX_BURST];
+    uint64_t got = 0;
+
+    wait_go();
+    for (;;) {
+        unsigned int n = rte_ring_dequeue_burst(ring, out, burst, NULL);
+        got += n;
+        if (n == 0) {
+            if (rte_atomic_load_explicit(&amp;prod_done,
+                    rte_memory_order_acquire) == nprod &amp;&amp;
+                rte_ring_empty(ring))
+                break;
+            rte_pause();
+        }
+    }
+    consumed = got;
+    rte_atomic_store_explicit(&amp;cons_done, 1, rte_memory_order_release);
+}
+
+/* Symmetric worker: dequeue a batch, put it straight back. Bulk calls so
+ * that what we take is exactly what we return. */
+static void
+both(void)
+{
+    void *tmp[MAX_BURST];
+    uint64_t n_moved = 0;
+
+    wait_go();
+    while (rte_rdtsc() &lt; deadline) {
+        if (rte_ring_dequeue_bulk(ring, tmp, burst, NULL) == 0) {
+            rte_pause();
+            continue;
+        }
+        while (rte_ring_enqueue_bulk(ring, tmp, burst, NULL) == 0)
+            rte_pause();
+        n_moved += burst;
+    }
+    moved[rte_lcore_id()] = n_moved;
+    rte_atomic_fetch_add_explicit(&amp;sym_done, 1, rte_memory_order_release);
+}</code></pre>
+    </div>
+    <p>All lines use the <em>default</em> calls <code>rte_ring_enqueue_burst()</code>/<code>rte_ring_dequeue_burst()</code>, which dispatch on the sync type stored in the ring. That is the normal style: the ring's creator decides the mode once, and all users follow it. The explicit variants (<code>rte_ring_mp_enqueue_burst()</code>, <code>rte_ring_sc_dequeue_burst()</code>, <code>rte_ring_mp_rts_enqueue_burst()</code>, <code>rte_ring_mc_hts_dequeue_burst()</code>, ...) save one switch and are only correct if they match how the ring is really used.</p>
+
+    <div class="tabs">
+      <div class="tab-list">
+        <button class="tab-btn" data-tab="b3a">3a: 1P &rarr; 1C</button>
+        <button class="tab-btn" data-tab="b3b">3b: 2P &rarr; 1C</button>
+        <button class="tab-btn" data-tab="b3c">3c: symmetric, 3 CPUs</button>
+        <button class="tab-btn" data-tab="b3d">3d: symmetric, overcommitted</button>
+        <button class="tab-btn" data-tab="b3e">3e: P/C, overcommitted</button>
+      </div>
+      <div class="tab-panel" data-tab="b3a"><div class="terminal" data-copy><div class="term-bar"><span class="title">expected_output.txt 3a</span></div><pre><span class="hl">--- 3a. 1 producer (lcore 0) -&gt; 1 consumer (lcore 1), two real CPUs</span>
+<span class="prompt">$ </span><span class="cmd">./ring_modes_bench -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch05-bench</span>
+lcores (lcore@cpus): 0@0 1@1
+producers: main lcore 0 + 0 worker(s); consumer: lcore 1
+ring size 1024, 100 ms per run, median of 5 runs, TSC 2700 MHz
+
+<span class="hl">mode   burst  prod   Mobj/s med          min          max    cyc/obj</span>
+SP/SC      1     1         8.87         8.75         8.95      304.4
+SP/SC      8     1        45.69        41.77        47.20       59.1
+SP/SC     32     1       184.95       172.42       206.03       14.6
+MP/MC      1     1         4.26         4.13         4.30      634.2
+MP/MC      8     1        30.01        29.51        30.73       90.0
+MP/MC     32     1       115.52       114.89       116.08       23.4
+RTS        1     1         2.27         1.99         2.42     1189.1
+RTS        8     1        16.78        16.34        18.64      160.9
+RTS       32     1        71.23        67.97        75.64       37.9
+HTS        1     1         4.36         4.27         4.42      619.2
+HTS        8     1        25.20        24.95        25.31      107.1
+HTS       32     1        90.19        87.14        92.15       29.9
+<span class="dim">[exit code 0]</span></pre></div></div>
+      <div class="tab-panel" data-tab="b3b"><div class="terminal" data-copy><div class="term-bar"><span class="title">expected_output.txt 3b</span></div><pre><span class="hl">--- 3b. 2 producers (lcores 0,1) -&gt; 1 consumer (lcore 2), three real CPUs</span>
+<span class="prompt">$ </span><span class="cmd">./ring_modes_bench -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch05-bench</span>
+lcores (lcore@cpus): 0@0 1@1 2@2
+producers: main lcore 0 + 1 worker(s); consumer: lcore 2
+ring size 1024, 100 ms per run, median of 5 runs, TSC 2700 MHz
+
+<span class="hl">mode   burst  prod   Mobj/s med          min          max    cyc/obj</span>
+SP/SC      1     1         5.75         5.61         6.19      469.7
+SP/SC      8     1        31.09        31.02        31.82       86.8
+SP/SC     32     1       117.88       116.75       143.75       22.9
+MP/MC      1     2         2.34         2.31         2.34     1155.5
+MP/MC      8     2        17.73        17.61        19.12      152.3
+MP/MC     32     2        66.95        66.69        67.16       40.3
+RTS        1     2         1.99         1.94         2.00     1355.3
+RTS        8     2        15.89        15.76        15.96      169.9
+RTS       32     2        61.77        56.70        62.10       43.7
+HTS        1     2         2.40         2.36         2.43     1125.9
+HTS        8     2        17.38        17.25        17.49      155.3
+HTS       32     2        67.63        67.14        67.72       39.9
+<span class="dim">[exit code 0]</span></pre></div></div>
+      <div class="tab-panel" data-tab="b3c"><div class="terminal" data-copy><div class="term-bar"><span class="title">expected_output.txt 3c</span></div><pre><span class="hl">--- 3c. symmetric (every lcore dequeues and re-enqueues), 3 lcores on 3 CPUs</span>
+<span class="prompt">$ </span><span class="cmd">./ring_modes_bench -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch05-bench -- -s</span>
+lcores (lcore@cpus): 0@0 1@1 2@2
+symmetric: every lcore dequeues b objects and enqueues back, ring starts half full
+ring size 1024, 100 ms per run, median of 5 runs, TSC 2700 MHz
+
+<span class="hl">mode   burst   thr   Mobj/s med          min          max    cyc/obj</span>
+SP/SC      1     1        65.84        65.66        65.89       41.0
+SP/SC      8     1       420.67       311.78       424.07        6.4
+SP/SC     32     1      1163.16      1161.62      1163.66        2.3
+MP/MC      1     3         2.07         2.06         2.10     1306.7
+MP/MC      8     3        15.87        15.81        15.95      170.1
+MP/MC     32     3        55.21        55.15        55.39       48.9
+RTS        1     3         1.89         1.88         1.91     1432.1
+RTS        8     3        14.32        14.30        14.38      188.5
+RTS       32     3        51.33        51.30        51.49       52.6
+HTS        1     3         1.68         1.67         2.03     1610.0
+HTS        8     3        16.57        16.45        17.66      163.0
+HTS       32     3       119.73       113.26       126.01       22.6
+<span class="dim">[exit code 0]</span></pre></div></div>
+      <div class="tab-panel" data-tab="b3d"><div class="terminal" data-copy><div class="term-bar"><span class="title">expected_output.txt 3d</span></div><pre><span class="hl">--- 3d. symmetric, OVERCOMMITTED: 4 lcores time-share CPU 1</span>
+<span class="prompt">$ </span><span class="cmd">./ring_modes_bench --lcores=(0-3)@1 --no-pci --no-huge -m 64 --file-prefix=ch05-bench -- -s</span>
+lcores (lcore@cpus): 0@1 1@1 2@1 3@1
+symmetric: every lcore dequeues b objects and enqueues back, ring starts half full
+ring size 1024, 100 ms per run, median of 5 runs, TSC 2700 MHz
+
+<span class="hl">mode   burst   thr   Mobj/s med          min          max    cyc/obj</span>
+SP/SC      1     1        65.76        65.65        65.89       41.1
+SP/SC      8     1       417.34       345.00       421.35        6.5
+SP/SC     32     1      1157.37      1131.65      1161.29        2.3
+MP/MC      1     4         2.75         1.39         5.49      980.4
+MP/MC      8     4        11.22        10.74        22.39      240.7
+MP/MC     32     4        40.57        36.11       120.25       66.6
+RTS        1     4        10.35         9.57        10.70      260.8
+RTS        8     4        72.29        60.76        82.41       37.3
+RTS       32     4       286.83       172.71       315.44        9.4
+HTS        1     4        18.18        16.22        21.60      148.5
+HTS        8     4       119.60       103.50       148.95       22.6
+HTS       32     4       314.63       260.75       582.05        8.6
+<span class="dim">[exit code 0]</span></pre></div></div>
+      <div class="tab-panel" data-tab="b3e"><div class="terminal" data-copy><div class="term-bar"><span class="title">expected_output.txt 3e</span></div><pre><span class="hl">--- 3e. producer/consumer, OVERCOMMITTED: 3 producers + 1 consumer on CPU 1</span>
+<span class="prompt">$ </span><span class="cmd">./ring_modes_bench --lcores=(0-3)@1 --no-pci --no-huge -m 64 --file-prefix=ch05-bench</span>
+lcores (lcore@cpus): 0@1 1@1 2@1 3@1
+producers: main lcore 0 + 2 worker(s); consumer: lcore 3
+ring size 1024, 100 ms per run, median of 5 runs, TSC 2700 MHz
+
+<span class="hl">mode   burst  prod   Mobj/s med          min          max    cyc/obj</span>
+SP/SC      1     1         0.13         0.13         0.13    21145.2
+SP/SC      8     1         0.13         0.12         0.13    21098.9
+SP/SC     32     1         0.13         0.13         0.13    21097.2
+MP/MC      1     3         0.07         0.07         0.07    39266.9
+MP/MC      8     3         0.07         0.07         0.07    39228.9
+MP/MC     32     3         0.07         0.07         0.07    39098.9
+RTS        1     3         0.07         0.06         0.07    39272.5
+RTS        8     3         0.07         0.07         0.07    39230.2
+RTS       32     3         0.07         0.06         0.07    39099.2
+HTS        1     3         0.07         0.07         0.07    39265.2
+HTS        8     3         0.07         0.07         0.07    39231.4
+HTS       32     3         0.07         0.07         0.07    38926.9
+<span class="dim">[exit code 0]</span></pre></div></div>
+    </div>
+    <p>What the numbers say (software-only, on a shared 4-core VM; your numbers will differ, the shape should not):</p>
+    <ol>
+      <li><strong>Bursts dominate everything.</strong> In 3a, SP/SC goes from 304 cycles per object with burst 1 to 15 with burst 32: the fixed cost of a call (index loads, the cross-core cache-line transfer of the tail) is paid once per burst.</li>
+      <li><strong>SP/SC is the cheapest</strong> when you can guarantee one thread per side: 185 vs 116 Mobj/s for MP/MC at burst 32 in 3a, with the same single producer. The CAS is not free even when nobody competes.</li>
+      <li><strong>RTS and HTS cost a little more</strong> when every thread has its own CPU (3a, 3b): two 64-bit CAS instead of one 32-bit CAS. HTS's strong 3c result (120 vs 55 Mobj/s) comes from serialisation: with only one thread inside at a time there are fewer failed CAS and fewer cache-line ping-pongs. Do not generalise from one workload.</li>
+      <li><strong>Overcommitted, MP/MC collapses</strong> (3d): 40.6 Mobj/s with a min of 36 and a max of 120, the noisy signature of threads spinning away timeslices. RTS (287) and HTS (315) stay seven times faster.</li>
+      <li><strong>No sync mode fixes polling on a shared CPU</strong> (3e): with producers and consumer on one CPU the producer fills the ring in microseconds, then spins until the scheduler runs the consumer. About 1023 objects move per round of timeslices, whatever the mode, which is the 0.07-0.13 Mobj/s you see. A busy-polling DPDK thread must have a CPU to itself.</li>
+    </ol>
+
+    <div class="callout warning"><div class="callout-title">Warning: SP/SC is a promise</div>
+      <p>An ST side has no protection at all. Two threads enqueueing into an <code>RING_F_SP_ENQ</code> ring will both read the same head, both write the same slots and both store the same tail: objects are silently lost or duplicated. Nothing crashes, nothing logs. Use ST only when the code structure guarantees one thread per side, for example a ring owned by exactly one Rx lcore and one worker.</p></div>
+
+    <!-- ===================================================== 8 -->
+    <h2 id="elem-peek-zc"><span class="sec-num">8</span>Element rings, peek and zero-copy</h2>
+    <h3 id="elem">Element rings: store values, not pointers</h3>
+    <p>Sometimes the thing you want to pass is small: a flow ID and a length, a timer event, a (port, queue) pair. Allocating it and passing a pointer would add a mempool and a cache miss. An <span class="key-term">element ring</span> stores the value itself:</p>
+    <pre><code class="language-c">struct rte_ring *rte_ring_create_elem(const char *name, unsigned int esize,
+                                      unsigned int count, int socket_id, unsigned int flags);
+unsigned int rte_ring_enqueue_burst_elem(struct rte_ring *r, const void *obj_table,
+                                         unsigned int esize, unsigned int n, unsigned int *free_space);</code></pre>
+    <p><code>esize</code> must be a multiple of 4 bytes (8 and 16 have the fastest copy loops), and you pass the same <code>esize</code> to every <code>*_elem</code> call. A pointer ring is simply an element ring with <code>esize = sizeof(void *)</code>; all of section 3 applies with an <code>_elem</code> suffix.</p>
+
+    <h3 id="peek">Peek: look before you take</h3>
+    <p>The peek API in <code>lib/ring/rte_ring_peek.h</code> splits an operation in two. <code>rte_ring_dequeue_bulk_elem_start()</code> (or <code>rte_ring_dequeue_bulk_start()</code> for pointers) copies objects out <em>and keeps the consumer side locked</em>; then <code>rte_ring_dequeue_elem_finish(r, k)</code> / <code>rte_ring_dequeue_finish(r, k)</code> actually removes the first <code>k</code> of them (0 puts everything back). The enqueue side has <code>rte_ring_enqueue_bulk_start()</code>, which reserves space, and <code>rte_ring_enqueue_finish(r, objs, n)</code>, which copies and publishes. Between start and finish no other thread can operate on that side, so peek is only available on <strong>ST or HTS</strong> sides; on an MP/MC side the start call returns 0 (and asserts in debug builds).</p>
+
+    <h3 id="zero-copy">Zero-copy: write straight into the slots</h3>
+    <p>The zero-copy API in <code>lib/ring/rte_ring_peek_zc.h</code> goes one step further: instead of copying from your array, <code>rte_ring_enqueue_zc_burst_start()</code> returns pointers <em>into the ring's slot table</em> in a <code>struct rte_ring_zc_data { void *ptr1; void *ptr2; unsigned int n1; }</code>. You write the objects there yourself (for example, let <code>rte_eth_rx_burst()</code> fill them directly) and call <code>rte_ring_enqueue_zc_finish(r, n)</code>. Because the reserved region can run off the end of the table, it may come in two pieces:</p>
+
+    <figure class="diagram">
+      <div class="wide-svg">
+      <svg viewBox="0 0 720 150" role="img" aria-labelledby="f3t"><title id="f3t">A zero-copy reservation of 8 slots starting at slot 12 of a 16-slot ring is split into ptr1 with n1 = 4 and ptr2 with 4</title>
+        <g id="zc-slots"></g>
+        <text class="svg-label small muted" x="20" y="22">16-slot table; prod.head = 12; zc_burst_start(n = 8)</text>
+        <rect class="svg-slot" x="20" y="40" width="40" height="34"/><rect class="svg-slot" x="62" y="40" width="40" height="34"/><rect class="svg-slot" x="104" y="40" width="40" height="34"/><rect class="svg-slot" x="146" y="40" width="40" height="34"/>
+        <rect class="svg-slot" x="188" y="40" width="40" height="34"/><rect class="svg-slot" x="230" y="40" width="40" height="34"/><rect class="svg-slot" x="272" y="40" width="40" height="34"/><rect class="svg-slot" x="314" y="40" width="40" height="34"/>
+        <rect class="svg-slot" x="356" y="40" width="40" height="34"/><rect class="svg-slot" x="398" y="40" width="40" height="34"/><rect class="svg-slot" x="440" y="40" width="40" height="34"/><rect class="svg-slot" x="482" y="40" width="40" height="34"/>
+        <rect class="svg-box c5" x="524" y="40" width="40" height="34"/><rect class="svg-box c5" x="566" y="40" width="40" height="34"/><rect class="svg-box c5" x="608" y="40" width="40" height="34"/><rect class="svg-box c5" x="650" y="40" width="40" height="34"/>
+        <rect class="svg-box c3" x="20" y="40" width="40" height="34"/><rect class="svg-box c3" x="62" y="40" width="40" height="34"/><rect class="svg-box c3" x="104" y="40" width="40" height="34"/><rect class="svg-box c3" x="146" y="40" width="40" height="34"/>
+        <text class="svg-label small center" x="40" y="57">0</text><text class="svg-label small center" x="82" y="57">1</text><text class="svg-label small center" x="124" y="57">2</text><text class="svg-label small center" x="166" y="57">3</text>
+        <text class="svg-label small center muted" x="376" y="57">8</text><text class="svg-label small center" x="544" y="57">12</text><text class="svg-label small center" x="586" y="57">13</text><text class="svg-label small center" x="628" y="57">14</text><text class="svg-label small center" x="670" y="57">15</text>
+        <path class="svg-arrow c5" d="M544,112 L544,80"/><text class="svg-label small bold" x="520" y="128">ptr1, n1 = 4</text>
+        <path class="svg-arrow c3" d="M40,112 L40,80"/><text class="svg-label small bold" x="20" y="128">ptr2, n - n1 = 4</text>
+        <path class="svg-arrow dashed no-head" d="M690,57 C710,57 710,96 690,96 L30,96"/>
+      </svg></div>
+      <figcaption><span class="fig-num"></span>The reservation wraps: write <code>n1</code> objects at <code>ptr1</code> and the remaining <code>n - n1</code> at <code>ptr2</code> (the start of the table). When it does not wrap, <code>n1 == n</code> and <code>ptr2</code> is NULL. These are the exact numbers <code>elem_peek</code> prints in part 3.</figcaption>
+    </figure>
+
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/elem_peek.c (peeking consumer)</span><span class="lang">C</span></div>
+<pre data-lines data-start="56" data-hl="67,71-72,81"><code class="language-c">static int
+peek_consumer(void *arg)
+{
+    struct taker *t = arg;
+    struct item it;
+    uint32_t last = 0;
+
+    t-&gt;ordered = 1;
+    while (t-&gt;taken &lt; N_ITEMS / 2) {
+        /* start: copies the head element into 'it', reserves it.
+         * Until finish, no other consumer can dequeue from 'ring'. */
+        if (rte_ring_dequeue_bulk_elem_start(ring, &amp;it, ESZ, 1, NULL) == 0) {
+            rte_pause();          /* ring empty */
+            continue;
+        }
+        if (it.flow == t-&gt;flow) {
+            rte_ring_dequeue_elem_finish(ring, 1);   /* take it */
+            if (t-&gt;taken == 0)
+                t-&gt;first_seq = it.len;
+            else if (it.len &lt;= last)
+                t-&gt;ordered = 0;
+            last = it.len;
+            t-&gt;taken++;
+            t-&gt;bytes += it.len;
+        } else {
+            rte_ring_dequeue_elem_finish(ring, 0);   /* leave it */
+            t-&gt;put_back++;
+            rte_pause();
+        }
+    }
+    return 0;
+}</code></pre>
+    </div>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/elem_peek.c (zero-copy enqueue)</span><span class="lang">C</span></div>
+<pre data-lines data-start="157" data-hl="158,162,167"><code class="language-c">    struct rte_ring_zc_data zcd = { 0 };   /* untouched if start returns 0 */
+    n = rte_ring_enqueue_zc_burst_elem_start(ring, ESZ, 8, &amp;zcd, NULL);
+    print_zc(ring, &amp;zcd, n);
+    /* Write straight into the ring's memory: no staging array.
+     * (In a real app rte_eth_rx_burst() could fill ptr1/ptr2.) */
+    struct item *p1 = zcd.ptr1, *p2 = zcd.ptr2;
+    for (i = 0; i &lt; zcd.n1; i++)
+        p1[i] = (struct item){ .flow = 7, .len = 1000 + i };
+    for (i = 0; i &lt; n - zcd.n1; i++)
+        p2[i] = (struct item){ .flow = 7, .len = 1000 + zcd.n1 + i };
+    rte_ring_enqueue_zc_elem_finish(ring, n);</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 4)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./elem_peek -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch05-peek</span>
+<span class="hl">== 1. element ring: esize=8, 16 slots, HTS on both sides ==</span>
+  capacity=15 prod sync=3 cons sync=3 (3 = RTE_RING_SYNC_MT_HTS)
+<span class="err">RING: element size is not a multiple of 4</span>
+  create_elem(esize=6) -&gt; NULL, rte_errno=22 (Invalid argument)
+  enqueue_bulk_elem(4 items by value) -&gt; 4, count=4
+
+<span class="hl">== 2. peek: look at the head, put it back, then take it ==</span>
+  start  -&gt; 1: head is {flow=0 len=100}
+  finish(0): left in place, count=4
+<span class="ok">  start  -&gt; 1: head is {flow=0 len=100} (the same one)</span>
+  finish(1): removed, count=3
+  drain the other 3
+
+<span class="hl">== 3. zero-copy enqueue that wraps the end of the table ==</span>
+  prod.head=12  (slot 12)
+  zc start: n=8  ptr1 -&gt; slot 12, n1=4  ptr2 -&gt; slot 0, n2=4
+  dequeued 8: 1000 1001 1002 1003 1004 1005 1006 1007  (in order across the wrap)
+
+<span class="hl">== 4. two peeking consumers on one HTS ring (lcore 0: flow 0, lcore 1: flow 1) ==</span>
+  enqueued 2000 items, 1000 for flow 0 and 1000 for flow 1
+<span class="ok">  flow 0: taken=1000 in order=yes, put back 424 foreign heads</span>
+<span class="ok">  flow 1: taken=1000 in order=yes, put back 1125 foreign heads</span>
+  ring count at the end: 0
+<span class="dim">[exit code 0]</span></pre>
+    </div>
+    <p class="output-caption">Part 4 is two consumers on one HTS ring, each taking only its own flow. Both got all 1000 of their items in order, but look at the "put back" counts: when the head belongs to the other flow, a consumer can only wait. Peek gives you filtering, not reordering; the ring is still strictly FIFO, so a slow flow blocks a fast one (head-of-line blocking).</p>
+
+    <!-- ===================================================== 9 -->
+    <h2 id="soring"><span class="sec-num">9</span>SORING: one ring, several ordered stages</h2>
+    <p>A pipeline of three stages built from rings needs two rings and two copies of every pointer (exercise 2 builds one). If a stage runs on several threads, packets also get reordered, because a slow thread releases its batch late. The <span class="key-term">staged-ordered ring</span> (<code>lib/ring/rte_soring.h</code>, added in 25.03, experimental) solves both: one ring, a producer, N stages and a consumer. Objects stay in their slot while each stage <code>acquire</code>s a batch, works on it and <code>release</code>s it. Batches of one stage may be released in any order, but the next stage and the consumer only see objects in the original enqueue order. Typical users are IPsec-style pipelines where order must be kept (ch26); ch15 contrasts it with <code>rte_reorder</code>.</p>
+
+    <figure class="diagram">
+      <div class="wide-svg">
+      <svg viewBox="0 0 720 150" role="img" aria-labelledby="f4t"><title id="f4t">A SORING with two stages: objects move from producer through stage 0 and stage 1 to the consumer without leaving their slots</title>
+        <rect class="svg-slot full" x="40" y="50" width="56" height="34"/><rect class="svg-slot full" x="100" y="50" width="56" height="34"/>
+        <rect class="svg-box c1" x="160" y="50" width="56" height="34"/><rect class="svg-box c1" x="220" y="50" width="56" height="34"/>
+        <rect class="svg-box c6" x="280" y="50" width="56" height="34"/><rect class="svg-box c6" x="340" y="50" width="56" height="34"/><rect class="svg-box c6" x="400" y="50" width="56" height="34"/>
+        <rect class="svg-box c2" x="460" y="50" width="56" height="34"/><rect class="svg-slot" x="520" y="50" width="56" height="34"/><rect class="svg-slot" x="580" y="50" width="56" height="34"/>
+        <text class="svg-label small center" x="68" y="67">obj8</text><text class="svg-label small center" x="128" y="67">obj7</text><text class="svg-label small center" x="188" y="67">obj6</text><text class="svg-label small center" x="248" y="67">obj5</text>
+        <text class="svg-label small center" x="308" y="67">obj4</text><text class="svg-label small center" x="368" y="67">obj3</text><text class="svg-label small center" x="428" y="67">obj2</text><text class="svg-label small center" x="488" y="67">obj1</text>
+        <text class="svg-label small center bold" x="98" y="40">enqueued</text><text class="svg-label small center bold" x="218" y="40">stage 0</text><text class="svg-label small center bold" x="368" y="40">stage 1</text><text class="svg-label small center bold" x="488" y="40">ready</text>
+        <path class="svg-arrow" d="M150,110 L60,110"/><text class="svg-label small" x="160" y="114">enqueue (producer)</text>
+        <path class="svg-arrow" d="M488,90 L488,120 L560,120"/><text class="svg-label small" x="566" y="124">dequeue (consumer)</text>
+        <text class="svg-label small muted" x="280" y="114">acquire / release per stage</text>
+      </svg></div>
+      <figcaption><span class="fig-num"></span>A two-stage SORING, after the figure in <code>doc/guides/prog_guide/ring_lib.rst</code>: obj6 and obj5 are held by stage 0, obj4..obj2 by stage 1, obj1 has passed both stages and can be dequeued.</figcaption>
+    </figure>
+    <p>There is no <code>rte_soring_create()</code>: you fill a <code>struct rte_soring_param</code> (name, <code>elems</code>, <code>elem_size</code>, optional <code>meta_size</code>, <code>stages</code>, producer and consumer sync types), ask <code>rte_soring_get_memsize()</code>, allocate, and call <code>rte_soring_init()</code>. The data path is <code>rte_soring_enqueue_bulk/burst()</code>, <code>rte_soring_acquire_bulk/burst(r, objs, stage, n, &amp;ftoken, &amp;avail)</code>, <code>rte_soring_release(r, objs_or_NULL, stage, n, ftoken)</code> and <code>rte_soring_dequeue_bulk/burst()</code>; the <code>enqueux/acquirx/releasx/dequeux</code> variants also carry per-object metadata. DPDK 26.07 added a peek-style <code>rte_soring_dequeue_bulk_start()</code>/<code>_finish()</code> for ST and HTS sides. <code>soring_demo.c</code> releases two batches of stage 0 in the wrong order on purpose:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/soring_demo.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="51" data-hl="60,62,72,74,78,80,86,88"><code class="language-c">    struct rte_soring_param prm = {
+        .name = "so",
+        .elems = 16,                    /* slots (rounded up internally) */
+        .elem_size = sizeof(uint32_t),  /* objects are copied by value */
+        .meta_size = 0,                 /* no per-object metadata */
+        .stages = 2,
+        .prod_synt = RTE_RING_SYNC_ST,
+        .cons_synt = RTE_RING_SYNC_ST,
+    };
+    ssize_t sz = rte_soring_get_memsize(&amp;prm);
+    struct rte_soring *so = rte_zmalloc("soring", sz, RTE_CACHE_LINE_SIZE);
+    if (sz &lt; 0 || so == NULL || rte_soring_init(so, &amp;prm) != 0)
+        rte_exit(EXIT_FAILURE, "soring init failed\n");
+    printf("soring: 16 elems x 4 bytes, 2 stages, memsize=%zd bytes\n", sz);
+
+    for (i = 0; i &lt; 8; i++)
+        in[i] = i + 1;
+    n = rte_soring_enqueue_bulk(so, in, 8, NULL);
+    print_objs("producer enqueue_bulk", in, n);
+
+    /* Stage 0, two batches (as if two threads each took 4). */
+    n = rte_soring_acquire_bulk(so, a, 0, 4, &amp;tok_a, &amp;avail);
+    print_objs("stage 0 acquire batch A", a, n);
+    n = rte_soring_acquire_bulk(so, b, 0, 4, &amp;tok_b, &amp;avail);
+    print_objs("stage 0 acquire batch B", b, n);
+
+    /* B finishes first. Releasing it does NOT make it visible yet. */
+    rte_soring_release(so, NULL, 0, 4, tok_b);
+    printf("  stage 0 release batch B (out of order)\n");
+    n = rte_soring_acquire_burst(so, c, 1, 8, &amp;tok_c, &amp;avail);
+    printf("  %-44s n=%u  (B waits behind A)\n", "stage 1 acquire_burst(8)", n);
+
+    /* Now A finishes: A and B both become available to stage 1. */
+    for (i = 0; i &lt; 4; i++)
+        a[i] *= 10;                     /* stage 0 "processes" A */
+    rte_soring_release(so, a, 0, 4, tok_a);  /* objs != NULL: write back */
+    printf("  stage 0 release batch A (values x10 written back)\n");
+    n = rte_soring_acquire_burst(so, c, 1, 8, &amp;tok_c, &amp;avail);
+    print_objs("stage 1 acquire_burst(8)", c, n);
+    rte_soring_release(so, NULL, 1, n, tok_c);
+
+    printf("  count=%u free=%u before dequeue\n", rte_soring_count(so),
+           rte_soring_free_count(so));
+    n = rte_soring_dequeue_burst(so, out, 8, &amp;avail);
+    print_objs("consumer dequeue_burst", out, n);</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 5)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./soring_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch05-soring</span>
+soring: 16 elems x 4 bytes, 2 stages, memsize=1088 bytes
+  producer enqueue_bulk                        n=8: 1 2 3 4 5 6 7 8
+  stage 0 acquire batch A                      n=4: 1 2 3 4
+  stage 0 acquire batch B                      n=4: 5 6 7 8
+  stage 0 release batch B (out of order)
+  stage 1 acquire_burst(8)                     n=0  (B waits behind A)
+  stage 0 release batch A (values x10 written back)
+  stage 1 acquire_burst(8)                     n=8: 10 20 30 40 5 6 7 8
+  count=8 free=8 before dequeue
+  consumer dequeue_burst                       n=8: 10 20 30 40 5 6 7 8
+  count=0 after dequeue
+<span class="dim">[exit code 0]</span></pre>
+    </div>
+    <p class="output-caption">Releasing batch B first made nothing visible to stage 1 (<code>n=0</code>). Once A was released, stage 1 got all 8 objects in their original order, with stage 0's write-back (x10) applied to the first four. Build with <code>-DALLOW_EXPERIMENTAL_API</code>.</p>
+
+    <div class="callout note"><div class="callout-title">Note: a ring can be a port</div>
+      <p>The <code>net_ring</code> driver (<code>drivers/net/ring/rte_eth_ring.c</code>, header <code>rte_eth_ring.h</code>) wraps rings in an ethdev: <code>rte_eth_from_rings()</code> makes a port whose Tx queue enqueues mbuf pointers into a ring and whose Rx queue dequeues them. ch8 uses it as a "ring cable" between two ports, and <code>--vdev=net_ring0</code> creates one from the command line (ch9).</p></div>
+
+    <!-- ===================================================== PITFALLS -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong>Objects silently lost or duplicated</strong>: an SP or SC ring used by two threads (for example, the ring was created SP/SC for an Rx lcore, and later a second Rx lcore was added). Create the ring MP/MC, or give each thread its own ring.</li>
+      <li><strong>Bulk "never fails" or "always fails"</strong>: mixing up the return conventions. Bulk/burst return a count; single-object calls return 0 or a negative errno.</li>
+      <li><strong>A burst that drops objects</strong>: <code>rte_ring_enqueue_burst()</code> returned less than <code>n</code> and the caller ignored the rest. Either retry the remainder (as <code>solutions/pipeline3.c</code> does) or free/count them as drops. On the Tx side of a pipeline, forgetting this leaks mbufs.</li>
+      <li><strong><code>rte_ring_create()</code> returns NULL</strong>: <code>EINVAL</code> (count not a power of two without <code>RING_F_EXACT_SZ</code>, or <code>esize</code> not a multiple of 4), <code>EEXIST</code> (name already used, including by a previous run's secondary process, ch16), <code>ENOSPC</code> (no free memzone slot), <code>ENOMEM</code>. Print <code>rte_strerror(rte_errno)</code>.</li>
+      <li><strong>Creating rings from several threads at once</strong>: creation takes the EAL's tailq write lock and reserves a memzone; it is thread-safe but slow and not meant for the data path. Create all rings during initialisation, on the main lcore.</li>
+      <li><strong>Peek on an MP/MC ring</strong>: the <code>*_start()</code> calls return 0 (assert in debug builds). Create the side as HTS or ST.</li>
+      <li><strong>Collapse on a busy or virtual machine</strong>: more DPDK threads than CPUs, or an lcore list overlapping another busy process. Measure with the overcommit runs; use RTS/HTS where overcommit is unavoidable, and give polling threads their own CPUs.</li>
+      <li><strong>Deciding from <code>rte_ring_count()</code></strong>: the value is already stale when another core is active. Let the enqueue/dequeue call tell you what happened.</li>
+    </ul>
+
+    <!-- ===================================================== CHECK -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="1" data-explain="A power-of-two ring keeps one slot empty: rte_ring_create(name, 512, ...) has capacity 511. Use RING_F_EXACT_SZ with 512 (internally a 1024-slot table).">
+        <div class="q-text">You need a ring that holds exactly 512 mbuf pointers. What do you create?</div>
+        <div class="q-opts"><button class="q-opt">rte_ring_create("r", 512, socket, 0)</button><button class="q-opt">rte_ring_create("r", 512, socket, RING_F_EXACT_SZ)</button><button class="q-opt">rte_ring_create("r", 513, socket, 0)</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="Bulk is all or nothing: 10 does not fit into 6 free slots, so it returns 0 and enqueues nothing. A burst would have returned 6.">
+        <div class="q-text">A ring has 6 free slots. What does <code>rte_ring_enqueue_bulk(r, objs, 10, NULL)</code> return?</div>
+        <div class="q-opts"><button class="q-opt">6</button><button class="q-opt">-ENOBUFS</button><button class="q-opt">0</button></div>
+      </div>
+      <div class="q" data-answer="0" data-explain="Consumers compute available entries from prod.tail. Moving the tail last, with release ordering, is what guarantees the slot contents are complete before anyone can read them.">
+        <div class="q-text">In an enqueue, why is <code>prod.tail</code> updated only after the copy?</div>
+        <div class="q-opts"><button class="q-opt">Consumers only see objects up to prod.tail, so the slots must be fully written first</button><button class="q-opt">To let other producers move prod.head</button><button class="q-opt">Because the CAS is on prod.tail</button></div>
+      </div>
+      <div class="q" data-answer="1" data-explain="Unsigned subtraction is modulo 2^32: 3 - 4294967294 = 5. The indexes are never reset; only the masked value picks a slot.">
+        <div class="q-text"><code>prod.tail = 3</code> and <code>cons.head = 4294967294</code> on a 16-slot ring. How many entries are there?</div>
+        <div class="q-opts"><button class="q-opt">The ring is corrupted</button><button class="q-opt">5</button><button class="q-opt">-4294967291</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="With MP/MC a preempted producer makes every later producer spin on the tail for whole timeslices. RTS lets threads finish without waiting for a specific earlier thread; HTS keeps waiters from holding reservations. SP/SC is only valid with one producer.">
+        <div class="q-text">Eight worker threads share 4 CPUs in a container and all enqueue into one ring. Which flags are the best starting point?</div>
+        <div class="q-opts"><button class="q-opt">0 (MP/MC)</button><button class="q-opt">RING_F_SP_ENQ</button><button class="q-opt">RING_F_MP_RTS_ENQ (or RING_F_MP_HTS_ENQ)</button></div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ===================================================== EXERCISES -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span> SP/SC speedup</div>
+      <p>Rebuild <code>ring_basics</code> with its pipe ring created <code>RING_F_SP_ENQ | RING_F_SC_DEQ</code> and compare cycles per object with the default build. Run each version at least 5 times and report median, min and max. Is it safe? Why?</p>
+      <details><summary>Hint</summary><p>The program has a <code>PIPE_FLAGS</code> macro; the Makefile target <code>ring_basics_spsc</code> sets it. It is safe because exactly one lcore enqueues and exactly one dequeues.</p></details>
+      <details><summary>Solution</summary><p><code>make ring_basics_spsc</code>; <code>run.sh</code> section 1b shows one run (17.3 vs 28.8 cycles/object here). Loop it 5 times with <code>grep cycles</code> for the statistics.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span> Three-stage ring pipeline</div>
+      <p>Write a pipeline lcore 0 &rarr; ring &rarr; lcore 1 &rarr; ring &rarr; lcore 2 that passes the sequence numbers 1..4,000,000 and verifies at the end that every number arrived exactly once and in order. Which sync mode does each ring need?</p>
+      <details><summary>Hint</summary><p>Each ring has one producer and one consumer, so both can be SP/SC. The middle stage must handle a partial enqueue into the second ring: loop until every dequeued object has been passed on.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/pipeline3.c</code>; output in <code>run.sh</code> section 6 (PASS, 49.6 cycles per object end to end).</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag medium">medium</span> Reproduce the overcommit collapse</div>
+      <p>Run <code>ring_modes_bench --lcores='(0-3)@1' ... -- -s</code> and <code>-l 0-2 ... -- -s</code>. Then change <code>RING_SIZE</code>, the burst sizes, or the number of lcores on the shared CPU (<code>(0-5)@1</code>). Explain, using the head/tail algorithm, why RTS keeps working when MP/MC does not, and why HTS does too even though it serialises everything.</p>
+      <details><summary>Hint</summary><p>For MP/MC, count how many threads can be "between head and tail" at once, and who each one waits for. For RTS, look at <code>__rte_ring_rts_update_tail()</code> in <code>lib/ring/rte_ring_rts_elem_pvt.h</code>: who moves the tail? For HTS, what does a waiting thread hold?</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4 <span class="tag stretch">stretch</span> Drop empty items with peek</div>
+      <p>Extend <code>elem_peek.c</code> with a consumer that uses <code>rte_ring_dequeue_burst_elem_start()</code> to look at up to 32 items, and removes the leading items whose <code>len</code> is 0 with <code>rte_ring_dequeue_elem_finish(r, k)</code>, leaving the first non-empty item in the ring for another consumer. Why can it only drop a <em>prefix</em>?</p>
+    </div>
+
+    <!-- ===================================================== SUMMARY -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li>An <code>rte_ring</code> is a named, fixed-size, lock-free FIFO of pointers or of 4n-byte elements. Size is a power of two; capacity is size-1 unless you pass <code>RING_F_EXACT_SZ</code>.</li>
+        <li>Bulk moves all <code>n</code> or nothing; burst moves as many as possible; single-object calls return 0/-errno. Burst sizes of 8 to 32 cut the per-object cost by 10x or more.</li>
+        <li>Each side has a head (reserved) and a tail (finished). Enqueue = move head, copy, move tail with release; the other side reads the tail with acquire. MP heads move by CAS, and MP tails are published in reservation order.</li>
+        <li>Indexes are free-running <code>uint32_t</code>; slot = <code>idx &amp; mask</code>; counts are unsigned differences that survive the 2<sup>32</sup> wrap.</li>
+        <li>SP/SC is fastest but only for one thread per side. MP/MC is right when each thread owns a CPU and collapses when threads are preempted; RTS and HTS are built for overcommitted systems. Polling threads still need their own CPUs.</li>
+        <li>Element rings carry small structs by value; peek (ST/HTS) lets you inspect before removing; zero-copy hands you pointers into the slots, possibly in two parts; SORING keeps order across multi-stage, multi-thread processing in a single ring.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Programmer's Guide, Ring Library (anatomy, MP enqueue figures, sync modes, peek, zero-copy, SORING) <span class="src-path">doc/guides/prog_guide/ring_lib.rst</span></li>
+        <li>Pointer-ring API <span class="src-path">lib/ring/rte_ring.h</span>; structures and flags <span class="src-path">lib/ring/rte_ring_core.h</span></li>
+        <li>Element API <span class="src-path">lib/ring/rte_ring_elem.h</span>; generic enqueue/dequeue and tail update <span class="src-path">lib/ring/rte_ring_elem_pvt.h</span></li>
+        <li>Head move with C11 atomics <span class="src-path">lib/ring/rte_ring_c11_pvt.h</span> (and <span class="src-path">lib/ring/rte_ring_gcc_pvt.h</span>)</li>
+        <li>RTS and HTS <span class="src-path">lib/ring/rte_ring_rts.h</span> <span class="src-path">lib/ring/rte_ring_rts_elem_pvt.h</span> <span class="src-path">lib/ring/rte_ring_hts.h</span> <span class="src-path">lib/ring/rte_ring_hts_elem_pvt.h</span></li>
+        <li>Peek and zero-copy <span class="src-path">lib/ring/rte_ring_peek.h</span> <span class="src-path">lib/ring/rte_ring_peek_zc.h</span></li>
+        <li>Staged-ordered ring <span class="src-path">lib/ring/rte_soring.h</span> <span class="src-path">lib/ring/soring.c</span>; 26.07 release notes (SORING peek) <span class="src-path">doc/guides/rel_notes/release_26_07.rst</span></li>
+        <li>Unit and stress tests (good usage examples) <span class="src-path">app/test/test_ring.c</span> <span class="src-path">app/test/test_ring_stress_impl.h</span> <span class="src-path">app/test/test_soring.c</span></li>
+        <li>Ring PMD <span class="src-path">drivers/net/ring/rte_eth_ring.c</span></li>
+        <li>FreeBSD <code>buf_ring.h</code> (the origin) and the Linux lockless ring buffer design, LWN 340400, both cited in ring_lib.rst</li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../04-memory-hugepages/index.html"><span class="dir">&larr; Previous</span><span class="ttl">04 &middot; Memory: Hugepages, Memzones, rte_malloc and IOVA</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../06-mempools/index.html"><span class="dir">Next &rarr;</span><span class="ttl">06 &middot; rte_mempool and rte_stack</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script>
+/* Measured with code/ring_modes_bench (expected_output.txt sections 3c, 3d), burst 32 */
+window.CH05_BARS = [
+  { key: 'mp',  mode: 'MP/MC', a: 55.21,  amin: 55.15,  amax: 55.39,  b: 40.57,  bmin: 36.11,  bmax: 120.25 },
+  { key: 'rts', mode: 'RTS',   a: 51.33,  amin: 51.30,  amax: 51.49,  b: 286.83, bmin: 172.71, bmax: 315.44 },
+  { key: 'hts', mode: 'HTS',   a: 119.73, amin: 113.26, amax: 126.01, b: 314.63, bmin: 260.75, bmax: 582.05 }
+];
+</script>
+<script src="ch05.js"></script>
+</body>
+</html>

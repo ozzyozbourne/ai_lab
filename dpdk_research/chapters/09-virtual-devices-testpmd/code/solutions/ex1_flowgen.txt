@@ -1,0 +1,5 @@
+clear port xstats 0
+start
+stop
+set xstats-hide-zero on
+show port xstats 0

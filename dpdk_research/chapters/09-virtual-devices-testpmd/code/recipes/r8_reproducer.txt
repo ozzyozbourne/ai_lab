@@ -1,0 +1,11 @@
+# Minimal reproducer template for a bug report.
+# Run:   dpdk-testpmd <EAL args> -- -i --total-num-mbufs=8192 --cmdline-file=r8_reproducer.txt
+# Keep: exact DPDK version, EAL args, PMD + devargs, then the shortest command list.
+show port info 0
+show port 0 rx_offload configuration
+set fwd io
+set verbose 0
+start
+stop
+show port stats all
+show fwd stats all

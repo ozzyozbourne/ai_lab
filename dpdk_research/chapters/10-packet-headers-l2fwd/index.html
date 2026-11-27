@@ -1,0 +1,2163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10 Parsing and Building Packets | DPDK from Zero to Expert</title>
+<meta name="description" content="Read and write Ethernet, VLAN, ARP, IPv4, IPv6, UDP, TCP, ICMP and VXLAN headers safely with lib/net, get byte order and the Internet checksum right, classify packets with rte_net_get_ptype, define your own packed headers the 26.11 way, and forward frames with l2fwd's TX buffer and drain timer.">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  /* ---- chapter 10 specific ---- */
+  .mono { font-family: var(--font-mono); font-size: .85em; }
+  .w-ok { color: var(--tip); } .w-err { color: var(--pitfall); }
+  /* byte map */
+  .bm-tabs { display: flex; flex-wrap: wrap; gap: .35rem; padding: .6rem 1rem 0; }
+  .bm-wrap { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: .8rem; padding: .7rem 1rem; }
+  @media (max-width: 760px) { .bm-wrap { grid-template-columns: 1fr; } }
+  .bm-grid { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 2px; align-content: start; }
+  @media (max-width: 560px) { .bm-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
+  .bm-b { position: relative; font-family: var(--font-mono); font-size: .74rem; text-align: center; padding: .55rem 0 .2rem; border-radius: 3px; border: 1px solid transparent; cursor: pointer; color: var(--text); }
+  .bm-b i { position: absolute; top: 1px; left: 2px; font-size: .5rem; font-style: normal; color: var(--text-muted); }
+  .bm-b.on, .bm-f.on { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .ly-l2 { background: var(--c1-soft); } .ly-l2b { background: var(--c5-soft); } .ly-l3 { background: var(--c2-soft); }
+  .ly-l4 { background: var(--c3-soft); } .ly-ck { background: var(--c4-soft); } .ly-tun { background: var(--c5-soft); }
+  .ly-in { background: var(--c6-soft); } .ly-pl { background: var(--c7-soft); }
+  .bm-info { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: .6rem .75rem; min-height: 9rem; font-size: .86rem; overflow-wrap: anywhere; }
+  .bm-info .bm-t { font-weight: 600; margin-bottom: .25rem; }
+  .bm-info .bm-note, .bm-gal { margin-top: .4rem; color: var(--text-muted); }
+  .bm-fields { display: flex; flex-wrap: wrap; gap: .25rem; padding: 0 1rem .7rem; }
+  .bm-f { font-family: var(--font-mono); font-size: .72rem; padding: .15rem .4rem; border: 1px solid var(--border); border-radius: 4px; color: var(--text); cursor: pointer; }
+  /* checksum */
+  .ck-input { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; padding: .6rem 1rem; }
+  .ck-input input { font-family: var(--font-mono); font-size: .8rem; width: min(100%, 25rem); padding: .3rem .4rem; background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: 4px; }
+  .ck-msg { font-size: .8rem; color: var(--warn); padding: 0 1rem; min-height: 1.1em; }
+  table.ck td, table.ck th { font-size: .82rem; padding: .18rem .5rem; }
+  table.ck tr.done td { background: var(--accent-soft); }
+  table.ck tr.cur td { background: var(--c3-soft); font-weight: 600; }
+  .ck-res { padding: .4rem 1rem .6rem; }
+  .stat.hl { border-color: var(--accent); } .stat.good { border-color: var(--tip); background: var(--tip-bg); } .stat.bad { border-color: var(--pitfall); background: var(--pitfall-bg); }
+  /* ptype */
+  .pt-in { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; padding: .6rem 1rem 0; }
+  .pt-in input { font-family: var(--font-mono); width: 9rem; padding: .3rem .4rem; background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: 4px; }
+  table.pt td { font-size: .8rem; padding: .15rem .45rem; } table.pt tr.on td { background: var(--accent-soft); }
+  .pt-warn { color: var(--pitfall); font-size: .85rem; padding: 0 1rem .5rem; }
+  .pt-name { font-family: var(--font-mono); font-size: .8rem; padding: .3rem 1rem .6rem; overflow-wrap: anywhere; }
+  .l2-ctl label { font-size: .85rem; }
+  .bitbox text { font-family: var(--font-mono); }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 10 &middot; Parsing and Building Packets</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../09-virtual-devices-testpmd/index.html"><span class="dir">&larr; Previous</span><span class="ttl">09 &middot; Testing Without Hardware: Buses, devargs, Virtual PMDs and testpmd</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../11-eal-services-timers/index.html"><span class="dir">Next &rarr;</span><span class="ttl">11 &middot; EAL Services in One Evolving App</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 10</div>
+      <h1>Parsing and Building Packets: lib/net, Checksums and l2fwd</h1>
+      <p class="chapter-subtitle">Until now our packets were opaque blobs that went in one port and out another. In this chapter you open them. You will read every header of a frame with the <code>lib/net</code> structs, without ever touching a byte the packet does not have, compute and verify Internet checksums by hand and with the library, build ARP, ICMP, UDP, IPv6, VLAN, QinQ and VXLAN frames from scratch, define your own header the DPDK 26.11 way, and then take apart <code>l2fwd</code>, the classic minimal forwarder, down to its TX buffer and drain timer.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-intermediate">Intermediate</span></li>
+        <li><span class="badge">~150 min</span></li>
+        <li><span class="badge">Prerequisites: ch9</span></li>
+        <li><span class="tag api">lib/net</span></li>
+        <li><span class="tag api">rte_ipv4_cksum</span></li>
+        <li><span class="tag api">rte_net_get_ptype</span></li>
+        <li><span class="tag api">rte_eth_tx_buffer</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Overlay the <code>lib/net</code> header structs (<code>rte_ether_hdr</code>, <code>rte_vlan_hdr</code>, <code>rte_arp_hdr</code>, <code>rte_ipv4_hdr</code>, <code>rte_ipv6_hdr</code>, <code>rte_udp_hdr</code>, <code>rte_tcp_hdr</code>, <code>rte_icmp_hdr</code>, <code>rte_vxlan_hdr</code>) on packet bytes, and convert every multi-byte field between network and host byte order correctly.</li>
+        <li>Use the 26.11 IPv6 types: <code>struct rte_ipv6_addr</code>, <code>RTE_IPV6()</code>, and the <code>vtc_flow</code> masks that replaced the old bitfields.</li>
+        <li>Explain the Internet checksum (one's-complement sum, folding, inversion, pseudo-header), compute it by hand, with <code>rte_ipv4_cksum()</code> / <code>rte_ipv4_udptcp_cksum()</code> / <code>rte_ipv6_udptcp_cksum()</code>, and update it incrementally (RFC 1624).</li>
+        <li>Write a parser that never reads past the end of a packet, handles headers split across mbuf segments with <code>rte_pktmbuf_read()</code>, and cross-checks itself with <code>rte_net_get_ptype()</code>, including a real 26.11 ptype bug.</li>
+        <li>Build frames from scratch, insert VLAN and QinQ tags with <code>rte_vlan_insert()</code> / <code>rte_vlan_insert_tpid()</code>, compute the Ethernet CRC with <code>rte_net_crc_calc()</code>, and declare custom headers with <code>__rte_packed_begin</code> / <code>__rte_packed_end</code>.</li>
+        <li>Run the shipped <code>dpdk-l2fwd</code> on pcap files, verify its MAC rewrite, and re-implement its core loop with <code>rte_eth_tx_buffer()</code> and a TSC drain timer.</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>code/gen_pcaps.py</code>: writes the test traffic (<code>mixed.pcap</code>: 15 hand-made frames including three broken ones; <code>in.pcap</code>: 100 UDP frames; <code>empty.pcap</code>). Pure Python, no scapy.</li>
+        <li><code>net_pcap</code> (<code>rx_pcap=</code>, <code>tx_pcap=</code>) and <code>net_ring</code> virtual ports from ch9. Nothing touches a real NIC.</li>
+        <li><code>code/verify.py</code> and <code>code/l2check.py</code>: independent Python checkers for checksums, CRCs and MAC rewriting.</li>
+        <li><code>$DPDK_SRC/build/examples/dpdk-l2fwd</code>: the prebuilt sample.</li>
+        <li><code>code/run.sh</code>: builds and runs everything; its output is <code>code/expected_output.txt</code>, from which every terminal block on this page is taken.</li>
+      </ul>
+    </section>
+
+    <!-- ================================================================== -->
+    <h2 id="structs"><span class="sec-num">1</span>From bytes to structs</h2>
+    <p>A packet in an mbuf is just bytes: <code>rte_pktmbuf_mtod(m, void *)</code> gives you the address of the first one (ch7). Protocols define what those bytes mean: the first 6 are the destination MAC, the next 6 the source MAC, then a 2-byte type, and so on. <code>lib/net</code> turns each protocol header into a C struct whose members sit at exactly the right offsets, so instead of computing <code>p[23]</code> you write <code>ip-&gt;next_proto_id</code>. Parsing is "point a struct pointer at the right offset"; building is "point a struct pointer at fresh space and fill the members".</p>
+
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 760 210" role="img" aria-labelledby="f-layout-t">
+        <title id="f-layout-t">A 54-byte Ethernet/IPv4/UDP frame with the three lib/net structs overlaid at offsets 0, 14 and 34, and the payload at 42.</title>
+        <text class="svg-label small muted" x="10" y="22">offset</text>
+        <text class="svg-label small mono" x="20" y="44">0</text>
+        <text class="svg-label small mono" x="150" y="44">14</text>
+        <text class="svg-label small mono" x="430" y="44">34</text>
+        <text class="svg-label small mono" x="545" y="44">42</text>
+        <text class="svg-label small mono" x="728" y="44">54</text>
+        <rect class="svg-box c1" x="20" y="52" width="130" height="50"/>
+        <text class="svg-label center bold" x="85" y="72">Ethernet</text>
+        <text class="svg-label center small mono" x="85" y="90">14 B</text>
+        <rect class="svg-box c2" x="150" y="52" width="280" height="50"/>
+        <text class="svg-label center bold" x="290" y="72">IPv4 (IHL 5)</text>
+        <text class="svg-label center small mono" x="290" y="90">20 B</text>
+        <rect class="svg-box c3" x="430" y="52" width="115" height="50"/>
+        <text class="svg-label center bold" x="487" y="72">UDP</text>
+        <text class="svg-label center small mono" x="487" y="90">8 B</text>
+        <rect class="svg-box c7" x="545" y="52" width="185" height="50"/>
+        <text class="svg-label center bold" x="637" y="72">payload</text>
+        <text class="svg-label center small mono" x="637" y="90">12 B</text>
+        <path class="svg-arrow c1" d="M85,150 L85,106"/>
+        <text class="svg-label center small mono" x="85" y="166">struct rte_ether_hdr *eth</text>
+        <text class="svg-label center small mono" x="85" y="182">= rte_pktmbuf_mtod(m, ...)</text>
+        <path class="svg-arrow c2" d="M290,150 L290,106"/>
+        <text class="svg-label center small mono" x="290" y="166">struct rte_ipv4_hdr *ip</text>
+        <text class="svg-label center small mono" x="290" y="182">= (void *)(eth + 1)</text>
+        <path class="svg-arrow c3" d="M487,150 L487,106"/>
+        <text class="svg-label center small mono" x="487" y="166">rte_udp_hdr *udp</text>
+        <text class="svg-label center small mono" x="487" y="182">= (void *)((char *)ip + ihl*4)</text>
+        <text class="svg-label center small muted" x="637" y="166">udp + 1</text>
+        <text class="svg-label small muted" x="20" y="205">eth + 1 works because sizeof(struct rte_ether_hdr) == 14; for IP use rte_ipv4_hdr_len(), never sizeof, because of options.</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>Parsing is pointer arithmetic over one buffer. Each struct is placed at the offset where the previous header ends. The IPv4 header length is variable (IHL), so the UDP offset must come from the packet, not from <code>sizeof</code>.</figcaption>
+    </figure>
+
+    <p>The structs live in <span class="src-path">lib/net/</span>, one header per protocol. The ones this chapter uses:</p>
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>Struct</th><th>Header file</th><th class="num">sizeof</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>struct rte_ether_hdr</code></td><td><span class="src-path">rte_ether.h</span></td><td class="num">14</td><td><code>dst_addr</code>, <code>src_addr</code> (<code>struct rte_ether_addr</code>), <code>ether_type</code>. Alignment 2 (static_assert in the header).</td></tr>
+        <tr><td><code>struct rte_vlan_hdr</code></td><td><span class="src-path">rte_ether.h</span></td><td class="num">4</td><td><code>vlan_tci</code> (PCP 3 bits, DEI 1, VID 12), <code>eth_proto</code>.</td></tr>
+        <tr><td><code>struct rte_arp_hdr</code></td><td><span class="src-path">rte_arp.h</span></td><td class="num">28</td><td>with <code>struct rte_arp_ipv4 arp_data</code> (sha, sip, tha, tip).</td></tr>
+        <tr><td><code>struct rte_ipv4_hdr</code></td><td><span class="src-path">rte_ip4.h</span></td><td class="num">20</td><td>without options; real length = <code>rte_ipv4_hdr_len()</code>.</td></tr>
+        <tr><td><code>struct rte_ipv6_hdr</code></td><td><span class="src-path">rte_ip6.h</span></td><td class="num">40</td><td><code>vtc_flow</code>, <code>payload_len</code>, <code>proto</code>, <code>hop_limits</code>, two <code>struct rte_ipv6_addr</code>.</td></tr>
+        <tr><td><code>struct rte_udp_hdr</code></td><td><span class="src-path">rte_udp.h</span></td><td class="num">8</td><td><code>src_port</code>, <code>dst_port</code>, <code>dgram_len</code>, <code>dgram_cksum</code>.</td></tr>
+        <tr><td><code>struct rte_tcp_hdr</code></td><td><span class="src-path">rte_tcp.h</span></td><td class="num">20</td><td>header length = <code>(data_off &gt;&gt; 4) * 4</code>; flags <code>RTE_TCP_SYN_FLAG</code>...</td></tr>
+        <tr><td><code>struct rte_icmp_hdr</code></td><td><span class="src-path">rte_icmp.h</span></td><td class="num">8</td><td><code>icmp_type</code>, <code>icmp_code</code>, <code>icmp_cksum</code>, <code>icmp_ident</code>, <code>icmp_seq_nb</code>.</td></tr>
+        <tr><td><code>struct rte_vxlan_hdr</code></td><td><span class="src-path">rte_vxlan.h</span></td><td class="num">8</td><td><code>vx_flags</code>, <code>vx_vni</code> (VNI in the top 24 bits).</td></tr>
+      </tbody>
+    </table></div>
+
+    <p>Two details in those definitions matter. First, most of them are declared <code>struct __rte_aligned(2) __rte_packed_begin rte_ipv4_hdr { ... } __rte_packed_end;</code>: <em>packed</em> so the compiler inserts no padding, and <em>aligned to 2</em> because that is all a frame can promise. The Ethernet header is 14 bytes, so if the frame starts on a 4-byte boundary the IPv4 addresses (offset 26 and 30) are only 2-byte aligned. Second, every multi-byte field has a type like <code>rte_be16_t</code> or <code>rte_be32_t</code>. Those are plain <code>uint16_t</code>/<code>uint32_t</code> typedefs whose name tells you the value is <span class="key-term">big-endian</span> (network order). The compiler will not stop you mixing them up; the name is a reminder for you.</p>
+
+    <h3 id="bytemap">Explore a frame byte by byte</h3>
+    <p>The widget below shows real frames from <code>code/mixed.pcap</code> plus a gallery of tunnel headers. Hover or tap any byte or field name: you get the C member to use, its offset, the raw bytes, the value after <code>rte_be_to_cpu_16/32()</code>, and a note. Tick the checkbox to see what a little-endian CPU gets if you forget the conversion.</p>
+
+    <div class="widget" id="w-bytes">
+      <div class="widget-head"><span class="widget-title">Packet byte map and tunnel-header gallery</span><span class="badge">interactive</span></div>
+      <div class="bm-tabs" role="group" aria-label="frame or header"></div>
+      <div class="bm-wrap">
+        <div class="bm-grid" aria-label="frame bytes, offset in the corner"></div>
+        <div class="bm-info" aria-live="polite"></div>
+      </div>
+      <div class="bm-fields"></div>
+      <div class="controls"><label><input type="checkbox" id="bm-host"> show 16/32-bit fields as a plain load on x86 sees them (no <code>rte_be_to_cpu_*()</code>)</label></div>
+    </div>
+    <p class="output-caption">Try: in the VLAN frame, IPv4 starts at offset 18 instead of 14. In the VXLAN frame, <code>vx_vni</code> holds 0x00138800; shifting right by 8 gives VNI 5000. In the IPv6 frame, the first 4 bytes 6b 81 23 45 decode to version 6, traffic class 0xb8 and flow label 0x12345.</p>
+
+    <!-- ================================================================== -->
+    <h2 id="byteorder"><span class="sec-num">2</span>Byte order</h2>
+    <p>Network protocols send multi-byte numbers most significant byte first (<span class="key-term">network byte order</span>, big-endian). x86 and most Arm systems store them least significant byte first. So the ether_type 0x0800 sits in the packet as bytes <code>08 00</code>; if you load it as a <code>uint16_t</code> on x86 you get 0x0008. Every multi-byte header field needs a conversion when you read it into a host variable or write a host value into it. DPDK's helpers are in <span class="src-path">lib/eal/include/generic/rte_byteorder.h</span>:</p>
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>Use</th><th>Function / macro</th><th>Example</th></tr></thead>
+      <tbody>
+        <tr><td>read a field</td><td><code>rte_be_to_cpu_16()</code>, <code>rte_be_to_cpu_32()</code>, <code>_64</code></td><td><code>uint16_t len = rte_be_to_cpu_16(ip-&gt;total_length);</code></td></tr>
+        <tr><td>write a run-time value</td><td><code>rte_cpu_to_be_16()</code>, <code>rte_cpu_to_be_32()</code></td><td><code>udp-&gt;dst_port = rte_cpu_to_be_16(port);</code></td></tr>
+        <tr><td>write or compare a constant</td><td><code>RTE_BE16()</code>, <code>RTE_BE32()</code></td><td><code>if (eth-&gt;ether_type == RTE_BE16(RTE_ETHER_TYPE_IPV4))</code></td></tr>
+        <tr><td>IPv4 address constant</td><td><code>RTE_IPV4(a,b,c,d)</code> gives the <b>host-order</b> value</td><td><code>ip-&gt;dst_addr = RTE_BE32(RTE_IPV4(10,10,0,2));</code></td></tr>
+      </tbody>
+    </table></div>
+    <p><code>RTE_BE16()</code> is evaluated by the compiler, so comparing a field against <code>RTE_BE16(constant)</code> costs nothing at run time; converting the field instead (<code>rte_be_to_cpu_16(f) == constant</code>) costs one byte-swap instruction. Both are correct. One-byte fields (<code>time_to_live</code>, <code>next_proto_id</code>, <code>icmp_type</code>) have no byte order. And one 16-bit field is the exception to the rule: the <b>checksum</b>, which section 6 explains.</p>
+    <div class="callout pitfall"><div class="callout-title">Pitfall: RTE_IPV4 is host order</div><p><code>RTE_IPV4(10,10,0,2)</code> is the integer 0x0a0a0002, which is right for comparisons against <code>rte_be_to_cpu_32(ip-&gt;dst_addr)</code> or for LPM tables (ch18), but wrong if stored directly into a header. On x86 <code>ip-&gt;dst_addr = RTE_IPV4(10,10,0,2)</code> sends the packet to 2.0.10.10.</p></div>
+
+    <!-- ================================================================== -->
+    <h2 id="ethernet"><span class="sec-num">3</span>Ethernet, VLAN and ARP</h2>
+    <p>A MAC address is <code>struct rte_ether_addr { uint8_t addr_bytes[6]; }</code>, aligned to 2. <span class="src-path">lib/net/rte_ether.h</span> gives you the helpers you would otherwise write yourself:</p>
+    <ul>
+      <li><code>rte_ether_addr_copy(from, to)</code>: copy 6 bytes (note the argument order: source first). <code>rte_is_same_ether_addr(a, b)</code> compares.</li>
+      <li><code>rte_is_broadcast_ether_addr()</code>, <code>rte_is_multicast_ether_addr()</code> (lowest bit of the first byte), <code>rte_is_unicast_ether_addr()</code>, <code>rte_is_zero_ether_addr()</code>, <code>rte_is_local_admin_ether_addr()</code> (bit 1 of the first byte, as in <code>02:...</code>), <code>rte_is_valid_assigned_ether_addr()</code>.</li>
+      <li><code>rte_ether_format_addr(buf, size, &amp;mac)</code> prints <code>02:00:00:00:00:01</code> into a buffer of <code>RTE_ETHER_ADDR_FMT_SIZE</code>; <code>rte_ether_unformat_addr("02:00:00:00:00:01", &amp;mac)</code> parses one (it also accepts the <code>XXXX:XXXX:XXXX</code> form).</li>
+      <li><code>rte_eth_random_addr(bytes)</code>: a random, unicast, locally administered address. <code>mini_l2fwd.c</code> uses it for a fake sender.</li>
+    </ul>
+    <p>A <span class="key-term">VLAN tag</span> (802.1Q) is 4 bytes inserted between the source MAC and the ether_type: the ether_type position now holds the <span class="key-term">TPID</span> 0x8100, then comes <code>vlan_tci</code> and the real ether_type in <code>eth_proto</code>. <span class="key-term">QinQ</span> (802.1ad) stacks two tags; the outer "service" tag uses TPID 0x88a8 (<code>RTE_ETHER_TYPE_QINQ</code>; older gear uses 0x9100, <code>RTE_ETHER_TYPE_QINQ1</code>). Each tag you skip moves the L3 header 4 bytes further, which is why a parser loops on the ether_type. ARP (<code>struct rte_arp_hdr</code>, ether_type 0x0806) is the "who has 10.10.0.2? tell 10.10.0.1" message that maps IPv4 addresses to MACs; ch30's router answers it.</p>
+
+    <!-- ================================================================== -->
+    <h2 id="ipv4"><span class="sec-num">4</span>The IPv4 header in detail</h2>
+    <p>Five fields of <code>struct rte_ipv4_hdr</code> need care:</p>
+    <ul>
+      <li><code>version_ihl</code>: version in the high nibble (must be 4), header length in 32-bit words in the low nibble. <code>rte_ipv4_hdr_len(ip)</code> returns <code>(version_ihl &amp; RTE_IPV4_HDR_IHL_MASK) * 4</code>: 20 without options, up to 60. <code>RTE_IPV4_VHL_DEF</code> is 0x45 for building. An IHL below 5 is invalid.</li>
+      <li><code>total_length</code>: IP header plus payload. A frame can be longer than this (Ethernet pads short frames to 60 bytes), but never shorter. The L4 length is <code>total_length - rte_ipv4_hdr_len(ip)</code>, not "whatever is left in the mbuf".</li>
+      <li><code>fragment_offset</code>: three flag bits and a 13-bit offset in 8-byte units. Test with <code>RTE_IPV4_HDR_DF_FLAG</code>, <code>RTE_IPV4_HDR_MF_FLAG</code> and <code>RTE_IPV4_HDR_OFFSET_MASK</code> after <code>rte_be_to_cpu_16()</code>. Only the fragment with offset 0 contains the L4 header; ch19 reassembles fragments.</li>
+      <li><code>time_to_live</code>: a router decrements it, drops the packet at 0, and must update the checksum (section 6).</li>
+      <li><code>hdr_checksum</code>: covers the IP header only.</li>
+    </ul>
+
+    <!-- ================================================================== -->
+    <h2 id="ipv6"><span class="sec-num">5</span>IPv6 in DPDK 26.11</h2>
+    <p>IPv6 has a fixed 40-byte header with no checksum, 128-bit addresses, and optional <span class="key-term">extension headers</span> chained through the "next header" field. DPDK introduced its IPv6 address type in 24.11 and removed the last of the old definitions in 26.11, so code from older tutorials needs changes:</p>
+    <ul>
+      <li>Addresses are <code>struct rte_ipv6_addr { uint8_t a[16]; }</code> everywhere (net, LPM6, FIB6, RIB6). Initialise with <code>RTE_IPV6(0xfd00, 0x10, 0, 0, 0, 0, 0, 1)</code>, which takes eight 16-bit groups like the textual form; compare with <code>rte_ipv6_addr_eq(&amp;a, &amp;b)</code>; print with <code>RTE_IPV6_ADDR_FMT</code> and <code>RTE_IPV6_ADDR_SPLIT(&amp;a)</code>. The old <code>uint8_t[16]</code> APIs and macros such as <code>RTE_LPM6_IPV6_ADDR_SIZE</code> are gone (release_26_11.rst, Removed Items).</li>
+      <li><code>struct rte_ipv6_hdr</code> has no version/traffic-class/flow-label bitfields any more (bitfield order differs between compilers and endianness). You read and write the 32-bit <code>vtc_flow</code> as a whole and mask:</li>
+    </ul>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 170" role="img" aria-labelledby="f-vtc-t" class="bitbox">
+        <title id="f-vtc-t">The 32 bits of vtc_flow after rte_be_to_cpu_32: version in bits 31-28, traffic class in bits 27-20 (DSCP 27-22, ECN 21-20), flow label in bits 19-0.</title>
+        <text class="svg-label small mono" x="20" y="28">bit 31</text>
+        <text class="svg-label small mono" x="640" y="28">bit 0</text>
+        <rect class="svg-box c7" x="20" y="36" width="80" height="44"/>
+        <text class="svg-label center bold" x="60" y="56">version</text>
+        <text class="svg-label center small mono" x="60" y="72">4 bits = 6</text>
+        <rect class="svg-box c2" x="100" y="36" width="120" height="44"/>
+        <text class="svg-label center bold" x="160" y="56">DSCP</text>
+        <text class="svg-label center small mono" x="160" y="72">6 bits</text>
+        <rect class="svg-box c4" x="220" y="36" width="60" height="44"/>
+        <text class="svg-label center bold" x="250" y="56">ECN</text>
+        <text class="svg-label center small mono" x="250" y="72">2</text>
+        <rect class="svg-box c5" x="280" y="36" width="400" height="44"/>
+        <text class="svg-label center bold" x="480" y="56">flow label</text>
+        <text class="svg-label center small mono" x="480" y="72">20 bits</text>
+        <path class="svg-line" d="M100,90 L280,90"/>
+        <text class="svg-label center small mono" x="190" y="106">RTE_IPV6_HDR_TC_MASK (0xff &lt;&lt; 20)</text>
+        <text class="svg-label center small mono" x="190" y="122">tc = (v &amp; TC_MASK) &gt;&gt; RTE_IPV6_HDR_TC_SHIFT</text>
+        <path class="svg-line" d="M280,90 L680,90"/>
+        <text class="svg-label center small mono" x="480" y="106">RTE_IPV6_HDR_FL_MASK ((1u &lt;&lt; 20) - 1)</text>
+        <text class="svg-label center small mono" x="480" y="122">fl = v &amp; RTE_IPV6_HDR_FL_MASK</text>
+        <text class="svg-label small mono" x="20" y="150">v = rte_be_to_cpu_32(ip6-&gt;vtc_flow);   also RTE_IPV6_HDR_DSCP_MASK, RTE_IPV6_HDR_ECN_MASK; version: v &gt;&gt; 28</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The IPv6 <code>vtc_flow</code> word. Convert it to host order once, then use the masks from <span class="src-path">lib/net/rte_ip6.h</span>. To build one: <code>rte_cpu_to_be_32(6u &lt;&lt; 28 | tc &lt;&lt; RTE_IPV6_HDR_TC_SHIFT | flow)</code>.</figcaption>
+    </figure>
+
+    <p>Extension headers sit between the IPv6 header and the L4 header. <code>rte_ipv6_get_next_ext(p, proto, &amp;ext_len)</code> looks at one: if <code>proto</code> is an extension (hop-by-hop 0, routing 43, fragment 44, destination options 60, AH 51), it returns the next protocol and its length; otherwise <code>-EINVAL</code>, meaning "you have reached the upper layer". <code>rte_net_skip_ip6_ext(proto, m, &amp;off, &amp;frag)</code> does the whole walk on an mbuf and tells you whether it saw a fragment header.</p>
+    <div class="callout warning"><div class="callout-title">Warning: the IPv6 L4 checksum helpers assume no extension headers</div><p><code>rte_ipv6_udptcp_cksum()</code> and <code>rte_ipv6_udptcp_cksum_verify()</code> build the pseudo-header from <code>ip6-&gt;payload_len</code> and <code>ip6-&gt;proto</code>. With an extension header, <code>payload_len</code> includes the extension bytes and <code>proto</code> names the extension, so both are wrong for the pseudo-header. <code>parse_pcap.c</code> shows the effect on frame #6 (<code>l4csum(naive)=BAD</code>) and the fix: verify against a copy of the header with <code>payload_len</code> set to the real L4 length and <code>proto</code> set to the final protocol.</p></div>
+
+    <!-- ================================================================== -->
+    <h2 id="checksum"><span class="sec-num">6</span>The Internet checksum</h2>
+    <p>IPv4, UDP, TCP and ICMP all use the same 16-bit checksum (RFC 1071). It is simple and cheap, and it has one property that confuses everybody the first time: it does not care about byte order. The algorithm:</p>
+    <ol>
+      <li>Treat the data as a sequence of 16-bit words (pad an odd last byte with a zero).</li>
+      <li>Add them all with <span class="key-term">one's-complement addition</span>: whenever the sum overflows 16 bits, the carry is added back into the low bits (<span class="key-term">end-around carry</span>). In practice you add into a 32-bit accumulator and <span class="key-term">fold</span> at the end: <code>sum = (sum &amp; 0xffff) + (sum &gt;&gt; 16)</code>, repeated until it fits.</li>
+      <li>Invert the bits. That value goes into the checksum field, which was 0 during the sum.</li>
+      <li>The receiver sums everything <em>including</em> the checksum. Because <code>x + ~x = 0xffff</code>, a correct packet sums to 0xffff.</li>
+    </ol>
+    <p>Step through it below with a real header. Each time a step asks for a prediction, answer before you see the result. You can type your own 20-byte header or pick a preset; "checksum NOT zeroed" shows what happens when you forget step 3's "was 0 during the sum".</p>
+
+    <div class="widget" id="w-cksum">
+      <div class="widget-head"><span class="widget-title">Checksum folding, word by word</span><span class="badge">predict, then step</span></div>
+      <div class="ck-input">
+        <label for="ck-hex" class="small">IPv4 header (hex):</label> <input id="ck-hex" type="text" spellcheck="false" autocomplete="off">
+        <span id="ck-presets" style="display:flex;flex-wrap:wrap;gap:.3rem"></span>
+      </div>
+      <div class="ck-msg" id="ck-msg"></div>
+      <div class="widget-body">
+        <div class="table-wrap"><table class="ck compact">
+          <thead><tr><th class="num">word</th><th>bytes</th><th class="num">value</th><th class="num">running sum</th><th>note</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+        <div class="stat-row ck-res"></div>
+      </div>
+    </div>
+
+    <h3 id="cksum-lib">The library, and why you never byte-swap a checksum</h3>
+    <p><span class="src-path">lib/net/rte_cksum.h</span> provides the raw sum, <span class="src-path">lib/net/rte_ip4.h</span> and <span class="src-path">rte_ip6.h</span> the protocol versions:</p>
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>Function</th><th>Returns</th></tr></thead>
+      <tbody>
+        <tr><td><code>rte_raw_cksum(buf, len)</code></td><td>the folded one's-complement sum, <b>not</b> inverted. Use it for ICMP (<code>~rte_raw_cksum()</code>) and for verifying (== 0xffff).</td></tr>
+        <tr><td><code>rte_raw_cksum_mbuf(m, off, len, &amp;sum)</code></td><td>the same over a possibly multi-segment mbuf.</td></tr>
+        <tr><td><code>rte_ipv4_cksum(ip)</code></td><td>the IPv4 header checksum, ready to store. <code>hdr_checksum</code> must be 0 first.</td></tr>
+        <tr><td><code>rte_ipv4_cksum_simple(ip)</code></td><td>same, skips the checksum field so you need not zero it; no options. Experimental.</td></tr>
+        <tr><td><code>rte_ipv4_phdr_cksum(ip, ol_flags)</code></td><td>the sum of the pseudo-header only, not inverted. With TSO flags it leaves out the length; TX checksum offload (ch19) wants exactly this pre-filled in the L4 checksum field.</td></tr>
+        <tr><td><code>rte_ipv4_udptcp_cksum(ip, l4)</code></td><td>the full UDP/TCP checksum, ready to store; turns 0 into 0xffff for UDP.</td></tr>
+        <tr><td><code>rte_ipv4_udptcp_cksum_verify(ip, l4)</code></td><td>0 if the L4 checksum is correct, -1 if not.</td></tr>
+        <tr><td><code>rte_ipv6_udptcp_cksum()</code>, <code>_verify()</code>, <code>_mbuf()</code> variants</td><td>the IPv6 equivalents (UDP checksum is mandatory over IPv6).</td></tr>
+      </tbody>
+    </table></div>
+    <p><code>cksum_lab.c</code> runs the same textbook header through all of them. Its output is the clearest explanation of the byte-order rule:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/cksum_lab.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="82"><code class="language-c">	/* ---------------- 2. the library ---------------- */
+	printf("\n== 2. the library (this CPU is little-endian)\n");
+	raw = rte_raw_cksum(h.b, 20);
+	lib = rte_ipv4_cksum(&amp;h.ip);
+	simple = rte_ipv4_cksum_simple(&amp;h.ip);   /* experimental: skips the field */
+	printf("  rte_raw_cksum(hdr, 20)   = 0x%04x  (folded, NOT inverted, host-loaded words)\n", raw);
+	printf("  rte_ipv4_cksum(hdr)      = 0x%04x\n", lib);
+	printf("  rte_ipv4_cksum_simple()  = 0x%04x\n", simple);
+	printf("  rte_be_to_cpu_16(lib)    = 0x%04x  == by hand 0x%04x ? %s\n",
+	       rte_be_to_cpu_16(lib), by_hand,
+	       rte_be_to_cpu_16(lib) == by_hand ? "yes" : "NO");
+
+	/* ---------------- 3. byte order ---------------- */
+	printf("\n== 3. storing it: write the value exactly as returned\n");
+	h.ip.hdr_checksum = lib;
+	printf("  hdr_checksum = rte_ipv4_cksum()      -&gt; bytes %02x %02x on the wire (correct)\n",
+	       h.b[10], h.b[11]);
+	h.ip.hdr_checksum = rte_cpu_to_be_16(lib);</code></pre>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 1)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./cksum_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch10-ck</span>
+== 1. one's-complement sum of the 10 header words (network order)
+  word 0  bytes 45 00  = 0x4500   running sum 0x04500
+  word 1  bytes 00 73  = 0x0073   running sum 0x04573
+  word 2  bytes 00 00  = 0x0000   running sum 0x04573
+  word 3  bytes 40 00  = 0x4000   running sum 0x08573
+  word 4  bytes 40 11  = 0x4011   running sum 0x0c584
+  word 5  bytes 00 00  = 0x0000   running sum 0x0c584   (checksum field, 0 while computing)
+  word 6  bytes c0 a8  = 0xc0a8   running sum 0x1862c
+  word 7  bytes 00 01  = 0x0001   running sum 0x1862d
+  word 8  bytes c0 a8  = 0xc0a8   running sum 0x246d5
+  word 9  bytes 00 c7  = 0x00c7   running sum 0x2479c
+  32-bit sum            = 0x0002479c
+  fold: 0x479c + 0x2    = 0x479e  (add the carries back in)
+  invert                = 0xb861  &lt;- the checksum, in network order
+
+== 2. the library (this CPU is little-endian)
+  rte_raw_cksum(hdr, 20)   = 0x9e47  (folded, NOT inverted, host-loaded words)
+  rte_ipv4_cksum(hdr)      = 0x61b8
+  rte_ipv4_cksum_simple()  = 0x61b8
+  rte_be_to_cpu_16(lib)    = 0xb861  == by hand 0xb861 ? yes
+
+== 3. storing it: write the value exactly as returned
+  hdr_checksum = rte_ipv4_cksum()      -&gt; bytes b8 61 on the wire (correct)
+<span class="err">  hdr_checksum = rte_cpu_to_be_16(...) -&gt; bytes 61 b8 (WRONG: swapped twice)</span>
+  why: one's-complement sums are byte-order independent; summing
+  byte-swapped words gives the byte-swapped sum, so the result is
+  already in 'memory order'. Swapping it again breaks it.
+
+== 4. verification: sum over a header that INCLUDES its checksum
+  correct header : rte_raw_cksum = 0xffff (0xffff means valid)
+<span class="err">  swapped cksum  : rte_raw_cksum = 0x56a9 (invalid)</span>
+
+== 5. bug: recomputing without zeroing hdr_checksum first
+  rte_ipv4_cksum() on the unzeroed header = 0x0000 (should be 0x61b8)
+  rte_ipv4_cksum_simple() ignores the field = 0x61b8</pre>
+    </div>
+    <p class="output-caption">Section 1 is the hand computation: 0x2479c folds to 0x479e and inverts to 0xb861. Section 2 is the surprise: on x86 <code>rte_raw_cksum()</code> says 0x9e47 and <code>rte_ipv4_cksum()</code> says 0x61b8, the byte-swapped versions. Section 3 explains why that is right: the library loads the words in host order, gets the byte-swapped sum (one's-complement sums commute with byte swapping), and the result is already in "memory order". Store it as returned and the wire shows <code>b8 61</code>. Swap it with <code>rte_cpu_to_be_16()</code> and you break it (section 4, sum 0x56a9 instead of 0xffff). Section 5: forgetting to zero the field gives 0x0000, because you just summed a valid header.</p>
+
+    <h3 id="pseudo">UDP and TCP: the pseudo-header</h3>
+    <p>The UDP and TCP checksums protect more than their own header: they also cover a <span class="key-term">pseudo-header</span> made of the IP source and destination address, the protocol number and the L4 length. It is never transmitted; both ends build it from the IP header. That way a packet delivered to the wrong address fails its L4 checksum even if the IP checksum was "fixed" along the way.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 200" role="img" aria-labelledby="f-psd-t">
+        <title id="f-psd-t">The IPv4 UDP checksum covers a 12-byte pseudo-header (source address, destination address, zero, protocol, UDP length) plus the UDP header and data.</title>
+        <text class="svg-label bold" x="20" y="24">pseudo-header (never sent, 12 bytes)</text>
+        <rect class="svg-box c2 dashed" x="20" y="34" width="150" height="40"/><text class="svg-label center small" x="95" y="58">src_addr (4)</text>
+        <rect class="svg-box c2 dashed" x="170" y="34" width="150" height="40"/><text class="svg-label center small" x="245" y="58">dst_addr (4)</text>
+        <rect class="svg-box c7 dashed" x="320" y="34" width="50" height="40"/><text class="svg-label center small" x="345" y="58">0</text>
+        <rect class="svg-box c2 dashed" x="370" y="34" width="70" height="40"/><text class="svg-label center small" x="405" y="58">proto 17</text>
+        <rect class="svg-box c3 dashed" x="440" y="34" width="110" height="40"/><text class="svg-label center small" x="495" y="58">UDP length (2)</text>
+        <text class="svg-label bold" x="20" y="104">sent on the wire</text>
+        <rect class="svg-box c3" x="20" y="114" width="230" height="40"/><text class="svg-label center small" x="135" y="138">UDP header: ports, length, cksum=0</text>
+        <rect class="svg-box c7" x="250" y="114" width="300" height="40"/><text class="svg-label center small" x="400" y="138">data (odd length: pad 1 zero byte for the sum)</text>
+        <path class="svg-arrow accent" d="M570,54 C640,54 640,100 600,130"/>
+        <path class="svg-arrow accent" d="M552,134 L590,134"/>
+        <rect class="svg-box c4" x="600" y="104" width="110" height="60"/>
+        <text class="svg-label center small bold" x="655" y="128">~fold(sum)</text>
+        <text class="svg-label center small mono" x="655" y="146">-&gt; dgram_cksum</text>
+        <text class="svg-label small muted" x="20" y="186">rte_ipv4_phdr_cksum(ip, 0) sums the top row; rte_ipv4_udptcp_cksum(ip, udp) adds rte_raw_cksum(udp, len), folds and inverts.</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>What the UDP checksum covers. Change the IP destination (NAT, ch30's router does not, but a load balancer would) and you must fix both the IP and the UDP checksum.</figcaption>
+    </figure>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (cksum_lab section 7)</span></div>
+<pre>== 7. UDP checksum = sum(pseudo-header) + sum(UDP header + data)
+  pseudo-header = src 192.168.0.1, dst 192.168.0.199, zero, proto 17, len 11
+  rte_ipv4_phdr_cksum()   = 0x3582 (not inverted; also what TX offload
+                            drivers want pre-filled, see ch19)
+  rte_raw_cksum(udp, 11)  = 0x76d8 (odd length: last byte padded with 0)
+  rte_ipv4_udptcp_cksum() = 0x53a5  = ~fold(0x3582 + 0x76d8)
+  rte_ipv4_udptcp_cksum_verify() = 0 (0 = valid)
+  after flipping 1 payload bit: verify = -1
+  after changing only the IP dst (pseudo-header!): verify = -1</pre>
+    </div>
+    <p class="output-caption">0x3582 + 0x76d8 = 0xac5a, inverted 0x53a5. The odd 3-byte payload was padded with a zero byte for the sum (but not sent). Flipping one payload bit, or only the IP destination, both make <code>rte_ipv4_udptcp_cksum_verify()</code> return -1.</p>
+    <p>Two UDP special cases: over IPv4 a checksum of 0 means "not computed" (VXLAN uses that for its outer UDP header), so a <em>computed</em> 0 is sent as 0xffff, the other representation of zero in one's complement. <code>rte_ipv4_udptcp_cksum()</code> does that for you. Over IPv6 the UDP checksum is mandatory.</p>
+
+    <h3 id="incremental">Incremental update (RFC 1624)</h3>
+    <p>A router that decrements the TTL does not need to re-sum the whole header. If one 16-bit word changes from <code>m</code> to <code>m'</code>, the new checksum is <code>HC' = ~(~HC + ~m + m')</code> (RFC 1624, equation 3). TTL shares its word with the protocol byte, so 0x4011 becomes 0x3f11:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (cksum_lab section 6)</span></div>
+<pre>== 6. router step: TTL 64 -&gt; 63, incremental update (RFC 1624 eqn. 3)
+  HC=0xb861  m=0x4011  m'=0x3f11
+  ~HC + ~m + m' = 0x479e + 0xbfee + 0x3f11 = 0x1469d -&gt; fold 0x469e -&gt; ~ 0xb961
+<span class="ok">  full recompute = 0xb961   incremental = 0xb961   MATCH</span>
+  (RFC 1141 shortcut for TTL-1: HC + 0x0100 = 0xb961)</pre>
+    </div>
+    <p class="output-caption">The incremental result equals a full recompute. This is how l3fwd-style routers keep the TTL decrement cheap; exercise 2 extends it to a changed destination address, which also touches the UDP checksum.</p>
+
+    <!-- ================================================================== -->
+    <h2 id="safe-parsing"><span class="sec-num">7</span>Safe parsing</h2>
+    <p>Packets come from the outside world. Some are truncated, some lie in their length fields, some are crafted to crash you. A parser that reads <code>ip-&gt;total_length</code> from a 24-byte frame reads whatever memory follows the packet. Four rules prevent that:</p>
+    <ol>
+      <li><b>Check before you dereference.</b> Before casting a pointer to a header at offset <code>off</code>, make sure <code>off + sizeof(header) &lt;= length</code>.</li>
+      <li><b>Validate the fields you use to move on</b>: IPv4 version and IHL &ge; 5, <code>total_length</code> between the header length and the bytes you have, IPv6 <code>payload_len</code>, the TCP data offset, extension-header lengths.</li>
+      <li><b>Use the protocol's length, not the buffer's,</b> for the next layer (Ethernet padding is not payload).</li>
+      <li><b>Do not assume one segment.</b> In a multi-segment mbuf (jumbo frames, ch7) <code>rte_pktmbuf_mtod_offset()</code> is only valid inside the first segment's <code>data_len</code>, not <code>pkt_len</code>.</li>
+    </ol>
+    <p><code>rte_pktmbuf_read(m, off, len, buf)</code> in <span class="src-path">lib/mbuf/rte_mbuf.h</span> implements rules 1 and 4 in one call. If <code>[off, off+len)</code> is inside the first segment it returns a pointer straight into the mbuf (no copy, just a compare). If the bytes exist but span segments, it copies them into your <code>buf</code> and returns <code>buf</code>. If the packet is too short it returns NULL. <code>rte_net_get_ptype()</code> uses it internally for every header.</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 200" role="img" aria-labelledby="f-seg-t">
+        <title id="f-seg-t">A 54-byte packet split into a 20-byte first segment and a 34-byte second segment. The IPv4 header from byte 14 to 34 spans both; rte_pktmbuf_read copies it into a stack buffer.</title>
+        <text class="svg-label bold" x="20" y="22">mbuf chain: pkt_len 54</text>
+        <rect class="svg-box c3" x="20" y="34" width="200" height="44"/>
+        <text class="svg-label center small" x="120" y="52">seg 0: data_len 20</text>
+        <text class="svg-label center small mono" x="120" y="68">Eth (14) + 6 B of IPv4</text>
+        <rect class="svg-box c3" x="300" y="34" width="400" height="44"/>
+        <text class="svg-label center small" x="500" y="52">seg 1: data_len 34</text>
+        <text class="svg-label center small mono" x="500" y="68">14 B of IPv4 + UDP + payload</text>
+        <path class="svg-arrow c7" d="M220,56 L298,56"/><text class="svg-label center small mono" x="259" y="48">next</text>
+        <rect class="svg-box c2 dashed" x="160" y="90" width="60" height="22"/>
+        <rect class="svg-box c2 dashed" x="300" y="90" width="140" height="22"/>
+        <text class="svg-label center small" x="300" y="128">the IPv4 header [14, 34) lives in two places</text>
+        <path class="svg-arrow c4" d="M190,114 L190,150"/>
+        <text class="svg-label small mono" x="20" y="168">mtod_offset(m, ip*, 14): reads 14 bytes past seg 0 = garbage</text>
+        <path class="svg-arrow accent" d="M370,114 L470,150"/>
+        <rect class="svg-box c2" x="470" y="140" width="230" height="40"/>
+        <text class="svg-label center small mono" x="585" y="164">rte_pktmbuf_read(): copy in buf</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The case <code>parse_pcap.c</code> builds at the end of its run: a header that starts in one segment and ends in the next. A raw pointer would read past the first segment; <code>rte_pktmbuf_read()</code> gathers the 20 bytes into a local copy.</figcaption>
+    </figure>
+
+    <h3 id="parse-code">parse_pcap.c</h3>
+    <p>The parser reads every frame of a pcap through <code>net_pcap</code>, walks Ethernet, one VLAN tag, ARP, IPv4 (with options and fragments), IPv6 (with extension headers), UDP, TCP, ICMP and VXLAN, checks every length, verifies every checksum, and prints one line per frame. One macro does all header access:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/parse_pcap.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="69"><code class="language-c">#define HDR(m, off, type, buf) \
+	((const type *)rte_pktmbuf_read((m), (off), sizeof(type), (buf)))</code></pre>
+    </div>
+    <p>And this is what checking-before-trusting looks like for IPv4. Every early return is one of the rules above:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/parse_pcap.c: parse_ipv4()</span><span class="lang">C</span></div>
+<pre data-lines data-start="210" data-hl="211,221,227"><code class="language-c">	ip = HDR(m, off, struct rte_ipv4_hdr, hbuf);
+	if (ip == NULL) {
+		out("IPv4 | DROP: truncated IPv4 header (need %zu bytes at offset %u, frame has %u)",
+		    sizeof(*ip), off, rte_pktmbuf_pkt_len(m));
+		return;
+	}
+	if ((ip-&gt;version_ihl &gt;&gt; 4) != 4) {
+		out("IPv4 | DROP: version %u", ip-&gt;version_ihl &gt;&gt; 4);
+		return;
+	}
+	hlen = rte_ipv4_hdr_len(ip);          /* (version_ihl &amp; 0xf) * 4 */
+	if (hlen &lt; sizeof(*ip)) {
+		out("IPv4 | DROP: IHL %u gives %u-byte header (&lt; 20)",
+		    ip-&gt;version_ihl &amp; RTE_IPV4_HDR_IHL_MASK, hlen);
+		return;
+	}
+	total = rte_be_to_cpu_16(ip-&gt;total_length);
+	if (total &lt; hlen || off + total &gt; rte_pktmbuf_pkt_len(m)) {
+		out("IPv4 | DROP: total_length %u does not fit", total);
+		return;
+	}
+	if (hlen &gt; sizeof(*ip)) {             /* re-read including options */
+		ip = rte_pktmbuf_read(m, off, hlen, hbuf);
+		if (ip == NULL)
+			return;
+		out("IPv4(+%u opt bytes) ", hlen - (unsigned int)sizeof(*ip));
+	} else {
+		out("IPv4 ");</code></pre>
+    </div>
+    <div class="tabs">
+      <div class="tab-list"><button class="tab-btn" data-tab="pp">parse_pcap.c (full)</button><button class="tab-btn" data-tab="gp">gen_pcaps.py</button><button class="tab-btn" data-tab="hp">ch10_port.h</button></div>
+      <div class="tab-panel" data-tab="pp"><details><summary>Show the whole program</summary><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * Chapter 10: parse_pcap.c - a bounds-checked packet parser.
+ *
+ * Reads every frame from port 0 (normally net_pcap with rx_pcap=mixed.pcap),
+ * parses Ethernet / one 802.1Q tag / ARP / IPv4 / IPv6 (+ extension headers)
+ * / UDP / TCP / ICMP / VXLAN by hand, checks every length against the packet
+ * before touching it, verifies checksums, and prints one line per frame.
+ * Then it asks the library parser rte_net_get_ptype() for its opinion on the
+ * same frame and prints the packet type name and header lengths.
+ *
+ * Finally it builds a two-segment mbuf whose IPv4 header is split across the
+ * two segments, to show why rte_pktmbuf_read() is the safe way to get a
+ * header.
+ *
+ *   ./parse_pcap -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-parse \
+ *       --vdev=net_pcap0,rx_pcap=mixed.pcap,tx_pcap=/dev/null
+ */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdarg.h&gt;
+#include &lt;netinet/in.h&gt;
+
+#include &lt;rte_eal.h&gt;
+#include &lt;rte_ethdev.h&gt;
+#include &lt;rte_mbuf.h&gt;
+#include &lt;rte_mbuf_ptype.h&gt;
+#include &lt;rte_ether.h&gt;
+#include &lt;rte_arp.h&gt;
+#include &lt;rte_ip4.h&gt;
+#include &lt;rte_ip6.h&gt;
+#include &lt;rte_udp.h&gt;
+#include &lt;rte_tcp.h&gt;
+#include &lt;rte_icmp.h&gt;
+#include &lt;rte_vxlan.h&gt;
+#include &lt;rte_net.h&gt;
+#include &lt;rte_cksum.h&gt;
+
+#include "ch10_port.h"
+
+/* ---- a tiny line builder so each frame prints on one line ---- */
+static char line[512];
+static size_t line_len;
+
+static void
+out(const char *fmt, ...)
+{
+	va_list ap;
+
+	if (line_len &gt;= sizeof(line))
+		return;
+	va_start(ap, fmt);
+	line_len += vsnprintf(line + line_len, sizeof(line) - line_len, fmt, ap);
+	va_end(ap);
+	if (line_len &gt; sizeof(line))
+		line_len = sizeof(line);
+}
+
+/*
+ * THE one rule of safe parsing: never dereference a header before you know
+ * the packet really contains it.  rte_pktmbuf_read() does the check for us:
+ *  - if [off, off+len) lies inside the first segment it returns a pointer
+ *    straight into the mbuf data (no copy, the fast path);
+ *  - if the bytes exist but span segments it copies them into 'buf' and
+ *    returns buf;
+ *  - if the packet is shorter than off+len it returns NULL.
+ * Always pass a buffer at least 'len' bytes long.
+ */
+#define HDR(m, off, type, buf) \
+	((const type *)rte_pktmbuf_read((m), (off), sizeof(type), (buf)))
+
+/* A scratch area big enough for a whole L4 segment when it must be copied. */
+static uint8_t l4_copy[2048];
+
+static void
+ip4_str(rte_be32_t a, char *s, size_t n)
+{
+	uint32_t h = rte_be_to_cpu_32(a);   /* network -&gt; host order first */
+
+	snprintf(s, n, "%u.%u.%u.%u", h &gt;&gt; 24, (h &gt;&gt; 16) &amp; 0xff,
+		 (h &gt;&gt; 8) &amp; 0xff, h &amp; 0xff);
+}
+
+static int parse_ether(const struct rte_mbuf *m, uint32_t off, int depth);
+
+/* L4 for both IP versions. 'ip4'/'ip6' says which pseudo-header to use. */
+static void
+parse_l4(const struct rte_mbuf *m, uint32_t off, uint32_t l4_len, uint8_t proto,
+	 const struct rte_ipv4_hdr *ip4, const struct rte_ipv6_hdr *ip6,
+	 int depth)
+{
+	const void *l4;
+
+	switch (proto) {
+	case IPPROTO_UDP: {
+		struct rte_udp_hdr ubuf;
+		const struct rte_udp_hdr *u = HDR(m, off, struct rte_udp_hdr, &amp;ubuf);
+
+		if (u == NULL || l4_len &lt; sizeof(*u)) {
+			out(" | DROP: truncated UDP header");
+			return;
+		}
+		out(":%u -&gt; :%u UDP", rte_be_to_cpu_16(u-&gt;src_port),
+		    rte_be_to_cpu_16(u-&gt;dst_port));
+		break;
+	}
+	case IPPROTO_TCP: {
+		struct rte_tcp_hdr tbuf;
+		const struct rte_tcp_hdr *t = HDR(m, off, struct rte_tcp_hdr, &amp;tbuf);
+
+		if (t == NULL || l4_len &lt; sizeof(*t)) {
+			out(" | DROP: truncated TCP header");
+			return;
+		}
+		out(":%u -&gt; :%u TCP[%s%s] hlen=%u", rte_be_to_cpu_16(t-&gt;src_port),
+		    rte_be_to_cpu_16(t-&gt;dst_port),
+		    (t-&gt;tcp_flags &amp; RTE_TCP_SYN_FLAG) ? "S" : "",
+		    (t-&gt;tcp_flags &amp; RTE_TCP_ACK_FLAG) ? "A" : "",
+		    (t-&gt;data_off &gt;&gt; 4) * 4);
+		break;
+	}
+	case IPPROTO_ICMP: {
+		struct rte_icmp_hdr ibuf;
+		const struct rte_icmp_hdr *ic = HDR(m, off, struct rte_icmp_hdr, &amp;ibuf);
+
+		if (ic == NULL || l4_len &lt; sizeof(*ic)) {
+			out(" | DROP: truncated ICMP header");
+			return;
+		}
+		/* 26.11: RTE_ICMP_TYPE_ECHO_REQUEST (RTE_IP_ICMP_ECHO_* are gone) */
+		if (ic-&gt;icmp_type == RTE_ICMP_TYPE_ECHO_REQUEST)
+			out("ICMP echo-request id=0x%04x seq=%u",
+			    rte_be_to_cpu_16(ic-&gt;icmp_ident),
+			    rte_be_to_cpu_16(ic-&gt;icmp_seq_nb));
+		else
+			out("ICMP type=%u code=%u", ic-&gt;icmp_type, ic-&gt;icmp_code);
+		break;
+	}
+	default:
+		out(" proto=%u (not parsed)", proto);
+		return;
+	}
+
+	/* Checksum: we need the whole L4 segment in contiguous memory. */
+	if (l4_len &gt; sizeof(l4_copy)) {
+		out(" l4csum=skipped(too long)");
+		return;
+	}
+	l4 = rte_pktmbuf_read(m, off, l4_len, l4_copy);
+	if (l4 == NULL) {
+		out(" | DROP: L4 shorter than the IP header claims");
+		return;
+	}
+	if (proto == IPPROTO_UDP &amp;&amp; ((const struct rte_udp_hdr *)l4)-&gt;dgram_cksum == 0) {
+		/* UDP over IPv4 may omit the checksum (0 means "none"). */
+		out(" l4csum=none");
+	} else if (proto == IPPROTO_ICMP) {
+		/* ICMP has no pseudo-header: plain sum over the message. */
+		out(" l4csum=%s", rte_raw_cksum(l4, l4_len) == 0xffff ? "ok" : "BAD");
+	} else if (ip4 != NULL) {
+		out(" l4csum=%s",
+		    rte_ipv4_udptcp_cksum_verify(ip4, l4) == 0 ? "ok" : "BAD");
+	} else {
+		/*
+		 * rte_ipv6_udptcp_cksum*() build the pseudo-header from
+		 * ip6-&gt;payload_len and ip6-&gt;proto. With extension headers both
+		 * are wrong for the pseudo-header (payload_len includes the
+		 * extensions, proto names the first extension). Fix a COPY of
+		 * the header so the library sees what RFC 8200 8.1 asks for.
+		 */
+		struct rte_ipv6_hdr fixed = *ip6;
+
+		fixed.payload_len = rte_cpu_to_be_16((uint16_t)l4_len);
+		fixed.proto = proto;
+		if (fixed.proto != ip6-&gt;proto)
+			out(" l4csum(naive)=%s",
+			    rte_ipv6_udptcp_cksum_verify(ip6, l4) == 0 ? "ok" : "BAD");
+		out(" l4csum=%s",
+		    rte_ipv6_udptcp_cksum_verify(&amp;fixed, l4) == 0 ? "ok" : "BAD");
+	}
+
+	/* VXLAN: UDP destination port 4789, 8-byte header, then a whole frame. */
+	if (proto == IPPROTO_UDP &amp;&amp; depth == 0) {
+		const struct rte_udp_hdr *u = l4;
+		struct rte_vxlan_hdr vbuf;
+		const struct rte_vxlan_hdr *vx;
+
+		if (u-&gt;dst_port != RTE_BE16(RTE_VXLAN_DEFAULT_PORT))
+			return;
+		vx = HDR(m, off + sizeof(*u), struct rte_vxlan_hdr, &amp;vbuf);
+		if (vx == NULL) {
+			out(" | DROP: truncated VXLAN header");
+			return;
+		}
+		/* vx_vni holds the 24-bit VNI in its top 3 bytes. */
+		out(" VXLAN vni=%u {", rte_be_to_cpu_32(vx-&gt;vx_vni) &gt;&gt; 8);
+		parse_ether(m, off + sizeof(*u) + sizeof(*vx), depth + 1);
+		out(" }");
+	}
+}
+
+static void
+parse_ipv4(const struct rte_mbuf *m, uint32_t off, int depth)
+{
+	uint8_t hbuf[60];                 /* max IPv4 header: IHL 15 * 4 */
+	const struct rte_ipv4_hdr *ip;
+	uint16_t hlen, total, frag, frag_off;
+	char s[16], d[16];
+
+	ip = HDR(m, off, struct rte_ipv4_hdr, hbuf);
+	if (ip == NULL) {
+		out("IPv4 | DROP: truncated IPv4 header (need %zu bytes at offset %u, frame has %u)",
+		    sizeof(*ip), off, rte_pktmbuf_pkt_len(m));
+		return;
+	}
+	if ((ip-&gt;version_ihl &gt;&gt; 4) != 4) {
+		out("IPv4 | DROP: version %u", ip-&gt;version_ihl &gt;&gt; 4);
+		return;
+	}
+	hlen = rte_ipv4_hdr_len(ip);          /* (version_ihl &amp; 0xf) * 4 */
+	if (hlen &lt; sizeof(*ip)) {
+		out("IPv4 | DROP: IHL %u gives %u-byte header (&lt; 20)",
+		    ip-&gt;version_ihl &amp; RTE_IPV4_HDR_IHL_MASK, hlen);
+		return;
+	}
+	total = rte_be_to_cpu_16(ip-&gt;total_length);
+	if (total &lt; hlen || off + total &gt; rte_pktmbuf_pkt_len(m)) {
+		out("IPv4 | DROP: total_length %u does not fit", total);
+		return;
+	}
+	if (hlen &gt; sizeof(*ip)) {             /* re-read including options */
+		ip = rte_pktmbuf_read(m, off, hlen, hbuf);
+		if (ip == NULL)
+			return;
+		out("IPv4(+%u opt bytes) ", hlen - (unsigned int)sizeof(*ip));
+	} else {
+		out("IPv4 ");
+	}
+	ip4_str(ip-&gt;src_addr, s, sizeof(s));
+	ip4_str(ip-&gt;dst_addr, d, sizeof(d));
+	out("%s -&gt; %s ttl=%u ipcsum=%s ", s, d, ip-&gt;time_to_live,
+	    /* sum over a correct header INCLUDING its checksum is 0xffff */
+	    rte_raw_cksum(ip, hlen) == 0xffff ? "ok" : "BAD");
+
+	frag = rte_be_to_cpu_16(ip-&gt;fragment_offset);
+	frag_off = (frag &amp; RTE_IPV4_HDR_OFFSET_MASK) * RTE_IPV4_HDR_OFFSET_UNITS;
+	if (frag &amp; RTE_IPV4_HDR_MF_FLAG || frag_off) {
+		out("frag(id=%u off=%u MF=%u) ", rte_be_to_cpu_16(ip-&gt;packet_id),
+		    frag_off, !!(frag &amp; RTE_IPV4_HDR_MF_FLAG));
+		if (frag_off != 0) {
+			/* only the first fragment carries the L4 header */
+			out("proto=%u, no L4 header in this fragment", ip-&gt;next_proto_id);
+			return;
+		}
+		if (ip-&gt;next_proto_id == IPPROTO_UDP) {
+			/* L4 header is here, but the checksum covers all fragments */
+			struct rte_udp_hdr ubuf;
+			const struct rte_udp_hdr *u =
+				HDR(m, off + hlen, struct rte_udp_hdr, &amp;ubuf);
+			if (u != NULL)
+				out(":%u -&gt; :%u UDP l4csum=needs-reassembly",
+				    rte_be_to_cpu_16(u-&gt;src_port),
+				    rte_be_to_cpu_16(u-&gt;dst_port));
+			return;
+		}
+	}
+	parse_l4(m, off + hlen, total - hlen, ip-&gt;next_proto_id, ip, NULL, depth);
+}
+
+static void
+parse_ipv6(const struct rte_mbuf *m, uint32_t off, int depth)
+{
+	struct rte_ipv6_hdr hbuf;
+	const struct rte_ipv6_hdr *ip6 = HDR(m, off, struct rte_ipv6_hdr, &amp;hbuf);
+	uint32_t vtc, plen, cur;
+	int proto, i;
+	char s[INET6_ADDRSTRLEN], d[INET6_ADDRSTRLEN];
+
+	if (ip6 == NULL) {
+		out("IPv6 | DROP: truncated IPv6 header");
+		return;
+	}
+	if (rte_ipv6_check_version(ip6) != 0) {
+		out("IPv6 | DROP: bad version");
+		return;
+	}
+	plen = rte_be_to_cpu_16(ip6-&gt;payload_len);
+	if (off + sizeof(*ip6) + plen &gt; rte_pktmbuf_pkt_len(m)) {
+		out("IPv6 | DROP: payload_len %u does not fit", plen);
+		return;
+	}
+	/* 26.11: no bitfields; mask/shift the host-order vtc_flow word. */
+	vtc = rte_be_to_cpu_32(ip6-&gt;vtc_flow);
+	snprintf(s, sizeof(s), RTE_IPV6_ADDR_FMT, RTE_IPV6_ADDR_SPLIT(&amp;ip6-&gt;src_addr));
+	snprintf(d, sizeof(d), RTE_IPV6_ADDR_FMT, RTE_IPV6_ADDR_SPLIT(&amp;ip6-&gt;dst_addr));
+	out("IPv6 %s -&gt; %s tc=0x%02x flow=0x%05x hlim=%u ", s, d,
+	    (vtc &amp; RTE_IPV6_HDR_TC_MASK) &gt;&gt; RTE_IPV6_HDR_TC_SHIFT,
+	    (vtc &amp; RTE_IPV6_HDR_FL_MASK) &gt;&gt; RTE_IPV6_HDR_FL_SHIFT,
+	    ip6-&gt;hop_limits);
+
+	/* Walk extension headers: rte_ipv6_get_next_ext() needs 2 bytes. */
+	proto = ip6-&gt;proto;
+	cur = off + sizeof(*ip6);
+	for (i = 0; i &lt; 8; i++) {
+		uint8_t eb[2];
+		const uint8_t *p = rte_pktmbuf_read(m, cur, 2, eb);
+		size_t ext_len;
+		int next;
+
+		if (p == NULL)
+			break;
+		next = rte_ipv6_get_next_ext(p, proto, &amp;ext_len);
+		if (next &lt; 0)
+			break;                  /* proto is not an extension */
+		out("ext(%d,%zuB) ", proto, ext_len);
+		cur += ext_len;
+		proto = next;
+		if (cur &gt; off + sizeof(*ip6) + plen) {
+			out("| DROP: extension headers overrun the payload");
+			return;
+		}
+	}
+	parse_l4(m, cur, off + sizeof(*ip6) + plen - cur, (uint8_t)proto,
+		 NULL, ip6, depth);
+}
+
+static void
+parse_arp(const struct rte_mbuf *m, uint32_t off)
+{
+	struct rte_arp_hdr abuf;
+	const struct rte_arp_hdr *a = HDR(m, off, struct rte_arp_hdr, &amp;abuf);
+	char sip[16], tip[16], sha[RTE_ETHER_ADDR_FMT_SIZE];
+
+	if (a == NULL) {
+		out("ARP | DROP: truncated");
+		return;
+	}
+	ip4_str(a-&gt;arp_data.arp_sip, sip, sizeof(sip));
+	ip4_str(a-&gt;arp_data.arp_tip, tip, sizeof(tip));
+	rte_ether_format_addr(sha, sizeof(sha), &amp;a-&gt;arp_data.arp_sha);
+	if (a-&gt;arp_opcode == RTE_BE16(RTE_ARP_OP_REQUEST))
+		out("ARP request: who has %s? tell %s (%s)", tip, sip, sha);
+	else
+		out("ARP op=%u %s -&gt; %s", rte_be_to_cpu_16(a-&gt;arp_opcode), sip, tip);
+}
+
+/* Returns 0 if an L3 header was found, -1 otherwise. */
+static int
+parse_ether(const struct rte_mbuf *m, uint32_t off, int depth)
+{
+	struct rte_ether_hdr ebuf;
+	const struct rte_ether_hdr *eth = HDR(m, off, struct rte_ether_hdr, &amp;ebuf);
+	uint16_t type;
+
+	if (eth == NULL) {
+		out("| DROP: shorter than an Ethernet header");
+		return -1;
+	}
+	if (depth &gt; 0) {
+		char dst[RTE_ETHER_ADDR_FMT_SIZE];
+
+		rte_ether_format_addr(dst, sizeof(dst), &amp;eth-&gt;dst_addr);
+		out("inner-eth dst=%s ", dst);
+	}
+	type = rte_be_to_cpu_16(eth-&gt;ether_type);
+	off += sizeof(*eth);
+
+	if (type == RTE_ETHER_TYPE_VLAN) {      /* one 802.1Q tag */
+		struct rte_vlan_hdr vbuf;
+		const struct rte_vlan_hdr *vh = HDR(m, off, struct rte_vlan_hdr, &amp;vbuf);
+		uint16_t tci;
+
+		if (vh == NULL) {
+			out("| DROP: truncated VLAN tag");
+			return -1;
+		}
+		tci = rte_be_to_cpu_16(vh-&gt;vlan_tci);
+		out("vlan=%u pcp=%u ", tci &amp; 0xfff, tci &gt;&gt; 13);
+		type = rte_be_to_cpu_16(vh-&gt;eth_proto);
+		off += sizeof(*vh);
+	}
+
+	switch (type) {
+	case RTE_ETHER_TYPE_IPV4:
+		parse_ipv4(m, off, depth);
+		return 0;
+	case RTE_ETHER_TYPE_IPV6:
+		parse_ipv6(m, off, depth);
+		return 0;
+	case RTE_ETHER_TYPE_ARP:
+		parse_arp(m, off);
+		return 0;
+	default:
+		/* QinQ (0x88a8) lands here: that is exercise 1 */
+		out("ethertype 0x%04x not handled", type);
+		return -1;
+	}
+}
+
+/* Print what the library parser thinks of the same frame. */
+static void
+print_ptype(struct rte_mbuf *m)
+{
+	struct rte_net_hdr_lens hl = {0};
+	char name[256];
+	uint32_t ptype = rte_net_get_ptype(m, &amp;hl, RTE_PTYPE_ALL_MASK);
+
+	rte_get_ptype_name(ptype, name, sizeof(name));
+	printf("      ptype=0x%08x %s\n", ptype, name);
+	printf("      hdr_lens l2=%u l3=%u l4=%u", hl.l2_len, hl.l3_len, hl.l4_len);
+	if (ptype &amp; RTE_PTYPE_TUNNEL_MASK)
+		printf(" tunnel=%u inner_l2=%u inner_l3=%u inner_l4=%u",
+		       hl.tunnel_len, hl.inner_l2_len, hl.inner_l3_len,
+		       hl.inner_l4_len);
+	printf("\n");
+
+	/*
+	 * Sanity check: INNER_* bits without a TUNNEL_* bit make no sense.
+	 * In 26.11 this happens for IPv4/ICMP: L4 "unknown" sends the parser
+	 * into its inner-header code with proto = 1 (ICMP), which equals
+	 * RTE_VXLAN_GPE_TYPE_IPV4, so the ICMP message is decoded as an inner
+	 * IPv4 header. Asking only for the outer layers avoids that path.
+	 */
+	if ((ptype &amp; (RTE_PTYPE_INNER_L2_MASK | RTE_PTYPE_INNER_L3_MASK |
+		      RTE_PTYPE_INNER_L4_MASK)) != 0 &amp;&amp;
+	    (ptype &amp; RTE_PTYPE_TUNNEL_MASK) == 0) {
+		ptype = rte_net_get_ptype(m, &amp;hl, RTE_PTYPE_L2_MASK |
+					  RTE_PTYPE_L3_MASK | RTE_PTYPE_L4_MASK);
+		rte_get_ptype_name(ptype, name, sizeof(name));
+		printf("      !! inner bits without a tunnel; outer layers only: ptype=0x%08x %s\n",
+		       ptype, name);
+	}
+}
+
+/* Build a 2-segment copy of 'src' split at byte 'split' and parse it. */
+static void
+segment_demo(struct rte_mempool *pool, const uint8_t *frame, uint16_t len,
+	     uint16_t split)
+{
+	struct rte_mbuf *a = rte_pktmbuf_alloc(pool), *b = rte_pktmbuf_alloc(pool);
+	struct rte_ipv4_hdr copy;
+	const struct rte_ipv4_hdr *ip;
+
+	if (a == NULL || b == NULL) {
+		rte_pktmbuf_free(a);
+		rte_pktmbuf_free(b);
+		return;
+	}
+	memcpy(rte_pktmbuf_append(a, split), frame, split);
+	memcpy(rte_pktmbuf_append(b, len - split), frame + split, len - split);
+	rte_pktmbuf_chain(a, b);              /* a now owns b */
+
+	printf("\n== a 2-segment packet: seg0 %u bytes + seg1 %u bytes (pkt_len %u)\n",
+	       rte_pktmbuf_data_len(a), rte_pktmbuf_data_len(b),
+	       rte_pktmbuf_pkt_len(a));
+	printf("   IPv4 header needs bytes [14,34) but seg0 ends at %u:\n", split);
+	printf("   rte_pktmbuf_mtod_offset(m, ip*, 14) would read %u bytes past seg0 (garbage)\n",
+	       14 + 20 - split);
+	ip = rte_pktmbuf_read(a, 14, sizeof(copy), &amp;copy);
+	printf("   rte_pktmbuf_read() returned %s, ttl=%u total_length=%u\n",
+	       (const void *)ip == (void *)&amp;copy ? "our stack copy" : "a pointer into the mbuf",
+	       ip-&gt;time_to_live, rte_be_to_cpu_16(ip-&gt;total_length));
+	line_len = 0;
+	parse_ether(a, 0, 0);
+	printf("   parse: %s\n", line);
+	print_ptype(a);
+	rte_pktmbuf_free(a);
+}
+
+int
+main(int argc, char **argv)
+{
+	struct rte_mempool *pool;
+	struct rte_mbuf *pkts[32];
+	uint8_t first[256];
+	uint16_t first_len = 0;
+	unsigned int n = 0, idle = 0, i;
+	int ret;
+
+	ret = rte_eal_init(argc, argv);
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, "EAL init failed\n");
+	if (rte_eth_dev_count_avail() &lt; 1)
+		rte_exit(EXIT_FAILURE, "need one port, e.g. --vdev=net_pcap0,rx_pcap=mixed.pcap,tx_pcap=/dev/null\n");
+
+	pool = rte_pktmbuf_pool_create("ch10_parse", 1023, 32, 0,
+				       RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	if (pool == NULL)
+		rte_exit(EXIT_FAILURE, "mbuf pool: %s\n", rte_strerror(rte_errno));
+	if (ch10_port_init(0, pool) &lt; 0)
+		rte_exit(EXIT_FAILURE, "port 0 init failed\n");
+
+	/* net_pcap delivers the file once, then returns 0 forever. */
+	while (idle &lt; 100) {
+		uint16_t nb = rte_eth_rx_burst(0, 0, pkts, 32);
+
+		if (nb == 0) {
+			idle++;
+			continue;
+		}
+		idle = 0;
+		for (i = 0; i &lt; nb; i++) {
+			struct rte_mbuf *m = pkts[i];
+
+			n++;
+			/* keep a copy of the first IPv4 frame for segment_demo() */
+			if (first_len == 0 &amp;&amp; rte_pktmbuf_data_len(m) &lt;= sizeof(first) &amp;&amp;
+			    rte_pktmbuf_mtod(m, struct rte_ether_hdr *)-&gt;ether_type ==
+			    RTE_BE16(RTE_ETHER_TYPE_IPV4)) {
+				first_len = rte_pktmbuf_data_len(m);
+				memcpy(first, rte_pktmbuf_mtod(m, void *), first_len);
+			}
+			line_len = 0;
+			parse_ether(m, 0, 0);
+			printf("#%-2u len=%-3u %s\n", n, rte_pktmbuf_pkt_len(m), line);
+			print_ptype(m);
+			rte_pktmbuf_free(m);
+		}
+	}
+	printf("parsed %u frames\n", n);
+
+	if (first_len &gt; 34)
+		segment_demo(pool, first, first_len, 20);
+
+	rte_eth_dev_stop(0);
+	rte_eth_dev_close(0);
+	rte_eal_cleanup();
+	return 0;
+}</code></pre></details></div>
+      <div class="tab-panel" data-tab="gp"><details><summary>Show the generator</summary><pre data-lines><code class="language-bash">#!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-3-Clause
+"""Chapter 10 test traffic, with no external dependencies.
+
+    python3 -I gen_pcaps.py            # writes mixed.pcap, in.pcap, empty.pcap
+
+mixed.pcap : 14 hand-made frames that exercise every branch of parse_pcap.c
+             (IPv4/UDP, TCP, ICMP, ARP, IPv6 with an extension header, VLAN,
+             QinQ, VXLAN, IP options, fragments and three broken frames).
+in.pcap    : 100 IPv4/UDP frames for the l2fwd run.
+empty.pcap : a pcap header with no packets (an RX source that is always empty).
+All checksums are correct unless a frame is deliberately broken.
+"""
+import struct
+
+def csum(b):
+    """RFC 1071 Internet checksum: one's-complement sum of 16-bit words."""
+    if len(b) % 2:
+        b += b'\0'
+    s = sum(struct.unpack('!%dH' % (len(b) // 2), b))
+    while s &gt;&gt; 16:
+        s = (s &amp; 0xffff) + (s &gt;&gt; 16)
+    return (~s) &amp; 0xffff
+
+MAC_A = bytes.fromhex('020000000001')   # sender
+MAC_B = bytes.fromhex('020000000002')   # receiver
+BCAST = b'\xff' * 6
+
+def eth(t, dst=MAC_B, src=MAC_A):
+    return dst + src + struct.pack('!H', t)
+
+def vlan(vid, inner_type, pcp=0):
+    return struct.pack('!HH', (pcp &lt;&lt; 13) | vid, inner_type)
+
+def ip4(src, dst, proto, payload, ttl=64, ident=1, frag=0, opts=b'', ihl=None):
+    hl = 20 + len(opts)
+    if ihl is None:
+        ihl = hl // 4
+    h = struct.pack('!BBHHHBBH4s4s', 0x40 | ihl, 0, hl + len(payload), ident,
+                    frag, ttl, proto, 0, bytes(src), bytes(dst)) + opts
+    h = h[:10] + struct.pack('!H', csum(h)) + h[12:]
+    return h + payload
+
+def l4_cksum4(src, dst, proto, seg):
+    ph = bytes(src) + bytes(dst) + struct.pack('!BBH', 0, proto, len(seg))
+    c = csum(ph + seg)
+    return 0xffff if (c == 0 and proto == 17) else c
+
+def udp4(src, dst, sport, dport, payload):
+    u = struct.pack('!HHHH', sport, dport, 8 + len(payload), 0) + payload
+    c = l4_cksum4(src, dst, 17, u)
+    return u[:6] + struct.pack('!H', c) + u[8:]
+
+def tcp4(src, dst, sport, dport, flags=0x02, payload=b''):
+    t = struct.pack('!HHIIBBHHH', sport, dport, 1000, 0, 5 &lt;&lt; 4, flags, 65535, 0, 0) + payload
+    c = l4_cksum4(src, dst, 6, t)
+    return t[:16] + struct.pack('!H', c) + t[18:]
+
+def icmp_echo(ident, seq, payload):
+    i = struct.pack('!BBHHH', 8, 0, 0, ident, seq) + payload
+    return i[:2] + struct.pack('!H', csum(i)) + i[4:]
+
+def ip6(src, dst, nh, payload, tc=0, flow=0, hlim=64):
+    vtc = (6 &lt;&lt; 28) | (tc &lt;&lt; 20) | flow
+    return struct.pack('!IHBB', vtc, len(payload), nh, hlim) + src + dst + payload
+
+def udp6(src, dst, sport, dport, payload):
+    u = struct.pack('!HHHH', sport, dport, 8 + len(payload), 0) + payload
+    ph = src + dst + struct.pack('!IxxxB', len(u), 17)
+    c = csum(ph + u) or 0xffff
+    return u[:6] + struct.pack('!H', c) + u[8:]
+
+A1, A2 = [10, 10, 0, 1], [10, 10, 0, 2]
+S6 = bytes.fromhex('fd000010000000000000000000000001')
+D6 = bytes.fromhex('fd000010000000000000000000000002')
+P = b'ch10-payload'
+
+def mixed():
+    f = []
+    # 1 plain IPv4/UDP
+    f.append(eth(0x0800) + ip4(A1, A2, 17, udp4(A1, A2, 1000, 2000, P)))
+    # 2 IPv4/TCP SYN
+    f.append(eth(0x0800) + ip4(A1, A2, 6, tcp4(A1, A2, 40000, 80)))
+    # 3 IPv4/ICMP echo request
+    f.append(eth(0x0800) + ip4(A1, A2, 1, icmp_echo(0x1234, 1, P)))
+    # 4 ARP request "who has 10.10.0.2? tell 10.10.0.1"
+    arp = struct.pack('!HHBBH6s4s6s4s', 1, 0x0800, 6, 4, 1, MAC_A, bytes(A1), b'\0' * 6, bytes(A2))
+    f.append(eth(0x0806, dst=BCAST) + arp)
+    # 5 IPv6/UDP with traffic class 0xb8 (DSCP EF) and flow label 0x12345
+    f.append(eth(0x86dd) + ip6(S6, D6, 17, udp6(S6, D6, 5353, 5353, P), tc=0xb8, flow=0x12345))
+    # 6 IPv6 + hop-by-hop options (8 bytes, PadN) + UDP
+    hbh = bytes([17, 0, 1, 4, 0, 0, 0, 0])
+    f.append(eth(0x86dd) + ip6(S6, D6, 0, hbh + udp6(S6, D6, 7000, 7001, P)))
+    # 7 one 802.1Q tag (VLAN 100, PCP 5) around IPv4/UDP
+    f.append(eth(0x8100) + vlan(100, 0x0800, pcp=5) + ip4(A1, A2, 17, udp4(A1, A2, 1001, 2001, P)))
+    # 8 QinQ: outer 802.1ad S-tag 200, inner C-tag 100
+    f.append(eth(0x88a8) + vlan(200, 0x8100) + vlan(100, 0x0800) +
+             ip4(A1, A2, 17, udp4(A1, A2, 1002, 2002, P)))
+    # 9 VXLAN (UDP 4789, VNI 5000) carrying an inner Ethernet/IPv4/TCP frame
+    I1, I2 = [192, 168, 50, 1], [192, 168, 50, 2]
+    inner = eth(0x0800, dst=bytes.fromhex('0200000000bb'), src=bytes.fromhex('0200000000aa')) + \
+        ip4(I1, I2, 6, tcp4(I1, I2, 33333, 443, flags=0x10))
+    vx = struct.pack('!II', 0x08000000, 5000 &lt;&lt; 8) + inner
+    outer_udp = struct.pack('!HHHH', 49152, 4789, 8 + len(vx), 0) + vx   # IPv4 outer: cksum 0 is allowed
+    f.append(eth(0x0800) + ip4(A1, A2, 17, outer_udp))
+    # 10 IPv4 with 4 bytes of options (IHL 6: NOP NOP NOP EOL) + UDP
+    f.append(eth(0x0800) + ip4(A1, A2, 17, udp4(A1, A2, 1003, 2003, P), opts=b'\x01\x01\x01\x00'))
+    # 11 first IPv4 fragment (MF=1, offset 0) and 12 a later fragment (offset 185*8)
+    full = udp4(A1, A2, 1004, 2004, bytes(64))
+    f.append(eth(0x0800) + ip4(A1, A2, 17, full[:40], ident=77, frag=0x2000))
+    f.append(eth(0x0800) + ip4(A1, A2, 17, full[40:], ident=77, frag=185))
+    # 13 BROKEN: truncated, only 10 bytes of the IPv4 header were captured
+    f.append((eth(0x0800) + ip4(A1, A2, 17, udp4(A1, A2, 1, 2, P)))[:24])
+    # 14 BROKEN: IHL = 3 (12 bytes), smaller than the minimum of 5
+    f.append(eth(0x0800) + ip4(A1, A2, 17, udp4(A1, A2, 1, 2, P), ihl=3))
+    # 15 BROKEN: IPv4 header checksum corrupted
+    bad = bytearray(eth(0x0800) + ip4(A1, A2, 17, udp4(A1, A2, 1005, 2005, P)))
+    bad[24] ^= 0x5a
+    f.append(bytes(bad))
+    return f
+
+def bulk(n):
+    out = []
+    for i in range(n):
+        src, dst = [10, 10, 1, 1 + i % 10], [10, 10, 2, 1 + i % 4]
+        out.append(eth(0x0800) + ip4(src, dst, 17, udp4(src, dst, 1000 + i, 2000 + i % 7, bytes(18))))
+    return out
+
+def write(fn, frames):
+    with open(fn, 'wb') as fp:
+        fp.write(struct.pack('&lt;IHHiIII', 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1))
+        for i, p in enumerate(frames):
+            fp.write(struct.pack('&lt;IIII', 1, i, len(p), len(p)) + p)
+
+if __name__ == '__main__':
+    write('mixed.pcap', mixed())
+    write('in.pcap', bulk(100))
+    write('empty.pcap', [])
+    print('wrote mixed.pcap (%d frames), in.pcap (100 frames), empty.pcap' % len(mixed()))</code></pre></details></div>
+      <div class="tab-panel" data-tab="hp"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * Chapter 10 shared helper: bring one port up with 1 RX and 1 TX queue.
+ * This is exactly the ethdev lifecycle from chapter 8 (configure, queue
+ * setup, start), packed into one function so the chapter 10 programs can
+ * focus on packet bytes.
+ */
+#ifndef CH10_PORT_H
+#define CH10_PORT_H
+
+#include &lt;stdio.h&gt;
+#include &lt;rte_ethdev.h&gt;
+#include &lt;rte_mbuf.h&gt;
+
+#define CH10_RX_DESC 512
+#define CH10_TX_DESC 512
+
+static inline int
+ch10_port_init(uint16_t port, struct rte_mempool *pool)
+{
+	struct rte_eth_conf conf = {0};
+	int ret;
+
+	ret = rte_eth_dev_configure(port, 1, 1, &amp;conf);
+	if (ret &lt; 0)
+		return ret;
+	ret = rte_eth_rx_queue_setup(port, 0, CH10_RX_DESC,
+			rte_eth_dev_socket_id(port), NULL, pool);
+	if (ret &lt; 0)
+		return ret;
+	ret = rte_eth_tx_queue_setup(port, 0, CH10_TX_DESC,
+			rte_eth_dev_socket_id(port), NULL);
+	if (ret &lt; 0)
+		return ret;
+	return rte_eth_dev_start(port);
+}
+
+#endif</code></pre></div>
+    </div>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 2)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./parse_pcap -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-parse --vdev=net_pcap0,rx_pcap=mixed.pcap,tx_pcap=/dev/null</span>
+#1  len=54  IPv4 10.10.0.1 -&gt; 10.10.0.2 ttl=64 ipcsum=ok :1000 -&gt; :2000 UDP l4csum=ok
+      ptype=0x00000211 L2_ETHER L3_IPV4 L4_UDP 
+      hdr_lens l2=14 l3=20 l4=8
+#2  len=54  IPv4 10.10.0.1 -&gt; 10.10.0.2 ttl=64 ipcsum=ok :40000 -&gt; :80 TCP[S] hlen=20 l4csum=ok
+      ptype=0x00000111 L2_ETHER L3_IPV4 L4_TCP 
+      hdr_lens l2=14 l3=20 l4=20
+#3  len=54  IPv4 10.10.0.1 -&gt; 10.10.0.2 ttl=64 ipcsum=ok ICMP echo-request id=0x1234 seq=1 l4csum=ok
+      ptype=0x03000011 L2_ETHER L3_IPV4 INNER_L4_FRAG 
+      hdr_lens l2=14 l3=20 l4=0
+<span class="err">      !! inner bits without a tunnel; outer layers only: ptype=0x00000011 L2_ETHER L3_IPV4 </span>
+#4  len=42  ARP request: who has 10.10.0.2? tell 10.10.0.1 (02:00:00:00:00:01)
+      ptype=0x00000001 L2_ETHER 
+      hdr_lens l2=14 l3=0 l4=0
+#5  len=74  IPv6 fd00:0010:0000:0000:0000:0000:0000:0001 -&gt; fd00:0010:0000:0000:0000:0000:0000:0002 tc=0xb8 flow=0x12345 hlim=64 :5353 -&gt; :5353 UDP l4csum=ok
+      ptype=0x00000241 L2_ETHER L3_IPV6 L4_UDP 
+      hdr_lens l2=14 l3=40 l4=8
+<span class="err">#6  len=82  IPv6 fd00:0010:0000:0000:0000:0000:0000:0001 -&gt; fd00:0010:0000:0000:0000:0000:0000:0002 tc=0x00 flow=0x00000 hlim=64 ext(0,8B) :7000 -&gt; :7001 UDP l4csum(naive)=BAD l4csum=ok</span>
+      ptype=0x000002c1 L2_ETHER L3_IPV6_EXT L4_UDP 
+      hdr_lens l2=14 l3=48 l4=8
+#7  len=58  vlan=100 pcp=5 IPv4 10.10.0.1 -&gt; 10.10.0.2 ttl=64 ipcsum=ok :1001 -&gt; :2001 UDP l4csum=ok
+      ptype=0x00000216 L2_ETHER_VLAN L3_IPV4 L4_UDP 
+      hdr_lens l2=18 l3=20 l4=8
+<span class="err">#8  len=62  ethertype 0x88a8 not handled</span>
+      ptype=0x00000217 L2_ETHER_QINQ L3_IPV4 L4_UDP 
+      hdr_lens l2=22 l3=20 l4=8
+<span class="ok">#9  len=104 IPv4 10.10.0.1 -&gt; 10.10.0.2 ttl=64 ipcsum=ok :49152 -&gt; :4789 UDP l4csum=none VXLAN vni=5000 {inner-eth dst=02:00:00:00:00:BB IPv4 192.168.50.1 -&gt; 192.168.50.2 ttl=64 ipcsum=ok :33333 -&gt; :443 TCP[A] hlen=20 l4csum=ok }</span>
+      ptype=0x01113211 L2_ETHER L3_IPV4 L4_UDP TUNNEL_VXLAN INNER_L2_ETHER INNER_L3_IPV4 INNER_L4_TCP 
+      hdr_lens l2=14 l3=20 l4=8 tunnel=8 inner_l2=30 inner_l3=20 inner_l4=20
+#10 len=58  IPv4(+4 opt bytes) 10.10.0.1 -&gt; 10.10.0.2 ttl=64 ipcsum=ok :1003 -&gt; :2003 UDP l4csum=ok
+      ptype=0x00000231 L2_ETHER L3_IPV4_EXT L4_UDP 
+      hdr_lens l2=14 l3=24 l4=8
+#11 len=74  IPv4 10.10.0.1 -&gt; 10.10.0.2 ttl=64 ipcsum=ok frag(id=77 off=0 MF=1) :1004 -&gt; :2004 UDP l4csum=needs-reassembly
+      ptype=0x00000311 L2_ETHER L3_IPV4 L4_FRAG 
+      hdr_lens l2=14 l3=20 l4=0
+#12 len=66  IPv4 10.10.0.1 -&gt; 10.10.0.2 ttl=64 ipcsum=ok frag(id=77 off=1480 MF=0) proto=17, no L4 header in this fragment
+      ptype=0x00000311 L2_ETHER L3_IPV4 L4_FRAG 
+      hdr_lens l2=14 l3=20 l4=0
+<span class="err">#13 len=24  IPv4 | DROP: truncated IPv4 header (need 20 bytes at offset 14, frame has 24)</span>
+      ptype=0x00000001 L2_ETHER 
+      hdr_lens l2=14 l3=0 l4=0
+<span class="err">#14 len=54  IPv4 | DROP: IHL 3 gives 12-byte header (&lt; 20)</span>
+      ptype=0x00000201 L2_ETHER L4_UDP 
+      hdr_lens l2=14 l3=12 l4=8
+<span class="err">#15 len=54  IPv4 10.10.0.1 -&gt; 10.10.0.2 ttl=64 ipcsum=BAD :1005 -&gt; :2005 UDP l4csum=ok</span>
+      ptype=0x00000211 L2_ETHER L3_IPV4 L4_UDP 
+      hdr_lens l2=14 l3=20 l4=8
+parsed 15 frames
+
+== a 2-segment packet: seg0 20 bytes + seg1 34 bytes (pkt_len 54)
+   IPv4 header needs bytes [14,34) but seg0 ends at 20:
+   rte_pktmbuf_mtod_offset(m, ip*, 14) would read 14 bytes past seg0 (garbage)
+   rte_pktmbuf_read() returned our stack copy, ttl=64 total_length=40
+   parse: IPv4 10.10.0.1 -&gt; 10.10.0.2 ttl=64 ipcsum=ok :1000 -&gt; :2000 UDP l4csum=ok
+      ptype=0x00000211 L2_ETHER L3_IPV4 L4_UDP 
+      hdr_lens l2=14 l3=20 l4=8</pre>
+    </div>
+    <p class="output-caption">Read it frame by frame. #6: the hop-by-hop extension header makes the naive IPv6 checksum fail and the corrected one pass. #8: the base parser handles one 802.1Q tag only, so QinQ (0x88a8) is not parsed; exercise 1 fixes that. #11/#12: only the first fragment has a UDP header, and nobody can verify its checksum before reassembly. #13 to #15 are the broken frames: truncated, IHL 3, corrupted checksum. All three are caught. The last block is the two-segment demo.</p>
+
+    <!-- ================================================================== -->
+    <h2 id="ptype"><span class="sec-num">8</span>Packet types: rte_net_get_ptype()</h2>
+    <p>Many NICs classify packets in hardware and report the result in <code>m-&gt;packet_type</code> (ch7), so your code can branch on "IPv4/UDP" without parsing. The value is a 32-bit word of seven 4-bit fields: L2, L3, L4, tunnel, inner L2, inner L3, inner L4, with names <code>RTE_PTYPE_*</code> in <span class="src-path">lib/mbuf/rte_mbuf_ptype.h</span>. Virtual devices like <code>net_pcap</code>, <code>net_ring</code> and <code>net_null</code> report nothing, so DPDK has a software classifier: <code>rte_net_get_ptype(m, &amp;hdr_lens, layers)</code> in <span class="src-path">lib/net/rte_net.h</span>. It returns the ptype and fills <code>struct rte_net_hdr_lens</code> (<code>l2_len</code>, <code>l3_len</code>, <code>l4_len</code>, <code>tunnel_len</code>, <code>inner_l2_len</code>...). <code>layers</code> says how deep to go (<code>RTE_PTYPE_ALL_MASK</code>, or e.g. <code>RTE_PTYPE_L2_MASK | RTE_PTYPE_L3_MASK</code>); <code>rte_get_ptype_name()</code> turns the value into text. l3fwd's <code>--parse-ptype</code> option (ch18) and GRO (ch19) depend on it.</p>
+
+    <div class="widget" id="w-ptype">
+      <div class="widget-head"><span class="widget-title">ptype decoder</span><span class="badge">interactive</span></div>
+      <div class="pt-in"><label for="pt-hex" class="small">packet_type:</label> <input id="pt-hex" type="text" spellcheck="false" autocomplete="off"> <span id="pt-presets" style="display:flex;flex-wrap:wrap;gap:.3rem"></span></div>
+      <div class="widget-body">
+        <svg viewBox="0 0 660 70" role="img" aria-label="the recognised layers drawn as a header stack"></svg>
+        <div class="table-wrap"><table class="pt compact"><thead><tr><th>field</th><th class="num">mask</th><th class="num">nibble</th><th>value</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="pt-name" id="pt-name"></div>
+      <div class="pt-warn" id="pt-warn" aria-live="polite"></div>
+    </div>
+    <p>The presets are values <code>parse_pcap</code> actually printed. Two lessons come out of comparing the library with the hand parser:</p>
+    <ul>
+      <li><b>rte_net_get_ptype() classifies; it does not validate.</b> For the IHL-3 frame (#14) it returned <code>L2_ETHER L4_UDP</code> with <code>l3_len=12</code>: it used the bogus IHL to find "UDP" inside the IP header. For the corrupted-checksum frame (#15) it returned a clean <code>L2_ETHER L3_IPV4 L4_UDP</code>. Checksums and lengths are your job (or the NIC's, via the <code>RTE_MBUF_F_RX_*_CKSUM_*</code> flags of ch19).</li>
+      <li><b>It has bugs too.</b> For plain IPv4/ICMP (#3) DPDK 26.11 returns 0x03000011, <code>L2_ETHER L3_IPV4 INNER_L4_FRAG</code>: "inner" bits without any tunnel. Reading <span class="src-path">lib/net/rte_net.c</span> explains it: ICMP is not in its L4 table, so the code falls through to the tunnel/inner section with <code>proto = 1</code>, which happens to equal <code>RTE_VXLAN_GPE_TYPE_IPV4</code>; it then decodes the ICMP message as an inner IPv4 header. <code>parse_pcap</code> detects the inconsistency and re-asks for the outer layers only, which gives the sane <code>L2_ETHER L3_IPV4</code>. Treat library output as data to sanity-check, especially for protocols it does not list (it handles Ether/VLAN/QinQ/MPLS, IPv4/IPv6, TCP/UDP/SCTP and GRE, NVGRE, VXLAN, VXLAN-GPE, GENEVE, GTP-C/GTP-U and IP-in-IP tunnels).</li>
+    </ul>
+
+    <!-- ================================================================== -->
+    <h2 id="building"><span class="sec-num">9</span>Building packets</h2>
+    <p>Building is parsing in reverse: allocate an mbuf, reserve the total length with <code>rte_pktmbuf_append()</code>, overlay the structs, fill the fields from the outside in, and compute checksums from the <em>inside out</em> (the inner frame first, because the outer headers' lengths and checksums depend on it). <code>build_packets.c</code> builds eight frames this way and sends them to a <code>tx_pcap=built.pcap</code> port:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/build_packets.c: the IPv4 and UDP fillers</span><span class="lang">C</span></div>
+<pre data-lines data-start="99" data-hl="113,114,128"><code class="language-c">/* IPv4 header without options; l4_len = bytes after the IP header. */
+static void
+fill_ipv4(struct rte_ipv4_hdr *ip, uint32_t src, uint32_t dst, uint8_t proto,
+	  uint16_t l4_len)
+{
+	ip-&gt;version_ihl = RTE_IPV4_VHL_DEF;          /* 0x45: v4, IHL 5 */
+	ip-&gt;type_of_service = 0;
+	ip-&gt;total_length = rte_cpu_to_be_16(sizeof(*ip) + l4_len);
+	ip-&gt;packet_id = RTE_BE16(1);                  /* compile-time constant */
+	ip-&gt;fragment_offset = RTE_BE16(RTE_IPV4_HDR_DF_FLAG);
+	ip-&gt;time_to_live = 64;
+	ip-&gt;next_proto_id = proto;
+	ip-&gt;src_addr = rte_cpu_to_be_32(src);         /* RTE_IPV4() is host order */
+	ip-&gt;dst_addr = rte_cpu_to_be_32(dst);
+	ip-&gt;hdr_checksum = 0;                         /* MUST be 0 first */
+	ip-&gt;hdr_checksum = rte_ipv4_cksum(ip);        /* stored as returned */
+}
+
+/* UDP header + payload; computes the checksum over the IPv4 pseudo-header. */
+static void
+fill_udp4(const struct rte_ipv4_hdr *ip, struct rte_udp_hdr *udp, uint16_t sport,
+	  uint16_t dport, const void *data, uint16_t dlen, int with_cksum)
+{
+	udp-&gt;src_port = rte_cpu_to_be_16(sport);
+	udp-&gt;dst_port = rte_cpu_to_be_16(dport);
+	udp-&gt;dgram_len = rte_cpu_to_be_16(sizeof(*udp) + dlen);
+	memcpy(udp + 1, data, dlen);
+	udp-&gt;dgram_cksum = 0;
+	if (with_cksum)
+		udp-&gt;dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp);</code></pre>
+    </div>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/build_packets.c: IPv6 with the 26.11 types</span><span class="lang">C</span></div>
+<pre data-lines data-start="213"><code class="language-c">	fill_eth(eth, &amp;mac_b, &amp;mac_a, RTE_ETHER_TYPE_IPV6);
+	/* 26.11: no bitfields. Build the host-order word, then swap once. */
+	ip6-&gt;vtc_flow = rte_cpu_to_be_32((6u &lt;&lt; 28) |
+		((tc &lt;&lt; RTE_IPV6_HDR_TC_SHIFT) &amp; RTE_IPV6_HDR_TC_MASK) |
+		(flow &amp; RTE_IPV6_HDR_FL_MASK));
+	ip6-&gt;payload_len = rte_cpu_to_be_16(l4);
+	ip6-&gt;proto = IPPROTO_UDP;
+	ip6-&gt;hop_limits = 64;
+	ip6-&gt;src_addr = ip6_src;                      /* struct copy */
+	ip6-&gt;dst_addr = ip6_dst;
+	udp-&gt;src_port = RTE_BE16(5353);
+	udp-&gt;dst_port = RTE_BE16(5353);
+	udp-&gt;dgram_len = rte_cpu_to_be_16(l4);
+	memcpy(udp + 1, payload, PLEN);
+	udp-&gt;dgram_cksum = 0;
+	udp-&gt;dgram_cksum = rte_ipv6_udptcp_cksum(ip6, udp); /* mandatory in v6 */</code></pre>
+    </div>
+
+    <h3 id="vlan-insert">VLAN and QinQ insertion</h3>
+    <p>To add a tag to an existing frame you need 4 more bytes in front of it. Thanks to the mbuf <span class="key-term">headroom</span> (128 bytes by default, ch7) that does not require copying the frame: <code>rte_vlan_insert(&amp;m)</code> prepends 4 bytes, moves the two MAC addresses 4 bytes to the front, writes TPID 0x8100 and the TCI it takes from <code>m-&gt;vlan_tci</code>, and adds 4 to <code>m-&gt;l2_len</code>. It refuses (-EINVAL) on a shared or indirect mbuf and returns -ENOSPC without headroom. New in 26.11, <code>rte_vlan_insert_tpid(&amp;m, tpid)</code> does the same with any TPID, so QinQ is two calls: insert the inner C-tag first, then the outer S-tag with 0x88a8. It is marked <code>__rte_experimental</code>, so you need <code>-DALLOW_EXPERIMENTAL_API</code> (section 10 shows the warning you get otherwise). <code>rte_vlan_strip(m)</code> is the inverse: it moves the tag into <code>m-&gt;vlan_tci</code> and sets <code>RTE_MBUF_F_RX_VLAN_STRIPPED</code>, what a NIC with VLAN-strip offload does on receive.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 190" role="img" aria-labelledby="f-vlan-t">
+        <title id="f-vlan-t">rte_vlan_insert prepends 4 bytes into the headroom, moves the 12 bytes of MAC addresses forward, and writes the TPID and TCI where the MACs used to end.</title>
+        <text class="svg-label small bold" x="20" y="22">before</text>
+        <rect class="svg-box c7 ghost" x="20" y="30" width="80" height="36"/><text class="svg-label center small" x="60" y="52">headroom</text>
+        <rect class="svg-box c1" x="100" y="30" width="150" height="36"/><text class="svg-label center small" x="175" y="52">dst + src MAC (12)</text>
+        <rect class="svg-box c1" x="250" y="30" width="60" height="36"/><text class="svg-label center small" x="280" y="52">0x0800</text>
+        <rect class="svg-box c2" x="310" y="30" width="390" height="36"/><text class="svg-label center small" x="505" y="52">IPv4 / UDP / payload (unchanged, not copied)</text>
+        <text class="svg-label small bold" x="20" y="102">after</text>
+        <rect class="svg-box c7 ghost" x="20" y="110" width="40" height="36"/>
+        <rect class="svg-box c1" x="60" y="110" width="150" height="36"/><text class="svg-label center small" x="135" y="132">dst + src MAC (12)</text>
+        <rect class="svg-box c5" x="210" y="110" width="50" height="36"/><text class="svg-label center small" x="235" y="132">0x8100</text>
+        <rect class="svg-box c5" x="260" y="110" width="50" height="36"/><text class="svg-label center small" x="285" y="132">TCI</text>
+        <rect class="svg-box c1" x="310" y="110" width="60" height="36"/><text class="svg-label center small" x="340" y="132">0x0800</text>
+        <rect class="svg-box c2" x="370" y="110" width="330" height="36"/><text class="svg-label center small" x="535" y="132">IPv4 / UDP / payload</text>
+        <path class="svg-arrow accent" d="M175,68 L135,108"/>
+        <text class="svg-label small mono" x="20" y="176">rte_pktmbuf_prepend(m, 4); memmove(new, old, 12); type = TPID; tci = m-&gt;vlan_tci; m-&gt;l2_len += 4</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>What <code>__rte_vlan_insert()</code> in <span class="src-path">lib/net/rte_ether.h</span> does. Only 12 bytes move; the original ether_type stays where it was and becomes the tag's <code>eth_proto</code>.</figcaption>
+    </figure>
+
+    <h3 id="vxlan">Tunnels: VXLAN and the header gallery</h3>
+    <p>A <span class="key-term">tunnel</span> wraps a whole frame inside another packet so it can cross a network that does not know about it. VXLAN (RFC 7348) is the common one in data centres: outer Ethernet / IPv4 / UDP to port 4789 / an 8-byte VXLAN header with a 24-bit network id (VNI) / the original Ethernet frame. The outer UDP source port is usually a hash of the inner flow so that receivers spreading traffic by RSS (ch15) spread tunnels too. The structs for the common tunnels are all in <span class="src-path">lib/net/</span> (try them in the byte-map gallery above):</p>
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>Header</th><th>File</th><th>Carried by</th><th>ptype</th></tr></thead>
+      <tbody>
+        <tr><td>VXLAN, VXLAN-GPE</td><td><span class="src-path">rte_vxlan.h</span></td><td>UDP 4789 / 4790</td><td>TUNNEL_VXLAN, TUNNEL_VXLAN_GPE</td></tr>
+        <tr><td>GENEVE</td><td><span class="src-path">rte_geneve.h</span></td><td>UDP 6081</td><td>TUNNEL_GENEVE</td></tr>
+        <tr><td>GTP-U / GTP-C</td><td><span class="src-path">rte_gtp.h</span></td><td>UDP 2152 / 2123</td><td>TUNNEL_GTPU / GTPC</td></tr>
+        <tr><td>GRE, NVGRE</td><td><span class="src-path">rte_gre.h</span></td><td>IP protocol 47</td><td>TUNNEL_GRE / NVGRE</td></tr>
+        <tr><td>MPLS</td><td><span class="src-path">rte_mpls.h</span></td><td>ether_type 0x8847</td><td>L2_ETHER_MPLS</td></tr>
+        <tr><td>ESP (IPsec)</td><td><span class="src-path">rte_esp.h</span></td><td>IP protocol 50</td><td>TUNNEL_ESP (ch26)</td></tr>
+        <tr><td>L2TPv2, eCPRI, SCTP, InfiniBand BTH, MACsec, PPP, PTP...</td><td><span class="src-path">rte_l2tpv2.h</span>, <span class="src-path">rte_ecpri.h</span>, <span class="src-path">rte_sctp.h</span>, <span class="src-path">rte_ib.h</span>, ...</td><td>various</td><td>some</td></tr>
+      </tbody>
+    </table></div>
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 760 170" role="img" aria-labelledby="f-vx-t">
+        <title id="f-vx-t">A VXLAN frame: outer Ethernet 14, outer IPv4 20, outer UDP 8, VXLAN 8, inner Ethernet 14, inner IPv4 20, inner UDP 8, payload; with the rte_net_hdr_lens fields l2_len 14, l3_len 20, l4_len 8, tunnel_len 8, inner_l2_len 30, inner_l3_len 20, inner_l4_len 8.</title>
+        <rect class="svg-box c1" x="10" y="40" width="70" height="40"/><text class="svg-label center small" x="45" y="64">Eth 14</text>
+        <rect class="svg-box c2" x="80" y="40" width="90" height="40"/><text class="svg-label center small" x="125" y="64">IPv4 20</text>
+        <rect class="svg-box c3" x="170" y="40" width="60" height="40"/><text class="svg-label center small" x="200" y="64">UDP 8</text>
+        <rect class="svg-box c5" x="230" y="40" width="70" height="40"/><text class="svg-label center small" x="265" y="64">VXLAN 8</text>
+        <rect class="svg-box c6" x="300" y="40" width="80" height="40"/><text class="svg-label center small" x="340" y="64">in Eth 14</text>
+        <rect class="svg-box c6" x="380" y="40" width="90" height="40"/><text class="svg-label center small" x="425" y="64">in IPv4 20</text>
+        <rect class="svg-box c6" x="470" y="40" width="70" height="40"/><text class="svg-label center small" x="505" y="64">in UDP 8</text>
+        <rect class="svg-box c7" x="540" y="40" width="210" height="40"/><text class="svg-label center small" x="645" y="64">payload</text>
+        <text class="svg-label center small bold" x="155" y="28">outer: what the network routes</text>
+        <text class="svg-label center small bold" x="525" y="28">inner: what the VM sent</text>
+        <text class="svg-label center small mono" x="45" y="100">l2_len 14</text>
+        <text class="svg-label center small mono" x="125" y="100">l3_len 20</text>
+        <text class="svg-label center small mono" x="200" y="100">l4_len 8</text>
+        <text class="svg-label center small mono" x="265" y="118">tunnel_len 8</text>
+        <path class="svg-line" d="M230,128 L380,128"/>
+        <text class="svg-label center small mono" x="305" y="144">inner_l2_len 30 = UDP+VXLAN+Eth</text>
+        <text class="svg-label center small mono" x="425" y="100">inner_l3_len 20</text>
+        <text class="svg-label center small mono" x="505" y="118">inner_l4_len 8</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>A VXLAN frame and the lengths <code>rte_net_get_ptype()</code> reports for it (from the <code>build_packets</code> run). Note <code>inner_l2_len</code> = 30: DPDK counts the outer UDP and VXLAN headers as part of the inner L2, the convention tunnel TSO and checksum offloads in ch19 expect.</figcaption>
+    </figure>
+
+    <h3 id="crc">The Ethernet CRC</h3>
+    <p>The 4-byte frame check sequence at the end of every Ethernet frame is a CRC32 computed and stripped by the NIC, so you rarely see it. When you do need one (software that emulates a NIC, a protocol that carries its own CRC, or eCPRI), <span class="src-path">lib/net/rte_net_crc.h</span> computes CRC32-Ethernet and CRC16-CCITT with scalar, SSE4.2/PCLMULQDQ, AVX-512/VPCLMULQDQ or NEON code. Since 25.03 the API is context based: <code>struct rte_net_crc *c = rte_net_crc_set_alg(RTE_NET_CRC_AVX512, RTE_NET_CRC32_ETH)</code> picks the best implementation not above what you asked for and what the CPU and <code>--force-max-simd-bitwidth</code> allow; <code>rte_net_crc_calc(c, data, len)</code> computes; <code>rte_net_crc_free(c)</code> releases. <code>build_packets</code> computes every frame's CRC with both the scalar and the AVX-512 context, checks they agree, and <code>verify.py</code> compares them with Python's <code>zlib.crc32</code>, which uses the same polynomial.</p>
+
+    <h3 id="packed">Your own headers: __rte_packed_begin / __rte_packed_end</h3>
+    <p>Sooner or later you parse a protocol <code>lib/net</code> does not have. Our toy tunnel header is 8 bytes: version, flags, a 32-bit session id at offset 2, and a 16-bit sequence number. Written as a normal struct, the compiler aligns <code>session</code> to 4 and pads the struct to 12 bytes, which no longer matches the wire. You have to <em>pack</em> it. DPDK 26.11 removed the old trailing <code>__rte_packed</code> macro; the portable spelling (it also works with MSVC, which needs a pragma before the struct) is:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/build_packets.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="51"><code class="language-c">struct __rte_packed_begin toy_tun_hdr {
+	uint8_t    ver;      /* 1 */
+	uint8_t    flags;    /* bit 0: "has seq" */
+	rte_be32_t session;  /* offset 2: NOT 4-byte aligned */
+	rte_be16_t seq;      /* offset 6 */
+} __rte_packed_end;</code></pre>
+    </div>
+    <p>Guard the layout with <code>RTE_BUILD_BUG_ON(sizeof(struct toy_tun_hdr) != 8);</code> (or C11 <code>static_assert</code>). Then look at what happens to code written the old way. This is <code>packed_old.c</code> compiled against 26.11:</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 4)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">gcc -Wall -DVARIANT=1 -c packed_old.c &amp;&amp; nm -S packed_old.o   # old '} __rte_packed;'</span>
+[compiled without any error or warning]
+    0000000000000000 000000000000000c B __rte_packed
+
+<span class="prompt">$ </span><span class="cmd">gcc -Wall -DVARIANT=1 -DWITH_SIZE_CHECK -c packed_old.c   # + static_assert(sizeof == 8)</span>
+<span class="err">packed_old.c:31:1: error: static assertion failed: "toy header must be 8 bytes"</span>
+<span class="dim">[exit status 1]</span>
+
+<span class="prompt">$ </span><span class="cmd">gcc -Wall -DVARIANT=2 -c packed_old.c   # old 'typedef struct {...} __rte_packed t;'</span>
+<span class="err">packed_old.c:39:16: error: expected '=', ',', ';', 'asm' or '__attribute__' before 'old_style_hdr_t'</span>
+<span class="dim">[exit status 1]</span>
+
+<span class="prompt">$ </span><span class="cmd">gcc -Wall -c build_packets.c   # without -DALLOW_EXPERIMENTAL_API</span>
+    build_packets.c:393:9: warning: 'rte_vlan_insert_tpid' is deprecated: Symbol is not yet part of stable ABI [-Wdeprecated-declarations]
+<span class="dim">[exit status 0]</span></pre>
+    </div>
+    <p class="output-caption">The first case is the dangerous one: <code>struct hdr {...} __rte_packed;</code> still compiles without a warning, because <code>__rte_packed</code> is now an ordinary identifier, so the line declares a <em>global variable</em> named <code>__rte_packed</code> of an unpacked 12-byte type (<code>nm</code> shows it). Only a size check catches it. The typedef form at least fails loudly. The last command shows the other 26.11 build gotcha of this chapter: <code>rte_vlan_insert_tpid()</code> is experimental, and without <code>-DALLOW_EXPERIMENTAL_API</code> you get a "deprecated" warning (an error with <code>-Werror</code>).</p>
+    <p>A packed struct tells the compiler that members may be unaligned, so <code>t-&gt;session = x</code> is always safe. Taking the address of a packed member and using it as a plain <code>uint32_t *</code> is not (gcc warns with <code>-Waddress-of-packed-member</code>): on strict-alignment CPUs it can trap, and the compiler may assume alignment. For such pointers DPDK provides <code>unaligned_uint16_t</code>, <code>unaligned_uint32_t</code> and <code>unaligned_uint64_t</code>, which in 26.11 really have alignment 1 on every architecture (before, they were plain typedefs on x86). <code>memcpy()</code> into a local variable is the other safe choice; compilers turn a 4-byte memcpy into one load.</p>
+
+    <h3 id="build-run">Running build_packets and checking its output</h3>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 3)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./build_packets -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-build --vdev=net_pcap0,rx_pcap=empty.pcap,tx_pcap=built.pcap</span>
+toy header: sizeof packed=8 unpacked=12, offsetof(session)=2
+toy header: alignof(uint32_t)=4 alignof(unaligned_uint32_t)=1, session at frame offset 44, read back 0xc0ffee01
+1 ARP request                  len=42  l2_len=0  crc32=0x63211dd7  L2_ETHER 
+2 ICMP echo request            len=57  l2_len=0  crc32=0xa80e745c  L2_ETHER L3_IPV4 INNER_L4_FRAG 
+3 IPv4/UDP                     len=57  l2_len=14 crc32=0xbe3f45a9  L2_ETHER L3_IPV4 L4_UDP 
+4 IPv6/UDP flow=0xbeef1        len=77  l2_len=0  crc32=0xfc5e03c8  L2_ETHER L3_IPV6 L4_UDP 
+5 VXLAN vni=5000               len=107 l2_len=0  crc32=0xae3a9301  L2_ETHER L3_IPV4 L4_UDP TUNNEL_VXLAN INNER_L2_ETHER INNER_L3_IPV4 INNER_L4_UDP 
+6 toy tunnel (UDP 47000)       len=65  l2_len=0  crc32=0x568597b1  L2_ETHER L3_IPV4 L4_UDP 
+7 802.1Q vlan=100              len=61  l2_len=18 crc32=0x6cbc11c8  L2_ETHER_VLAN L3_IPV4 L4_UDP 
+8 QinQ s-vlan=200 c-vlan=100   len=65  l2_len=22 crc32=0x99861cba  L2_ETHER_QINQ L3_IPV4 L4_UDP 
+rte_vlan_strip: ret=0 len 61 -&gt; 57 vlan_tci=42 ol_flags has RX_VLAN_STRIPPED=1
+sent 8 of 8 frames to port 0
+
+<span class="prompt">$ </span><span class="cmd">python3 -I verify.py built.pcap built.crc</span>
+1 len=42 ARP op=1 tip=10.10.0.2 crc32(zlib 0x63211dd7)=ok
+2 len=57 ipcsum=ok ICMP type=8 code=0 icmpcsum=ok crc32(zlib 0xa80e745c)=ok
+3 len=57 ipcsum=ok UDP 1000-&gt;2000 udpcsum=ok crc32(zlib 0xbe3f45a9)=ok
+4 len=77 IPv6 tc=0xb8 flow=0xbeef1 UDP 5353-&gt;5353 udpcsum=ok crc32(zlib 0xfc5e03c8)=ok
+5 len=107 ipcsum=ok UDP 52473-&gt;4789 udpcsum=none VXLAN vni=5000 I=1 { ipcsum=ok UDP 1111-&gt;2222 udpcsum=ok } crc32(zlib 0xae3a9301)=ok
+6 len=65 ipcsum=ok UDP 40000-&gt;47000 udpcsum=ok TOY ver=1 flags=1 session=0xc0ffee01 seq=7 crc32(zlib 0x568597b1)=ok
+7 len=61 tag(tpid=0x8100 vid=100 pcp=5) ipcsum=ok UDP 1001-&gt;2001 udpcsum=ok crc32(zlib 0x6cbc11c8)=ok
+8 len=65 tag(tpid=0x88a8 vid=200 pcp=0) tag(tpid=0x8100 vid=100 pcp=0) ipcsum=ok UDP 1002-&gt;2002 udpcsum=ok crc32(zlib 0x99861cba)=ok
+<span class="ok">8 frames, 0 problems -&gt; PASS</span></pre>
+    </div>
+    <p class="output-caption">Every IP, UDP and ICMP checksum and every CRC32 is confirmed by an independent Python implementation. Frame 7's <code>l2_len</code> went from 14 to 18 and frame 8's to 22: <code>rte_vlan_insert()</code> keeps the mbuf metadata in step. <code>rte_net_get_ptype()</code> recognises VXLAN and QinQ but, of course, not our private UDP-47000 header. And frame 2 shows the ICMP ptype quirk again.</p>
+
+    <!-- ================================================================== -->
+    <h2 id="l2fwd"><span class="sec-num">10</span>l2fwd: the classic minimal forwarder</h2>
+    <p><span class="src-path">examples/l2fwd/main.c</span> is the "hello world" of DPDK forwarding (<span class="src-path">doc/guides/sample_app_ug/l2_forward_real_virtual.rst</span>). It pairs ports (0&harr;1, 2&harr;3, ... or <code>--portmap</code>), gives each lcore up to <code>-q</code> RX ports, and for every received frame rewrites the MACs and sends it out of the paired port. Its options after <code>--</code>: <code>-p PORTMASK</code> (hex mask of ports to use), <code>-q NQ</code> (ports per lcore), <code>-T PERIOD</code> (statistics every PERIOD seconds, 0 = off), <code>--no-mac-updating</code>, <code>--portmap="(0,1)(2,3)"</code>, <code>-P</code> (promiscuous).</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 230" role="img" aria-labelledby="f-l2-t">
+        <title id="f-l2-t">l2fwd structure: lcore 0 polls RX port 0 and RX port 1; frames from port 0 get dst MAC 02:00:00:00:00:01 and src MAC of port 1 and go to tx_buffer[1]; frames from port 1 go to tx_buffer[0]. Buffers are flushed when full or when the 100 microsecond drain timer fires; port statistics are printed every T seconds.</title>
+        <rect class="svg-box c4" x="20" y="40" width="110" height="50"/><text class="svg-label center small bold" x="75" y="62">port 0 RX</text><text class="svg-label center small mono" x="75" y="78">rx_burst(32)</text>
+        <rect class="svg-box c4" x="20" y="140" width="110" height="50"/><text class="svg-label center small bold" x="75" y="162">port 1 RX</text><text class="svg-label center small mono" x="75" y="178">rx_burst(32)</text>
+        <rect class="svg-box c1" x="190" y="40" width="200" height="150"/>
+        <text class="svg-label center bold" x="290" y="62">lcore 0 main loop</text>
+        <text class="svg-label center small mono" x="290" y="88">l2fwd_simple_forward()</text>
+        <text class="svg-label center small mono" x="290" y="106">dst = 02:00:00:00:00:&lt;out&gt;</text>
+        <text class="svg-label center small mono" x="290" y="124">src = MAC of out port</text>
+        <text class="svg-label center small mono" x="290" y="150">every 100 us: flush all</text>
+        <text class="svg-label center small mono" x="290" y="168">every T s: print_stats()</text>
+        <rect class="svg-box c5" x="440" y="40" width="120" height="50"/><text class="svg-label center small bold" x="500" y="62">tx_buffer[1]</text><text class="svg-label center small mono" x="500" y="78">32 slots</text>
+        <rect class="svg-box c5" x="440" y="140" width="120" height="50"/><text class="svg-label center small bold" x="500" y="162">tx_buffer[0]</text><text class="svg-label center small mono" x="500" y="178">32 slots</text>
+        <rect class="svg-box c4" x="600" y="40" width="100" height="50"/><text class="svg-label center small bold" x="650" y="70">port 1 TX</text>
+        <rect class="svg-box c4" x="600" y="140" width="100" height="50"/><text class="svg-label center small bold" x="650" y="170">port 0 TX</text>
+        <path class="svg-arrow c3" d="M130,65 L188,65"/>
+        <path class="svg-arrow c3" d="M130,165 L188,165"/>
+        <path class="svg-arrow c3" d="M390,65 L438,65"/>
+        <path class="svg-arrow c3" d="M390,165 L438,165"/>
+        <path class="svg-arrow c3" d="M560,65 L598,65"/>
+        <path class="svg-arrow c3" d="M560,165 L598,165"/>
+        <text class="svg-label center small muted" x="580" y="118">full, or drain timer</text>
+        <text class="svg-label small muted" x="20" y="222">-q 2: one lcore serves both RX ports; with -l 0,1 the second lcore has nothing to do (as the log says).</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The l2fwd data path for <code>-p 0x3 -q 2</code>. One TX buffer per output port collects frames until it holds a full burst, or until the drain timer says "send what you have".</figcaption>
+    </figure>
+
+    <h3 id="l2fwd-loop">The main loop</h3>
+    <p>Here is l2fwd's MAC rewrite and its loop, quoted from the 26.11 source:</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">examples/l2fwd/main.c (lines 163-176)</span><span class="lang">C</span></div>
+<pre data-lines data-start="163" data-hl="172"><code class="language-c">l2fwd_mac_updating(struct rte_mbuf *m, unsigned dest_portid)
+{
+	struct rte_ether_hdr *eth;
+	void *tmp;
+
+	eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+
+	/* 02:00:00:00:00:xx */
+	tmp = &amp;eth-&gt;dst_addr.addr_bytes[0];
+	*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dest_portid &lt;&lt; 40);
+
+	/* src addr */
+	rte_ether_addr_copy(&amp;l2fwd_ports_eth_addr[dest_portid], &amp;eth-&gt;src_addr);
+}</code></pre>
+    </div>
+    <p>Line 172 writes 8 bytes into a 6-byte field: a single 64-bit store of <code>02 00 00 00 00 &lt;port&gt; 00 00</code> (little-endian) that also clobbers the first 2 bytes of the source MAC, which line 175 overwrites right after. It is a speed trick that only works on little-endian CPUs that allow unaligned stores; <code>mini_l2fwd.c</code> uses two <code>rte_ether_addr_copy()</code> calls instead.</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">examples/l2fwd/main.c (lines 234-297)</span><span class="lang">C</span></div>
+<pre data-lines data-start="234" data-hl="243,250,282,293"><code class="language-c">	while (!force_quit) {
+
+		/* Drains TX queue in its main loop. 8&lt; */
+		cur_tsc = rte_rdtsc();
+
+		/*
+		 * TX burst queue drain
+		 */
+		diff_tsc = cur_tsc - prev_tsc;
+		if (unlikely(diff_tsc &gt; drain_tsc)) {
+
+			for (i = 0; i &lt; qconf-&gt;n_rx_port; i++) {
+
+				portid = l2fwd_dst_ports[qconf-&gt;rx_port_list[i]];
+				buffer = tx_buffer[portid];
+
+				sent = rte_eth_tx_buffer_flush(portid, 0, buffer);
+				if (sent)
+					port_statistics[portid].tx += sent;
+
+			}
+
+			/* if timer is enabled */
+			if (timer_period &gt; 0) {
+
+				/* advance the timer */
+				timer_tsc += diff_tsc;
+
+				/* if timer has reached its timeout */
+				if (unlikely(timer_tsc &gt;= timer_period)) {
+
+					/* do this only on main core */
+					if (lcore_id == rte_get_main_lcore()) {
+						print_stats();
+						/* reset the timer */
+						timer_tsc = 0;
+					}
+				}
+			}
+
+			prev_tsc = cur_tsc;
+		}
+		/* &gt;8 End of draining TX queue. */
+
+		/* Read packet from RX queues. 8&lt; */
+		for (i = 0; i &lt; qconf-&gt;n_rx_port; i++) {
+
+			portid = qconf-&gt;rx_port_list[i];
+			nb_rx = rte_eth_rx_burst(portid, 0,
+						 pkts_burst, MAX_PKT_BURST);
+
+			if (unlikely(nb_rx == 0))
+				continue;
+
+			port_statistics[portid].rx += nb_rx;
+
+			for (j = 0; j &lt; nb_rx; j++) {
+				m = pkts_burst[j];
+				rte_prefetch0(rte_pktmbuf_mtod(m, void *));
+				l2fwd_simple_forward(m, portid);
+			}
+		}
+		/* &gt;8 End of read packet from RX queues. */
+	}</code></pre>
+    </div>
+    <p>The <span class="key-term">TX buffer</span> (<code>struct rte_eth_dev_tx_buffer</code>, <span class="src-path">lib/ethdev/rte_ethdev.h</span>) exists because <code>rte_eth_tx_burst()</code> is expensive per call (ch8): a frame-at-a-time forwarder would pay that cost 32 times per received burst. <code>rte_eth_tx_buffer(port, queue, buf, m)</code> just stores the pointer and, when the buffer reaches its size, calls <code>rte_eth_tx_burst()</code> for all of them and returns how many it sent. Frames the NIC does not accept go to the error callback: by default they are freed; <code>rte_eth_tx_buffer_count_callback</code> also counts them. The <span class="key-term">drain timer</span> covers the other case: with light traffic a buffer might never fill, so every <code>BURST_TX_DRAIN_US</code> (100 &micro;s) the loop calls <code>rte_eth_tx_buffer_flush()</code> on every port. The timer is just a TSC comparison (<code>rte_rdtsc()</code>, ch3), no system call.</p>
+
+    <h3 id="l2fwd-anim">Watch the buffer and the timer</h3>
+    <p>The animation runs a slowed-down l2fwd: time is stretched so 100 simulated &micro;s take one real second. Change the arrival rate, the buffer size and the drain period, and watch which mechanism sends the frames, and how long a frame waits in the buffer.</p>
+    <div class="widget" id="w-l2fwd">
+      <div class="widget-head"><span class="widget-title">l2fwd data flow: TX buffer and drain timer</span><span class="badge">animation</span></div>
+      <div class="widget-body">
+        <svg viewBox="0 0 720 250" role="img" aria-label="packets flow from port 0 RX through the lcore into a TX buffer and out of port 1"></svg>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">sim time</div><div class="stat-value"><span id="l2-t">0</span><span class="stat-unit">ms</span></div></div>
+          <div class="stat"><div class="stat-label">rx</div><div class="stat-value" id="l2-rx">0</div></div>
+          <div class="stat"><div class="stat-label">tx</div><div class="stat-value" id="l2-tx">0</div></div>
+          <div class="stat"><div class="stat-label">full flushes</div><div class="stat-value" id="l2-full">0</div></div>
+          <div class="stat"><div class="stat-label">timer flushes</div><div class="stat-value" id="l2-timer">0</div></div>
+          <div class="stat"><div class="stat-label">avg wait</div><div class="stat-value"><span id="l2-wait">-</span><span class="stat-unit">&micro;s</span></div></div>
+          <div class="stat"><div class="stat-label">max wait</div><div class="stat-value"><span id="l2-max">-</span><span class="stat-unit">&micro;s</span></div></div>
+        </div>
+      </div>
+      <div class="controls l2-ctl">
+        <label>arrival rate <input type="range" id="l2-rate" min="0" max="7" step="1" value="2"> <output id="l2-rate-o"></output></label>
+        <label>buffer size <input type="range" id="l2-size" min="0" max="3" step="1" value="1"> <output id="l2-size-o"></output></label>
+        <label>drain period <input type="range" id="l2-drain" min="0" max="4" step="1" value="2"> <output id="l2-drain-o"></output></label>
+      </div>
+    </div>
+    <p class="output-caption">At 10,000 pps a frame arrives every 100 &micro;s, so an 8-slot buffer never fills: every frame leaves on a timer flush and waits up to the drain period. Push the rate to 200k pps and full flushes take over and the wait drops. Set the drain period to "off" at a low rate and the frames sit in the buffer forever. That is exactly what <code>mini_l2fwd</code> shows below with real ports.</p>
+
+    <h3 id="l2fwd-run">Running the shipped l2fwd on pcap ports</h3>
+    <p>Two <code>net_pcap</code> ports: port 0 reads the 100 frames of <code>in.pcap</code>, port 1 reads nothing; each writes what it transmits to a file. <code>l2check.py</code> then checks every frame leaving port 1 has dst 02:00:00:00:00:01 and port 1's MAC as source. (<code>net_pcap</code> MACs are <code>02:70:63:61:70:0N</code>, where 70 63 61 70 is ASCII "pcap".)</p>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 6)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">$E/dpdk-l2fwd -l 0,1 --no-pci --no-huge -m 128 --file-prefix=ch10-l2 --vdev=net_pcap0,rx_pcap=in.pcap,tx_pcap=l2out0.pcap --vdev=net_pcap1,rx_pcap=empty.pcap,tx_pcap=l2out1.pcap -- -p 0x3 -q 2 -T 1</span>
+MAC updating enabled
+Lcore 0: RX port 0 TX port 1
+Lcore 0: RX port 1 TX port 0
+Initializing port 0... done: 
+Port 0, MAC address: 02:70:63:61:70:00
+
+Initializing port 1... done: 
+Port 1, MAC address: 02:70:63:61:70:01
+
+
+Checking link statusdone
+Port 0 Link up at 10 Gbps FDX Fixed None
+Port 1 Link up at 10 Gbps FDX Fixed None
+L2FWD: lcore 1 has nothing to do
+L2FWD: entering main loop on lcore 0
+L2FWD:  -- lcoreid=0 portid=0
+L2FWD:  -- lcoreid=0 portid=1
+
+
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                  100
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                      100
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:                100
+Total packets received:            100
+Total packets dropped:               0
+====================================================
+
+[... the same block again every second ...]
+
+Closing port 0... Done
+Closing port 1... Done
+Bye...
+<span class="dim">[stopped by SIGINT from timeout after 4s]</span>
+
+<span class="prompt">$ </span><span class="cmd">python3 -I l2check.py l2out0.pcap:0:02:70:63:61:70:00 l2out1.pcap:1:02:70:63:61:70:01</span>
+l2out0.pcap (port 0): 0 frames
+l2out1.pcap (port 1): 100 frames
+    dst 02:00:00:00:00:01  src 02:70:63:61:70:01  ttl 64  x100  ok
+<span class="ok">MAC rewrite check: PASS</span>
+
+<span class="prompt">$ </span><span class="cmd">... same run with --no-mac-updating, stats off (-T 0): the check is EXPECTED to fail</span>
+MAC updating disabled
+l2out1.pcap (port 1): 100 frames
+<span class="err">    dst 02:00:00:00:00:02  src 02:00:00:00:00:01  ttl 64  x100  WRONG</span>
+<span class="err">MAC rewrite check: FAIL (100 frames)</span></pre>
+    </div>
+    <p class="output-caption">l2fwd refreshes its statistics with ANSI clear-screen codes (stripped here); the repeated blocks are the 1-second refreshes, shown once. 100 received on port 0, 100 sent on port 1, nothing dropped, and all 100 output frames carry the rewritten MACs. With <code>--no-mac-updating</code> the frames leave untouched, so the same check fails, as it should.</p>
+
+    <h3 id="mini">mini_l2fwd.c: the core loop on net_ring</h3>
+    <p><code>mini_l2fwd.c</code> keeps only l2fwd's data path: two ports, one lcore, a TX buffer per port with the counting error callback, the TSC drain timer, and per-port counters that separate full flushes from timer flushes. The ports are <code>net_ring</code> vdevs. A <code>--vdev=net_ringN</code> port is a loopback (its RX and TX queue share one <code>rte_ring</code>), so frames injected into port 0 travel 0 &rarr; 1 &rarr; 0 &rarr; 1 forever.</p>
+    <div class="code-block">
+      <div class="code-head"><span class="file">code/mini_l2fwd.c: the loop</span><span class="lang">C</span></div>
+<pre data-lines data-start="207" data-hl="211,213,244"><code class="language-c">	while (!force_quit) {
+		uint64_t cur = rte_rdtsc();
+
+		/* 1. drain: a partially filled buffer must not wait forever */
+		if (drain_tsc != 0 &amp;&amp; cur - prev_tsc &gt; drain_tsc) {
+			for (p = 0; p &lt; NB_PORTS; p++) {
+				uint16_t sent = rte_eth_tx_buffer_flush(p, 0, txb[p]);
+
+				if (sent) {
+					st[p].tx += sent;
+					st[p].flush_timer++;
+				}
+			}
+			prev_tsc = cur;
+		}
+		if (cur &gt;= next_print) {
+			char tag[16];
+
+			snprintf(tag, sizeof(tag), "t=%ds", ++tick);
+			print_stats(tag);
+			next_print += hz;
+		}
+		if (cur &gt;= deadline)
+			break;
+
+		/* 2. receive, rewrite, buffer */
+		for (p = 0; p &lt; NB_PORTS; p++) {
+			uint16_t out = p ^ 1, nb, i;
+
+			nb = rte_eth_rx_burst(p, 0, pkts, MAX_PKT_BURST);
+			st[p].rx += nb;
+			for (i = 0; i &lt; nb; i++) {
+				uint16_t sent;
+
+				rewrite_macs(pkts[i], out);
+				/* returns 0 while buffering, or the number sent
+				 * when this frame filled the buffer */
+				sent = rte_eth_tx_buffer(out, 0, txb[out], pkts[i]);
+				if (sent) {
+					st[out].tx += sent;
+					st[out].flush_full++;
+				}
+			}
+		}
+	}
+
+	print_stats("final");</code></pre>
+    </div>
+    <details><summary>Show the whole program</summary><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ * Chapter 10: mini_l2fwd.c - the core of examples/l2fwd in ~200 lines.
+ *
+ * Two ports, port 0 &lt;-&gt; port 1. Every frame received on one port gets its
+ * MAC addresses rewritten (dst = 02:00:00:00:00:&lt;out port&gt;, src = the out
+ * port's MAC, exactly like l2fwd) and is queued in a per-port TX buffer
+ * (rte_eth_tx_buffer). A buffer is sent when it holds MAX_PKT_BURST frames,
+ * or when the TSC-based drain timer fires, whichever comes first.
+ *
+ * The ports are net_ring vdevs. A net_ring port created with --vdev=net_ringN
+ * is a loopback: what you transmit on it comes back on its own RX queue. So
+ * frames injected into port 0 bounce 0 -&gt; 1 -&gt; 0 -&gt; ... forever, which is a
+ * handy way to watch the TX buffer and the drain timer at work.
+ *
+ *   ./mini_l2fwd -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-mini \
+ *       --vdev=net_ring0 --vdev=net_ring1 -- [--inject N] [--drain-us U] [--seconds S]
+ *   --inject N    frames injected into port 0 at start (default 20)
+ *   --drain-us U  drain period in microseconds, 0 = never (default 100)
+ *   --seconds S   run time (default 2)
+ */
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdbool.h&gt;
+#include &lt;signal.h&gt;
+#include &lt;getopt.h&gt;
+#include &lt;netinet/in.h&gt;
+
+#include &lt;rte_eal.h&gt;
+#include &lt;rte_cycles.h&gt;
+#include &lt;rte_ethdev.h&gt;
+#include &lt;rte_mbuf.h&gt;
+#include &lt;rte_malloc.h&gt;
+#include &lt;rte_ether.h&gt;
+#include &lt;rte_ip4.h&gt;
+#include &lt;rte_udp.h&gt;
+
+#include "ch10_port.h"
+
+#define MAX_PKT_BURST 32
+#define NB_PORTS 2
+
+struct port_stats {
+	uint64_t rx, tx, dropped;
+	uint64_t flush_full;     /* rte_eth_tx_buffer() sent a full buffer */
+	uint64_t flush_timer;    /* the drain timer sent a partial buffer */
+};
+
+static volatile bool force_quit;
+static struct port_stats st[NB_PORTS];
+static struct rte_eth_dev_tx_buffer *txb[NB_PORTS];
+static struct rte_ether_addr port_mac[NB_PORTS];
+
+static void
+on_signal(int sig)
+{
+	(void)sig;
+	force_quit = true;
+}
+
+/* l2fwd_mac_updating(), written with struct copies instead of a uint64 store */
+static inline void
+rewrite_macs(struct rte_mbuf *m, uint16_t out_port)
+{
+	struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+	struct rte_ether_addr dst = {{0x02, 0, 0, 0, 0, (uint8_t)out_port}};
+
+	rte_ether_addr_copy(&amp;dst, &amp;eth-&gt;dst_addr);
+	rte_ether_addr_copy(&amp;port_mac[out_port], &amp;eth-&gt;src_addr);
+}
+
+/* Inject n IPv4/UDP frames by transmitting them on port 0 (loops to RX 0). */
+static unsigned int
+inject(struct rte_mempool *pool, unsigned int n)
+{
+	unsigned int i, done = 0;
+
+	for (i = 0; i &lt; n; i++) {
+		struct rte_mbuf *m = rte_pktmbuf_alloc(pool);
+		struct rte_ether_hdr *eth;
+		struct rte_ipv4_hdr *ip;
+		struct rte_udp_hdr *udp;
+		uint16_t len = sizeof(*eth) + sizeof(*ip) + sizeof(*udp) + 18;
+
+		if (m == NULL)
+			break;
+		eth = (struct rte_ether_hdr *)rte_pktmbuf_append(m, len);
+		memset(eth, 0, len);
+		ip = (struct rte_ipv4_hdr *)(eth + 1);
+		udp = (struct rte_udp_hdr *)(ip + 1);
+		rte_eth_random_addr(eth-&gt;src_addr.addr_bytes); /* some sender */
+		eth-&gt;dst_addr = port_mac[0];
+		eth-&gt;ether_type = RTE_BE16(RTE_ETHER_TYPE_IPV4);
+		ip-&gt;version_ihl = RTE_IPV4_VHL_DEF;
+		ip-&gt;total_length = rte_cpu_to_be_16(len - sizeof(*eth));
+		ip-&gt;time_to_live = 64;
+		ip-&gt;next_proto_id = IPPROTO_UDP;
+		ip-&gt;src_addr = RTE_BE32(RTE_IPV4(10, 10, 1, 1));
+		ip-&gt;dst_addr = rte_cpu_to_be_32(RTE_IPV4(10, 10, 2, 1) + i);
+		ip-&gt;hdr_checksum = rte_ipv4_cksum(ip);
+		udp-&gt;src_port = rte_cpu_to_be_16(1000 + i);
+		udp-&gt;dst_port = RTE_BE16(2000);
+		udp-&gt;dgram_len = rte_cpu_to_be_16(sizeof(*udp) + 18);
+		if (rte_eth_tx_burst(0, 0, &amp;m, 1) == 1)
+			done++;
+		else
+			rte_pktmbuf_free(m);
+	}
+	return done;
+}
+
+static void
+print_stats(const char *tag)
+{
+	uint16_t p;
+
+	for (p = 0; p &lt; NB_PORTS; p++)
+		printf("%-6s port %u: rx=%-9" PRIu64 " tx=%-9" PRIu64
+		       " dropped=%-3" PRIu64 " full-flushes=%-8" PRIu64
+		       " timer-flushes=%-8" PRIu64 " buffered=%u\n",
+		       tag, p, st[p].rx, st[p].tx, st[p].dropped,
+		       st[p].flush_full, st[p].flush_timer, txb[p]-&gt;length);
+}
+
+int
+main(int argc, char **argv)
+{
+	static const struct option lopts[] = {
+		{"inject", required_argument, NULL, 'i'},
+		{"drain-us", required_argument, NULL, 'd'},
+		{"seconds", required_argument, NULL, 's'},
+		{NULL, 0, NULL, 0}
+	};
+	unsigned int n_inject = 20, drain_us = 100, seconds = 2, injected;
+	struct rte_mempool *pool;
+	struct rte_mbuf *pkts[MAX_PKT_BURST];
+	uint64_t hz, drain_tsc, prev_tsc, next_print, deadline;
+	uint16_t p;
+	int ret, opt, tick = 0;
+
+	ret = rte_eal_init(argc, argv);
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, "EAL init failed\n");
+	argc -= ret;
+	argv += ret;
+	while ((opt = getopt_long(argc, argv, "", lopts, NULL)) != -1) {
+		switch (opt) {
+		case 'i': n_inject = atoi(optarg); break;
+		case 'd': drain_us = atoi(optarg); break;
+		case 's': seconds = atoi(optarg); break;
+		default: rte_exit(EXIT_FAILURE, "bad option\n");
+		}
+	}
+	signal(SIGINT, on_signal);
+	signal(SIGTERM, on_signal);
+
+	if (rte_eth_dev_count_avail() != NB_PORTS)
+		rte_exit(EXIT_FAILURE, "need exactly 2 ports (--vdev=net_ring0 --vdev=net_ring1)\n");
+	pool = rte_pktmbuf_pool_create("ch10_mini", 4095, 64, 0,
+				       RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	if (pool == NULL)
+		rte_exit(EXIT_FAILURE, "mbuf pool: %s\n", rte_strerror(rte_errno));
+
+	for (p = 0; p &lt; NB_PORTS; p++) {
+		char mac[RTE_ETHER_ADDR_FMT_SIZE];
+
+		if (ch10_port_init(p, pool) &lt; 0)
+			rte_exit(EXIT_FAILURE, "port %u init failed\n", p);
+		rte_eth_macaddr_get(p, &amp;port_mac[p]);
+		if (rte_is_zero_ether_addr(&amp;port_mac[p])) {
+			/* net_ring has no MAC; pick a locally administered one */
+			struct rte_ether_addr a = {{0x02, 0, 0, 0, 0x10, (uint8_t)p}};
+
+			ret = rte_eth_dev_default_mac_addr_set(p, &amp;a);
+			printf("port %u has MAC 00:00:00:00:00:00; default_mac_addr_set -&gt; %d (%s), "
+			       "using 02:00:00:00:10:%02u in software\n", p, ret,
+			       ret ? rte_strerror(-ret) : "ok", p);
+			port_mac[p] = a;
+		}
+		rte_ether_format_addr(mac, sizeof(mac), &amp;port_mac[p]);
+		printf("port %u MAC %s\n", p, mac);
+
+		/* A TX buffer is a small array of mbuf pointers + a callback. */
+		txb[p] = rte_zmalloc_socket("txb", RTE_ETH_TX_BUFFER_SIZE(MAX_PKT_BURST),
+					    0, rte_eth_dev_socket_id(p));
+		if (txb[p] == NULL)
+			rte_exit(EXIT_FAILURE, "tx buffer alloc failed\n");
+		rte_eth_tx_buffer_init(txb[p], MAX_PKT_BURST);
+		/* Unsent frames are freed and counted (default: freed only). */
+		rte_eth_tx_buffer_set_err_callback(txb[p],
+			rte_eth_tx_buffer_count_callback, &amp;st[p].dropped);
+	}
+
+	hz = rte_get_tsc_hz();
+	/* the same rounding l2fwd uses: ceil(hz / 1e6) * drain_us */
+	drain_tsc = (hz + US_PER_S - 1) / US_PER_S * drain_us;
+	printf("TSC %.2f GHz, drain period %u us = %" PRIu64 " cycles%s\n",
+	       hz / 1e9, drain_us, drain_tsc, drain_us ? "" : " (drain timer OFF)");
+
+	injected = inject(pool, n_inject);
+	printf("injected %u frames into port 0\n", injected);
+
+	prev_tsc = rte_rdtsc();
+	next_print = prev_tsc + hz;
+	deadline = prev_tsc + seconds * hz;
+
+	while (!force_quit) {
+		uint64_t cur = rte_rdtsc();
+
+		/* 1. drain: a partially filled buffer must not wait forever */
+		if (drain_tsc != 0 &amp;&amp; cur - prev_tsc &gt; drain_tsc) {
+			for (p = 0; p &lt; NB_PORTS; p++) {
+				uint16_t sent = rte_eth_tx_buffer_flush(p, 0, txb[p]);
+
+				if (sent) {
+					st[p].tx += sent;
+					st[p].flush_timer++;
+				}
+			}
+			prev_tsc = cur;
+		}
+		if (cur &gt;= next_print) {
+			char tag[16];
+
+			snprintf(tag, sizeof(tag), "t=%ds", ++tick);
+			print_stats(tag);
+			next_print += hz;
+		}
+		if (cur &gt;= deadline)
+			break;
+
+		/* 2. receive, rewrite, buffer */
+		for (p = 0; p &lt; NB_PORTS; p++) {
+			uint16_t out = p ^ 1, nb, i;
+
+			nb = rte_eth_rx_burst(p, 0, pkts, MAX_PKT_BURST);
+			st[p].rx += nb;
+			for (i = 0; i &lt; nb; i++) {
+				uint16_t sent;
+
+				rewrite_macs(pkts[i], out);
+				/* returns 0 while buffering, or the number sent
+				 * when this frame filled the buffer */
+				sent = rte_eth_tx_buffer(out, 0, txb[out], pkts[i]);
+				if (sent) {
+					st[out].tx += sent;
+					st[out].flush_full++;
+				}
+			}
+		}
+	}
+
+	print_stats("final");
+
+	/* Look at one frame waiting in each loopback ring: MACs rewritten? */
+	for (p = 0; p &lt; NB_PORTS; p++) {
+		uint16_t nb = rte_eth_rx_burst(p, 0, pkts, 1), i;
+
+		if (nb == 1) {
+			struct rte_ether_hdr *eth =
+				rte_pktmbuf_mtod(pkts[0], struct rte_ether_hdr *);
+			char s[RTE_ETHER_ADDR_FMT_SIZE], d[RTE_ETHER_ADDR_FMT_SIZE];
+
+			rte_ether_format_addr(s, sizeof(s), &amp;eth-&gt;src_addr);
+			rte_ether_format_addr(d, sizeof(d), &amp;eth-&gt;dst_addr);
+			printf("frame waiting on port %u: src %s dst %s\n", p, s, d);
+			rte_pktmbuf_free(pkts[0]);
+		} else {
+			printf("frame waiting on port %u: none\n", p);
+		}
+		/* The TX buffer OWNS its mbufs: free them or they leak. */
+		for (i = 0; i &lt; txb[p]-&gt;length; i++)
+			rte_pktmbuf_free(txb[p]-&gt;pkts[i]);
+		txb[p]-&gt;length = 0;
+	}
+
+	for (p = 0; p &lt; NB_PORTS; p++) {
+		rte_eth_dev_stop(p);
+		rte_eth_dev_close(p);
+		rte_free(txb[p]);
+	}
+	rte_eal_cleanup();
+	return 0;
+}</code></pre></details>
+    <div class="terminal" data-copy>
+      <div class="term-bar"><span class="title">code/expected_output.txt (section 5)</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./mini_l2fwd -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-mini --vdev=net_ring0 --vdev=net_ring1 -- --inject 20 --drain-us 0 --seconds 1</span>
+port 0 has MAC 00:00:00:00:00:00; default_mac_addr_set -&gt; -95 (Operation not supported), using 02:00:00:00:10:00 in software
+port 0 MAC 02:00:00:00:10:00
+port 1 has MAC 00:00:00:00:00:00; default_mac_addr_set -&gt; -95 (Operation not supported), using 02:00:00:00:10:01 in software
+port 1 MAC 02:00:00:00:10:01
+TSC 2.70 GHz, drain period 0 us = 0 cycles (drain timer OFF)
+injected 20 frames into port 0
+t=1s   port 0: rx=20        tx=0         dropped=0   full-flushes=0        timer-flushes=0        buffered=0
+t=1s   port 1: rx=0         tx=0         dropped=0   full-flushes=0        timer-flushes=0        buffered=20
+final  port 0: rx=20        tx=0         dropped=0   full-flushes=0        timer-flushes=0        buffered=0
+final  port 1: rx=0         tx=0         dropped=0   full-flushes=0        timer-flushes=0        buffered=20
+frame waiting on port 0: none
+frame waiting on port 1: none
+
+<span class="prompt">$ </span><span class="cmd">./mini_l2fwd -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-mini --vdev=net_ring0 --vdev=net_ring1 -- --inject 20 --drain-us 100 --seconds 2</span>
+port 0 has MAC 00:00:00:00:00:00; default_mac_addr_set -&gt; -95 (Operation not supported), using 02:00:00:00:10:00 in software
+port 0 MAC 02:00:00:00:10:00
+port 1 has MAC 00:00:00:00:00:00; default_mac_addr_set -&gt; -95 (Operation not supported), using 02:00:00:00:10:01 in software
+port 1 MAC 02:00:00:00:10:01
+TSC 2.70 GHz, drain period 100 us = 270000 cycles
+injected 20 frames into port 0
+t=1s   port 0: rx=99980     tx=99960     dropped=0   full-flushes=0        timer-flushes=4998     buffered=20
+t=1s   port 1: rx=99980     tx=99980     dropped=0   full-flushes=0        timer-flushes=4999     buffered=0
+t=2s   port 0: rx=199940    tx=199920    dropped=0   full-flushes=0        timer-flushes=9996     buffered=20
+t=2s   port 1: rx=199940    tx=199940    dropped=0   full-flushes=0        timer-flushes=9997     buffered=0
+final  port 0: rx=199940    tx=199920    dropped=0   full-flushes=0        timer-flushes=9996     buffered=20
+final  port 1: rx=199940    tx=199940    dropped=0   full-flushes=0        timer-flushes=9997     buffered=0
+frame waiting on port 0: none
+frame waiting on port 1: none
+
+<span class="prompt">$ </span><span class="cmd">./mini_l2fwd -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-mini --vdev=net_ring0 --vdev=net_ring1 -- --inject 100 --drain-us 0 --seconds 1</span>
+port 0 has MAC 00:00:00:00:00:00; default_mac_addr_set -&gt; -95 (Operation not supported), using 02:00:00:00:10:00 in software
+port 0 MAC 02:00:00:00:10:00
+port 1 has MAC 00:00:00:00:00:00; default_mac_addr_set -&gt; -95 (Operation not supported), using 02:00:00:00:10:01 in software
+port 1 MAC 02:00:00:00:10:01
+TSC 2.70 GHz, drain period 0 us = 0 cycles (drain timer OFF)
+injected 100 frames into port 0
+t=1s   port 0: rx=56781184  tx=56781184  dropped=0   full-flushes=1774412  timer-flushes=0        buffered=0
+t=1s   port 1: rx=56781184  tx=56781184  dropped=0   full-flushes=1774412  timer-flushes=0        buffered=0
+final  port 0: rx=56781184  tx=56781184  dropped=0   full-flushes=1774412  timer-flushes=0        buffered=0
+final  port 1: rx=56781184  tx=56781184  dropped=0   full-flushes=1774412  timer-flushes=0        buffered=0
+frame waiting on port 0: src 02:00:00:00:10:00 dst 02:00:00:00:00:00
+frame waiting on port 1: none</pre>
+    </div>
+    <p class="output-caption">Run 1, 20 frames, timer off: port 0 received all 20, and all 20 are still sitting in port 1's TX buffer after a second. They will never leave. Run 2, same traffic with the 100 &micro;s timer: about 10,000 timer flushes per second (one per period, as configured) and zero full flushes; each lap of 20 frames waits for the timer, which caps this little loop at about 200,000 frames per second. Run 3, 100 frames, timer off: now the RX bursts are always full, so buffers fill and every send is a full flush, and the loop runs as fast as the CPU can go (tens of millions of frames per second on this VM; this is a software loopback, not a NIC measurement, and the counts vary between runs). The net_ring ports have no MAC, and <code>rte_eth_dev_default_mac_addr_set()</code> returns -ENOTSUP (-95), so the program picks software MACs and you can see the rewrite in the "frame waiting" line.</p>
+    <div class="callout tip"><div class="callout-title">Tip: the TX buffer owns its mbufs</div><p>When you stop, frames still in a TX buffer are yours to flush or free; <code>mini_l2fwd</code> frees them explicitly. l2fwd itself just exits. In an application that stops and restarts ports (ch12) that would leak mbufs every time.</p></div>
+
+    <!-- ================================================================== -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong>Packets go to 2.0.10.10 / port 53255</strong>: a host-order value (<code>RTE_IPV4()</code>, a plain integer port) stored without <code>rte_cpu_to_be_32/16()</code>. Grep for assignments to <code>*_addr</code> and <code>*_port</code>.</li>
+      <li><strong>Every checksum is wrong in a capture</strong>: you byte-swapped the result of <code>rte_ipv4_cksum()</code> or <code>rte_ipv4_udptcp_cksum()</code>. Store it as returned.</li>
+      <li><strong>Checksum of 0x0000 after editing a header</strong>: you recomputed without zeroing <code>hdr_checksum</code> (or <code>dgram_cksum</code>) first. Zero it, or use <code>rte_ipv4_cksum_simple()</code> / an incremental update.</li>
+      <li><strong>UDP checksum wrong after rewriting an IP address</strong>: the pseudo-header includes both addresses; update the L4 checksum too.</li>
+      <li><strong>IPv6 L4 checksum fails only for some packets</strong>: those carry extension headers, and <code>rte_ipv6_udptcp_cksum*()</code> assumed there were none.</li>
+      <li><strong>Crash or garbage on short frames</strong>: a header was dereferenced before checking the length. Use <code>rte_pktmbuf_read()</code> or compare against <code>rte_pktmbuf_data_len()</code> first, and never use <code>pkt_len</code> to justify a pointer into the first segment.</li>
+      <li><strong>Trusting <code>rte_net_get_ptype()</code> as a validator</strong>: it does not check checksums or IHL, and in 26.11 it misclassifies IPv4/ICMP. Use it to dispatch, then validate.</li>
+      <li><strong>UDP offset computed with <code>sizeof(struct rte_ipv4_hdr)</code></strong>: breaks on packets with IP options (frame #10). Use <code>rte_ipv4_hdr_len()</code>.</li>
+      <li><strong>Old code compiles but the header is 12 bytes</strong>: <code>} __rte_packed;</code> after 26.11 declares a variable. Switch to <code>__rte_packed_begin</code>/<code>__rte_packed_end</code> and add <code>RTE_BUILD_BUG_ON(sizeof(...) != N)</code>.</li>
+      <li><strong>"'rte_vlan_insert_tpid' is deprecated: Symbol is not yet part of stable ABI"</strong>: experimental API; build with <code>-DALLOW_EXPERIMENTAL_API</code>.</li>
+      <li><strong>Light traffic never leaves, or leaves late</strong>: a TX buffer without a drain timer, or a drain period too long for your latency budget.</li>
+      <li><strong>Using the old names</strong>: <code>RTE_IP_ICMP_ECHO_REQUEST</code>/<code>_REPLY</code> were removed in 26.11; use <code>RTE_ICMP_TYPE_ECHO_REQUEST</code>/<code>RTE_ICMP_TYPE_ECHO_REPLY</code>. IPv6 addresses are <code>struct rte_ipv6_addr</code>, not <code>uint8_t[16]</code>.</li>
+    </ul>
+
+    <!-- ================================================================== -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="1" data-explain="rte_ipv4_cksum() sums host-order loads, which yields the byte-swapped sum; that is already the right byte sequence in memory. Swapping again breaks it.">
+        <div class="q-text">On x86, <code>rte_ipv4_cksum(ip)</code> returns 0x61b8 for a header whose checksum is 0xb861 on paper. What do you store in <code>ip-&gt;hdr_checksum</code>?</div>
+        <div class="q-opts"><button class="q-opt">rte_cpu_to_be_16(0x61b8)</button><button class="q-opt">0x61b8, exactly as returned</button><button class="q-opt">~0x61b8</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="The IP header can carry options. The real length is (version_ihl &amp; 0xf) * 4, which rte_ipv4_hdr_len() returns; frame #10 in mixed.pcap has 4 option bytes.">
+        <div class="q-text">Why is <code>udp = (void *)(ip + 1)</code> a bug in a parser?</div>
+        <div class="q-opts"><button class="q-opt">Pointer arithmetic on packed structs is undefined</button><button class="q-opt">UDP is always at offset 34</button><button class="q-opt">The IPv4 header length is variable; use rte_ipv4_hdr_len(ip)</button></div>
+      </div>
+      <div class="q" data-answer="0" data-explain="rte_pktmbuf_read() returns a pointer into the mbuf when the bytes are in the first segment, copies them into your buffer when they span segments, and returns NULL when the packet is too short.">
+        <div class="q-text">A 20-byte IPv4 header starts 6 bytes before the end of the first mbuf segment. What does <code>rte_pktmbuf_read(m, 14, 20, buf)</code> return?</div>
+        <div class="q-opts"><button class="q-opt">buf, filled with the 20 bytes gathered from both segments</button><button class="q-opt">NULL, because the header is not contiguous</button><button class="q-opt">a pointer into the first segment</button></div>
+      </div>
+      <div class="q" data-answer="1" data-explain="The pseudo-header contains the source and destination addresses, so the UDP (or TCP) checksum depends on them and must be updated too, e.g. incrementally with RFC 1624.">
+        <div class="q-text">A NAT rewrites only the destination IPv4 address of a UDP packet and fixes the IP header checksum. What else breaks?</div>
+        <div class="q-opts"><button class="q-opt">Nothing: UDP does not cover IP fields</button><button class="q-opt">The UDP checksum, because the pseudo-header includes the destination address</button><button class="q-opt">The Ethernet CRC, which software must recompute</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="With 20 frames the buffer (32) never fills, so only a drain flush could send them. With the timer off they stay in the buffer: rx=20, tx=0, buffered=20 in mini_l2fwd's first run.">
+        <div class="q-text">mini_l2fwd injects 20 frames with a 32-frame TX buffer and the drain timer off. After a second, where are the frames?</div>
+        <div class="q-opts"><button class="q-opt">Sent once, then dropped by port 1</button><button class="q-opt">Bouncing between the ports</button><button class="q-opt">All 20 in port 1's TX buffer, never sent</button></div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ================================================================== -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1: VLAN and QinQ parsing <span class="tag easy">easy</span></div>
+      <p>Extend <code>parse_pcap.c</code> so it walks up to two VLAN tags (TPID 0x8100, 0x88a8 or 0x9100), prints the S-VLAN and C-VLAN ids, and parses what follows. Test it on <code>mixed.pcap</code> (frames #7 and #8) and on <code>built.pcap</code>, whose frames 7 and 8 were tagged with <code>rte_vlan_insert()</code> and <code>rte_vlan_insert_tpid()</code>.</p>
+      <details><summary>Hint</summary><p>Turn the <code>if (type == RTE_ETHER_TYPE_VLAN)</code> into a <code>while</code> over the three TPIDs, read each tag with <code>HDR(m, off, struct rte_vlan_hdr, &amp;buf)</code>, and bound the loop.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/parse_vlan.c</code> (only <code>parse_ether()</code> differs). Its run is the last-but-two block of <code>expected_output.txt</code>: frame #8 now reads <code>s-vlan=200 pcp=0 c-vlan=100 pcp=0 IPv4 ... l4csum=ok</code>.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2: RFC 1624 for a changed destination address <span class="tag medium">medium</span></div>
+      <p>Write <code>cksum_update32(hc, old, new)</code> that updates a checksum when a 32-bit field changes, use it to rewrite the destination address of a UDP packet (IP <em>and</em> UDP checksum), and verify against a full recomputation with <code>rte_ipv4_cksum()</code> / <code>rte_ipv4_udptcp_cksum()</code>. Handle a UDP checksum of 0 (none) and a computed 0.</p>
+      <details><summary>Hint</summary><p>A 32-bit field is two 16-bit words: apply <code>~HC + ~m + m'</code> for both halves before the final fold and invert. Work on the values exactly as they sit in memory; one's-complement arithmetic does not care about byte order as long as you are consistent.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/incr_cksum.c</code>. Its output ends with <code>100000 random dst rewrites: 0 mismatches</code> and <code>7/7 checks passed</code>. Notice that 255.255.255.255 and 0.0.0.0 give the same checksums: 0xffff and 0x0000 are both "zero" in one's complement.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3: a destination-MAC filter <span class="tag medium">medium</span></div>
+      <p>Modify <code>mini_l2fwd.c</code> to forward only frames whose destination MAC is broadcast or the receiving port's own MAC, counting the rest as "filtered". Make the injector send one third of the frames to port 0's MAC, one third to broadcast and one third to a random unicast MAC. Predict the counters before you run it.</p>
+      <details><summary>Hint</summary><p><code>rte_is_broadcast_ether_addr()</code> and <code>rte_is_same_ether_addr()</code>. Think about what the destination MAC is after the first hop's rewrite.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/mini_l2fwd_filter.c</code>. Port 0 filters 10 of 30 (the foreign MACs) and forwards 20; port 1 then filters all 20, because l2fwd's rewritten destination 02:00:00:00:00:01 is not port 1's MAC. That is why l2fwd does no such check: it is a test tool that assumes the peer accepts anything.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4: a GENEVE frame <span class="tag stretch">stretch</span></div>
+      <p>Add a GENEVE-encapsulated frame to <code>build_packets.c</code> (UDP port <code>RTE_GENEVE_DEFAULT_PORT</code>, <code>struct rte_geneve_hdr</code> with <code>proto = RTE_BE16(RTE_GENEVE_TYPE_ETH)</code>, VNI 7000, one 8-byte option so <code>opt_len</code> is 2). Teach <code>verify.py</code> and <code>parse_pcap.c</code> to decode it, and check what <code>rte_net_get_ptype()</code> reports and whether its <code>tunnel_len</code> includes the option.</p>
+      <details><summary>Hint</summary><p><code>ver</code> and <code>opt_len</code> are bitfields whose order depends on endianness (look at <span class="src-path">lib/net/rte_geneve.h</span>), so set them through the struct or write the first byte by hand (<code>opt_len</code> in 4-byte words). Then read <code>ptype_tunnel_with_udp()</code> in <span class="src-path">lib/net/rte_net.c</span>.</p></details>
+    </div>
+
+    <!-- ================================================================== -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li><code>lib/net</code> gives one packed, 2-byte-aligned struct per protocol header; parsing is placing them at the right offsets, building is filling them in fresh mbuf space.</li>
+        <li>Every multi-byte field is big-endian: <code>rte_be_to_cpu_*()</code> to read, <code>rte_cpu_to_be_*()</code> to write, <code>RTE_BE16/32()</code> for constants. <code>RTE_IPV4()</code> is host order. Checksums are the exception: store them as the library returns them.</li>
+        <li>The Internet checksum is a one's-complement sum, folded and inverted; a valid packet sums to 0xffff. UDP/TCP add a pseudo-header with the IP addresses. RFC 1624 updates it without re-summing.</li>
+        <li>26.11: <code>struct rte_ipv6_addr</code>, <code>RTE_IPV6()</code>, <code>vtc_flow</code> masks instead of bitfields, <code>RTE_ICMP_TYPE_ECHO_*</code>, <code>rte_vlan_insert_tpid()</code> (experimental), <code>__rte_packed_begin/__rte_packed_end</code> (the old <code>__rte_packed</code> silently becomes a variable name), truly unaligned <code>unaligned_uintNN_t</code>.</li>
+        <li>Safe parsing: check before dereferencing, validate lengths, use protocol lengths, and use <code>rte_pktmbuf_read()</code> so headers split across segments work.</li>
+        <li><code>rte_net_get_ptype()</code> classifies in software for vdevs, but it is not a validator and has blind spots (IPv4/ICMP in 26.11, IPv6 checksums with extension headers in the cksum helpers).</li>
+        <li>l2fwd = rx_burst, MAC rewrite, <code>rte_eth_tx_buffer()</code>, plus a TSC drain timer. Under load the buffer fills; at low load only the timer sends, and it bounds the extra latency.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Header structs and helpers: <span class="src-path">lib/net/rte_ether.h</span>, <span class="src-path">lib/net/rte_arp.h</span>, <span class="src-path">lib/net/rte_ip4.h</span>, <span class="src-path">lib/net/rte_ip6.h</span>, <span class="src-path">lib/net/rte_udp.h</span>, <span class="src-path">lib/net/rte_tcp.h</span>, <span class="src-path">lib/net/rte_icmp.h</span></li>
+        <li>Checksums: <span class="src-path">lib/net/rte_cksum.h</span>; RFC 1071 (computing), RFC 1624 (incremental update), RFC 768 (UDP), RFC 8200 section 8.1 (IPv6 pseudo-header)</li>
+        <li>Software packet types: <span class="src-path">lib/net/rte_net.h</span>, <span class="src-path">lib/net/rte_net.c</span>, <span class="src-path">lib/mbuf/rte_mbuf_ptype.h</span>, <span class="src-path">doc/guides/prog_guide/mbuf_lib.rst</span> (packet types)</li>
+        <li>CRC: <span class="src-path">lib/net/rte_net_crc.h</span>, <span class="src-path">lib/net/rte_net_crc.c</span></li>
+        <li>Tunnels: <span class="src-path">lib/net/rte_vxlan.h</span>, <span class="src-path">lib/net/rte_geneve.h</span>, <span class="src-path">lib/net/rte_gtp.h</span>, <span class="src-path">lib/net/rte_mpls.h</span>, <span class="src-path">lib/net/rte_gre.h</span>, <span class="src-path">lib/net/rte_esp.h</span>; RFC 7348 (VXLAN), RFC 8926 (GENEVE)</li>
+        <li>Byte order and packing: <span class="src-path">lib/eal/include/generic/rte_byteorder.h</span>, <span class="src-path">lib/eal/include/rte_common.h</span> (<code>__rte_packed_begin</code>, <code>unaligned_uint32_t</code>, <code>RTE_BUILD_BUG_ON</code>), <span class="src-path">lib/eal/include/rte_compat.h</span> (<code>__rte_experimental</code>)</li>
+        <li>Safe reads: <code>rte_pktmbuf_read()</code> in <span class="src-path">lib/mbuf/rte_mbuf.h</span></li>
+        <li>l2fwd: <span class="src-path">examples/l2fwd/main.c</span>, <span class="src-path">doc/guides/sample_app_ug/l2_forward_real_virtual.rst</span>; TX buffer API in <span class="src-path">lib/ethdev/rte_ethdev.h</span></li>
+        <li>What changed: <span class="src-path">doc/guides/rel_notes/release_26_11.rst</span> (Removed Items: <code>__rte_packed</code>, <code>RTE_IP_ICMP_ECHO_*</code>; ABI changes: unaligned types)</li>
+        <li>Course research notes: <code>research/07-packet-processing-libs.md</code>, <code>research/07-examples/</code></li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../09-virtual-devices-testpmd/index.html"><span class="dir">&larr; Previous</span><span class="ttl">09 &middot; Testing Without Hardware: Buses, devargs, Virtual PMDs and testpmd</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../11-eal-services-timers/index.html"><span class="dir">Next &rarr;</span><span class="ttl">11 &middot; EAL Services in One Evolving App</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script src="ch10.js"></script>
+</body>
+</html>

@@ -1,0 +1,693 @@
+################ 1. C programs ################
+
+$ ./kvargs_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch09-kv --vdev=net_null0,size=128 -- rate=100,burst=32,mode=fast
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch09-kv/mp_socket
+EAL: Selected IOVA mode 'VA'
+Part A: rte_kvargs_parse() with valid keys {rate, burst, mode, queues}
+  input "rate=100,burst=32,mode=fast"
+    3 pairs; count(rate)=1 count(burst)=1 count(mode)=1
+    pair: rate     = 100
+    pair: burst    = 32
+    pair: mode     = fast
+    handler(rate) <- "100" -> 100
+    handler(burst) <- "32" -> 32
+    handler(mode) <- "fast"
+    => ret=0 rate=100 burst=32 mode=fast (mode handler ran 1 time)
+  input "rate=100,colour=red"
+    rte_kvargs_parse(valid_keys) -> NULL (unknown key or bad syntax)
+    rte_kvargs_parse(NULL)       -> 2 pairs (no key check)
+    pair: rate     = 100
+    pair: colour   = red
+  input "burst=32,burst=64,mode=slow"
+    3 pairs; count(rate)=0 count(burst)=2 count(mode)=1
+    pair: burst    = 32
+    pair: burst    = 64
+    pair: mode     = slow
+    handler(burst) <- "32" -> 32
+    handler(burst) <- "64" -> 64
+    handler(mode) <- "slow"
+    => ret=0 rate=0 burst=64 mode=slow (mode handler ran 1 time)
+  input "rate=10,mode"
+    2 pairs; count(rate)=1 count(burst)=0 count(mode)=1
+    pair: rate     = 10
+    pair: mode     = (null)
+    handler(rate) <- "10" -> 10
+    rte_kvargs_process(mode) = -1 (key without value) -> retry with rte_kvargs_process_opt
+    handler(mode) <- (no value) -> flag set
+    => ret=0 rate=10 burst=0 mode=default (mode handler ran 1 time)
+  input "rate=0x40,queues=[0,2-3],mode=rr"
+    3 pairs; count(rate)=1 count(burst)=0 count(mode)=1
+    pair: rate     = 0x40
+    pair: queues   = [0,2-3]
+    pair: mode     = rr
+    handler(rate) <- "0x40" -> 64
+    handler(mode) <- "rr"
+    rte_kvargs_get(queues) = "[0,2-3]" (list kept whole)
+    => ret=0 rate=64 burst=0 mode=rr (mode handler ran 1 time)
+  input "burst=lots"
+    1 pairs; count(rate)=0 count(burst)=1 count(mode)=0
+    pair: burst    = lots
+    handler(burst): 'lots' is not a number
+    => ret=-1 rate=0 burst=0 mode=none (mode handler ran 0 times)
+Part B: devargs of the ports created by --vdev
+  port 0: device "net_null0" bus=vdev driver=net_null
+    devargs->args = "size=128"
+    pair: size     = 128
+Part C: rte_devargs_parse()
+  "net_null0,size=128"
+    -> bus=vdev name="net_null0" args="size=128"
+  "vdev:net_ring0"
+    -> bus=vdev name="net_ring0" args=""
+  "net_pcap0,rx_pcap=in.pcap,tx_pcap=out.pcap"
+    -> bus=vdev name="net_pcap0" args="rx_pcap=in.pcap,tx_pcap=out.pcap"
+  "bus=vdev,name=net_null0/class=eth/driver=net_null,size=64"
+    -> bus=vdev name="net_null0" args="driver=net_null,size=64"
+       bus_str="bus=vdev,name=net_null0" cls_str="class=eth"
+EAL: failed to parse device "nosuchbus:foo0"
+  "nosuchbus:foo0"
+    -> error -14 (Bad address)
+
+
+$ ./kvargs_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch09-kv --vdev=net_null_lab,size=96
+Part B: devargs of the ports created by --vdev
+  port 0: device "net_null_lab" bus=vdev driver=net_null
+    devargs->args = "size=96"
+    pair: size     = 96
+
+$ ./kvargs_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch09-kv --vdev=net_null0,colour=red
+EAL: Failed to probe device net_null0
+EAL: Bus (vdev) probe failed.
+Part B: devargs of the ports created by --vdev
+$ ./vdev_runtime -l 0 --no-pci --no-huge -m 128 --file-prefix=ch09-rt
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch09-rt/mp_socket
+EAL: Selected IOVA mode 'VA'
+-- ports after rte_eal_init (no --vdev given): rte_eth_dev_count_avail() = 0
+rte_vdev_init("net_null0", "size=64") = 0
+rte_vdev_init("net_ring0", NULL) = 0
+rte_dev_probe("net_null1,copy=1") = 0
+rte_vdev_init("net_null0", NULL) = -17  File exists
+VDEV_BUS: rte_vdev_init(): no driver found for net_bogus0
+rte_vdev_init("net_bogus0", NULL) = -1  Operation not permitted
+rte_vdev_init("net_null9", "colour=red") = -1  Operation not permitted
+CRYPTODEV: Creating cryptodev crypto_null0
+CRYPTODEV: Initialisation parameters - name: crypto_null0,socket id: 0, max queue pairs: 8
+rte_vdev_init("crypto_null0", NULL) = 0
+rte_cryptodev_count() = 1
+-- ports after hot-adding: rte_eth_dev_count_avail() = 3
+   port 0  net_null0  driver=net_null  bus=vdev max_rxq=1024 max_txq=1024 mac=F2:02:80:2F:A4:30
+   port 1  net_ring0  driver=net_ring  bus=vdev max_rxq=16 max_txq=16 mac=00:00:00:00:00:00
+   port 2  net_null1  driver=net_null  bus=vdev max_rxq=1024 max_txq=1024 mac=32:D0:AE:A8:DA:D3
+-- rx_burst on port 0 returned 32 mbufs, first pkt_len=64 (the size=64 devarg at work)
+rte_vdev_uninit("net_ring0") = 0
+rte_dev_remove(<net_null1>) = 0
+-- ports after removing two of them: rte_eth_dev_count_avail() = 1
+   port 0  net_null0  driver=net_null  bus=vdev max_rxq=1024 max_txq=1024 mac=F2:02:80:2F:A4:30
+CRYPTODEV: Closing crypto device crypto_null0
+
+$ ./devargs_iter -l 0 --no-pci --no-huge -m 128 --file-prefix=ch09-iter --vdev=net_null0 --vdev=net_null1 --vdev=net_ring0 --vdev=crypto_null0
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch09-iter/mp_socket
+EAL: Selected IOVA mode 'VA'
+CRYPTODEV: Creating cryptodev crypto_null0
+CRYPTODEV: Initialisation parameters - name: crypto_null0,socket id: 0, max queue pairs: 8
+RTE_DEV_FOREACH(dev, "")
+   -> 0 devices
+RTE_DEV_FOREACH(dev, "bus=vdev")
+   net_null0      bus=vdev  driver=net_null     numa=0 probed=1 args=""
+   net_null1      bus=vdev  driver=net_null     numa=0 probed=1 args=""
+   net_ring0      bus=vdev  driver=net_ring     numa=-1 probed=1 args=""
+   crypto_null0   bus=vdev  driver=crypto_null  numa=-1 probed=1 args=""
+   -> 4 devices
+RTE_DEV_FOREACH(dev, "bus=vdev,name=net_ring0")
+   net_ring0      bus=vdev  driver=net_ring     numa=-1 probed=1 args=""
+   -> 1 device
+RTE_DEV_FOREACH(dev, "class=eth")
+   net_null0      bus=vdev  driver=net_null     numa=0 probed=1 args=""
+   net_null1      bus=vdev  driver=net_null     numa=0 probed=1 args=""
+   net_ring0      bus=vdev  driver=net_ring     numa=-1 probed=1 args=""
+   -> 3 devices
+RTE_DEV_FOREACH(dev, "bus=vdev/class=eth")
+   net_null0      bus=vdev  driver=net_null     numa=0 probed=1 args=""
+   net_null1      bus=vdev  driver=net_null     numa=0 probed=1 args=""
+   net_ring0      bus=vdev  driver=net_ring     numa=-1 probed=1 args=""
+   -> 3 devices
+RTE_ETH_FOREACH_MATCHING_DEV(port, filter)
+   class=eth,                                     -> 0(net_null0) 1(net_null1) 2(net_ring0)
+   class=eth,mac=12:F4:6A:0F:86:5A                -> 1(net_null1)
+   class=eth,mac=00:00:00:00:00:00                -> 2(net_ring0)
+   net_ring0                                      -> 2(net_ring0)
+   vdev:net_null1                                 -> 1(net_null1)
+   net_null0,size=64                              -> 0(net_null0)
+EAL: failed to parse device "nosuch0"
+   nosuch0                                        -> error -14 (Bad address)
+EAL: Could not find class "crypto"
+EAL: failed to parse device "class=crypto"
+   class=crypto                                   -> error -14 (Bad address)
+   bus=vdev/class=eth/driver=net_null             -> (no port)
+rte_devargs_parse() on -a / --vdev style strings
+   0000:02:00.0                         -> bus=pci  name=0000:02:00.0   args=""
+   02:00.0,txq_inline=128               -> bus=pci  name=02:00.0        args="txq_inline=128"
+   pci:0000:02:00.0,rx_low_latency=1    -> bus=pci  name=0000:02:00.0   args="rx_low_latency=1"
+   net_null0,size=128                   -> bus=vdev name=net_null0      args="size=128"
+   vdev:net_tap0,iface=ch09tap0         -> bus=vdev name=net_tap0       args="iface=ch09tap0"
+CRYPTODEV: Closing crypto device crypto_null0
+
+$ ./devargs_iter -l 0 --no-pci --no-huge -m 128 --file-prefix=ch09-iter --vdev=net_null0 --vdev=net_null1 --vdev=net_ring0 -- --crash
+   vdev:net_tap0,iface=ch09tap0         -> bus=vdev name=net_tap0       args="iface=ch09tap0"
+   now trying "bus=vdev" with the ethdev iterator...
+[exit status 139]
+
+################ 2. testpmd: io forwarding between two net_null ports ################
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-tp --vdev=net_null0 --vdev=net_null1 -- --total-num-mbufs=16384 --stats-period 2 --forward-mode=io
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch09-tp/mp_socket
+EAL: Selected IOVA mode 'VA'
+Set io packet forwarding mode
+testpmd: create a new mbuf pool <mb_pool_0>: n=16384, size=2176, socket=0
+testpmd: preferred mempool ops selected: ring_mp_mc
+Configuring Port 0 (socket 0)
+Port 0: 72:A1:FA:60:AA:EE
+Configuring Port 1 (socket 0)
+Port 1: DA:15:9E:EB:F8:37
+Checking link statuses...
+Done
+No commandline core given, start packet forwarding
+io packet forwarding - ports=2 - cores=1 - streams=2 - NUMA support enabled, MP allocation mode: native
+Logical Core 1 (socket 0) forwards packets on 2 streams:
+  RX P=0/Q=0 (socket 0) -> TX P=1/Q=0 (socket 0) peer=02:00:00:00:00:01
+  RX P=1/Q=0 (socket 0) -> TX P=0/Q=0 (socket 0) peer=02:00:00:00:00:00
+  io packet forwarding packets/burst=32
+  [... per-queue config and earlier stats blocks trimmed ...]
+  ######################## NIC statistics for port 0  ########################
+  RX-packets: 321564672  RX-missed: 0          RX-bytes:  20580139008
+  Rx-pps:     53425380          Rx-bps:  27353794984
+  Tx-pps:     53425380          Tx-bps:  27353794984
+  ######################## NIC statistics for port 1  ########################
+  RX-packets: 321574496  RX-missed: 0          RX-bytes:  20580767744
+  Rx-pps:     53425972          Rx-bps:  27354097808
+  Tx-pps:     53425988          Tx-bps:  27354106000
+  ---------------------- Forward statistics for port 0  ----------------------
+  RX-packets: 427366496      RX-dropped: 0             RX-total: 427366496
+  TX-packets: 427366496      TX-dropped: 0             TX-total: 427366496
+  ---------------------- Forward statistics for port 1  ----------------------
+  RX-packets: 427366496      RX-dropped: 0             RX-total: 427366496
+  TX-packets: 427366496      TX-dropped: 0             TX-total: 427366496
+  +++++++++++++++ Accumulated forward statistics for all ports+++++++++++++++
+  RX-packets: 854732992      RX-dropped: 0             RX-total: 854732992
+  TX-packets: 854732992      TX-dropped: 0             TX-total: 854732992
+Bye...
+
+################ 3. the --total-num-mbufs rule ################
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-nombuf --vdev=net_null0 -- --stats-period 1
+[exit status 1]
+testpmd: create a new mbuf pool <mb_pool_0>: n=155456, size=2176, socket=0
+EAL: Error - exiting with code: 1
+Creation of mbuf pool for socket 0 failed: Cannot allocate memory
+
+################ 4. pcap replay with macswap ################
+wrote 100 udp frames to $WORK/in.pcap
+  frame 0: dst=02:00:00:00:00:02 src=02:00:00:00:00:01  ip 10.9.0.1 -> 10.9.1.1 udp 1000 -> 53  len=56
+  frame 1: dst=02:00:00:00:00:02 src=02:00:00:00:00:01  ip 10.9.0.2 -> 10.9.1.1 udp 1001 -> 53  len=56
+  $WORK/in.pcap: 100 frames
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-pcap --vdev=net_pcap0,rx_pcap=$WORK/in.pcap,tx_pcap=$WORK/out.pcap -- --forward-mode=macswap --port-topology=loop --no-flush-rx --total-num-mbufs=8192 --stats-period 1
+  RX-packets: 100            RX-dropped: 0             RX-total: 100
+  TX-packets: 100            TX-dropped: 0             TX-total: 100
+  frame 0: dst=02:00:00:00:00:01 src=02:00:00:00:00:02  ip 10.9.0.1 -> 10.9.1.1 udp 1000 -> 53  len=56
+  frame 1: dst=02:00:00:00:00:01 src=02:00:00:00:00:02  ip 10.9.0.2 -> 10.9.1.1 udp 1001 -> 53  len=56
+  $WORK/out.pcap: 100 frames
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-pcap --vdev=net_pcap0,rx_pcap=$WORK/in.pcap,tx_pcap=$WORK/out.pcap -- --forward-mode=macswap --port-topology=loop  --total-num-mbufs=8192 --stats-period 1
+  RX-packets: 0              RX-dropped: 0             RX-total: 0
+  TX-packets: 0              TX-dropped: 0             TX-total: 0
+  $WORK/out.pcap: 0 frames
+
+################ 5. tap: kernel <-> DPDK ################
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-tap --vdev=net_tap0,iface=ch09tap0 -- --forward-mode=rxonly --total-num-mbufs=8192 --stats-period 2 &
+
+$ ip -br link show ch09tap0
+ch09tap0         UNKNOWN        a2:67:b1:52:86:51 <BROADCAST,MULTICAST,PROMISC,UP,LOWER_UP> 
+
+$ python3 -I sendraw.py ch09tap0 1000
+sent 1000 frames of 92 bytes on ch09tap0
+  RX-packets: 1000           RX-dropped: 0             RX-total: 1000
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-tap --vdev=net_tap0,iface=ch09tap0 -- --forward-mode=txonly --total-num-mbufs=8192 --stats-period 2 &
+
+$ ip -s link show ch09tap0
+43: ch09tap0: <BROADCAST,MULTICAST,PROMISC,UP,LOWER_UP> mtu 1500 qdisc mq state UNKNOWN mode DEFAULT group default qlen 1000
+    link/ether 3e:a5:1f:c2:8b:23 brd ff:ff:ff:ff:ff:ff
+    RX:  bytes  packets errors dropped  missed   mcast           
+     854538688 13352167      0       0       0       0 
+    TX:  bytes  packets errors dropped carrier collsns           
+             0        0      0       0       0       0 
+  Tx-pps:      3141778          Tx-bps:   1608590600
+  TX-packets: 18835360       TX-dropped: 0             TX-total: 18835360
+
+$ ip link show ch09tap0   # after testpmd exits
+Device "ch09tap0" does not exist.
+
+################ 6. veth ping-pong: af_packet <-> af_xdp ################
+
+$ ip link add ch09a type veth peer name ch09b; ip link set ch09a up; ip link set ch09b up
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-veth --vdev=net_af_packet0,iface=ch09a,ignore_outgoing=1 --vdev=net_af_xdp0,iface=ch09b,start_queue=0,queue_count=1 -- --forward-mode=io --tx-first --total-num-mbufs=8192 --stats-period 2
+Warning: lsc_interrupt needs to be off when using tx_first. Disabling.
+Port 0: 26:39:16:7B:3C:BA
+libbpf: elf: skipping unrecognized data section(8) .xdp_run_config
+libbpf: elf: skipping unrecognized data section(9) xdp_metadata
+libbpf: elf: skipping unrecognized data section(7) xdp_metadata
+libbpf: elf: skipping unrecognized data section(7) xdp_metadata
+libxdp: No bpffs found at /sys/fs/bpf
+libxdp: Can't use dispatcher without a working bpffs
+libxdp: Falling back to loading single prog without dispatcher
+libbpf: elf: skipping unrecognized data section(7) xdp_metadata
+Port 1: 7A:A2:A9:1F:AF:45
+Port 0 Link up at 10 Gbps FDX Fixed None
+Port 1 Link up at 10 Gbps FDX Autoneg None
+  RX P=0/Q=0 (socket 0) -> TX P=1/Q=0 (socket 0) peer=02:00:00:00:00:01
+  RX P=1/Q=0 (socket 0) -> TX P=0/Q=0 (socket 0) peer=02:00:00:00:00:00
+libxdp: No bpffs found at /sys/fs/bpf
+  Rx-pps:       948828          Rx-bps:    485800360
+  Rx-pps:       948829          Rx-bps:    485800536
+  ---------------------- Forward statistics for port 0  ----------------------
+  RX-packets: 7965152        RX-dropped: 0             RX-total: 7965152
+  ---------------------- Forward statistics for port 1  ----------------------
+  RX-packets: 7965152        RX-dropped: 0             RX-total: 7965152
+
+$ mount -t bpf bpf /sys/fs/bpf   # then the same af_xdp port again
+libbpf: elf: skipping unrecognized data section(8) .xdp_run_config
+libbpf: elf: skipping unrecognized data section(9) xdp_metadata
+libbpf: elf: skipping unrecognized data section(7) xdp_metadata
+libbpf: elf: skipping unrecognized data section(7) xdp_metadata
+libbpf: elf: skipping unrecognized data section(7) xdp_metadata
+libbpf: elf: skipping unrecognized data section(7) xdp_metadata
+libbpf: prog 'xdp_pass': BPF program load failed: Operation not permitted
+libbpf: permission error while running as root; try raising 'ulimit -l'? current value: 8.0 MiB
+libbpf: prog 'xdp_pass': failed to load: -1
+libbpf: failed to load object '/usr/lib/x86_64-linux-gnu/bpf/xdp-dispatcher.o'
+libxdp: Compatibility check for dispatcher program failed: Operation not permitted
+libxdp: Falling back to loading single prog without dispatcher
+libbpf: elf: skipping unrecognized data section(7) xdp_metadata
+Port 0: 7A:A2:A9:1F:AF:45
+(bpffs unmounted again)
+
+################ 6b. on real hardware: dpdk-devbind.py (read-only status) ################
+
+$ dpdk-devbind.py --status-dev net
+'lspci' not found - please install relevant package, e.g. 'pciutils'
+[exit status 1]
+
+################ 7. testpmd recipes and the debugger block ################
+=== R1: two RX/TX queues per port, two forwarding cores (net_null) ===
+
+$ dpdk-testpmd -l 0-2 --no-pci --no-huge -m 256 --file-prefix=ch09-r1 --vdev=net_null0 --vdev=net_null1 -- -i --total-num-mbufs=8192 --rxq=2 --txq=2 --nb-cores=2 < recipes/r1_multiqueue.txt
+testpmd> show config fwd
+Logical Core 1 (socket 0) forwards packets on 2 streams:
+  RX P=0/Q=0 (socket 0) -> TX P=1/Q=0 (socket 0) peer=02:00:00:00:00:01
+  RX P=1/Q=0 (socket 0) -> TX P=0/Q=0 (socket 0) peer=02:00:00:00:00:00
+Logical Core 2 (socket 0) forwards packets on 2 streams:
+  RX P=0/Q=1 (socket 0) -> TX P=1/Q=1 (socket 0) peer=02:00:00:00:00:01
+  RX P=1/Q=1 (socket 0) -> TX P=0/Q=1 (socket 0) peer=02:00:00:00:00:00
+testpmd> start
+Logical Core 1 (socket 0) forwards packets on 2 streams:
+  RX P=0/Q=0 (socket 0) -> TX P=1/Q=0 (socket 0) peer=02:00:00:00:00:01
+  RX P=1/Q=0 (socket 0) -> TX P=0/Q=0 (socket 0) peer=02:00:00:00:00:00
+Logical Core 2 (socket 0) forwards packets on 2 streams:
+  RX P=0/Q=1 (socket 0) -> TX P=1/Q=1 (socket 0) peer=02:00:00:00:00:01
+  RX P=1/Q=1 (socket 0) -> TX P=0/Q=1 (socket 0) peer=02:00:00:00:00:00
+testpmd> stop
+  ---------------------- Forward statistics for port 0  ----------------------
+  RX-packets: 168701568      RX-dropped: 0             RX-total: 168701568
+  ---------------------- Forward statistics for port 1  ----------------------
+  RX-packets: 168701568      RX-dropped: 0             RX-total: 168701568
+  +++++++++++++++ Accumulated forward statistics for all ports+++++++++++++++
+  RX-packets: 337403136      RX-dropped: 0             RX-total: 337403136
+testpmd> quit
+
+=== R2: jumbo frames, 9000-byte multi-segment txonly (net_null) ===
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-r2 --vdev=net_null0 -- -i --total-num-mbufs=8192 --max-pkt-len=9000 < recipes/r2_jumbo.txt
+testpmd> show port info 0
+MTU: 8982
+Maximum configurable length of RX packet: 4294967295
+testpmd> set txpkts 2000,2000,2000,2000,1000
+testpmd> show config txpkts
+Number of segments: 5
+testpmd> set fwd txonly
+testpmd> start
+  packet len=9000 - nb packet segments=5
+testpmd> stop
+testpmd> show port stats 0
+  TX-packets: 23353088   TX-errors: 0          TX-bytes:  210177792000
+testpmd> quit
+
+=== R3: buffer split on a vdev ===
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-r3 --vdev=net_null0 -- -i --total-num-mbufs=8192 < recipes/r3_bufsplit.txt
+Port 0: E6:0A:EE:DC:3B:3B
+testpmd> show port 0 rx_offload capabilities
+Rx Offloading Capabilities of port 0 :
+testpmd> port stop 0
+testpmd> port config 0 rx_offload buffer_split on
+Error: port 0 doesn't support offload: buffer_split.
+testpmd> set rxpkts 64,0
+testpmd> port start 0
+Fail to configure port 0 rx queues
+testpmd> quit
+Port 0 is closed
+
+=== R4: xstats delta (clear, wait 1 s, show non-zero) ===
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-r4 --vdev=net_null0 --vdev=net_null1 -- -i --total-num-mbufs=8192 < recipes/r4_xstats.txt
+testpmd> start
+testpmd> clear port xstats 0
+testpmd> stop
+testpmd> set xstats-hide-zero on
+testpmd> show port xstats 0
+rx_good_packets: 69160576
+tx_good_packets: 69159808
+rx_good_bytes: 4426276864
+tx_good_bytes: 4426227712
+rx_q0_packets: 69160576
+rx_q0_bytes: 4426276864
+tx_q0_packets: 69159808
+tx_q0_bytes: 4426227712
+testpmd> clear port xstats 0
+testpmd> start
+testpmd> stop
+testpmd> show port xstats 0
+rx_good_packets: 70820480
+tx_good_packets: 70501504
+rx_good_bytes: 4532510720
+tx_good_bytes: 4512096256
+rx_q0_packets: 70820480
+rx_q0_bytes: 4532510720
+tx_q0_packets: 70501504
+tx_q0_bytes: 4512096256
+testpmd> quit
+
+=== R5: txonly multi-flow with a fixed peer MAC, into a pcap file ===
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-r5 --vdev=net_pcap0,tx_pcap=$WORK/mf.pcap -- -i --total-num-mbufs=8192 --forward-mode=txonly --txonly-multi-flow --eth-peer=0,02:00:00:00:09:02 --txpkts=64 --burst=4 < recipes/r5_multiflow.txt
+Set txonly packet forwarding mode
+txonly packet forwarding - ports=1 - cores=1 - streams=1 - NUMA support enabled, MP allocation mode: native
+  txonly packet forwarding packets/burst=4
+  TX-packets: 1714220        TX-dropped: 0             TX-total: 1714220
+  TX-packets: 1714220        TX-dropped: 0             TX-total: 1714220
+  frame 0: dst=02:00:00:00:09:02 src=02:70:63:61:70:00  ip 198.18.0.1 -> 198.18.0.2 udp 49153 -> 9  len=64
+  frame 1: dst=02:00:00:00:09:02 src=02:70:63:61:70:00  ip 198.18.0.1 -> 198.18.0.2 udp 49409 -> 9  len=64
+  frame 2: dst=02:00:00:00:09:02 src=02:70:63:61:70:00  ip 198.18.0.1 -> 198.18.0.2 udp 49665 -> 9  len=64
+  frame 3: dst=02:00:00:00:09:02 src=02:70:63:61:70:00  ip 198.18.0.1 -> 198.18.0.2 udp 49921 -> 9  len=64
+  frame 4: dst=02:00:00:00:09:02 src=02:70:63:61:70:00  ip 198.18.0.1 -> 198.18.0.2 udp 50177 -> 9  len=64
+  frame 5: dst=02:00:00:00:09:02 src=02:70:63:61:70:00  ip 198.18.0.1 -> 198.18.0.2 udp 50433 -> 9  len=64
+  $WORK/mf.pcap: 1714220 frames
+
+=== R6: noisy forwarding mode vs io (net_null, 4 s each, last 1 s block) ===
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-r6 --vdev=net_null0 --vdev=net_null1 -- --total-num-mbufs=8192 --stats-period 1 --forward-mode=io
+  Rx-pps:     48670588          Rx-bps:  24919341456
+  Rx-pps:     48670603          Rx-bps:  24919349200
+
+$ dpdk-testpmd ... -- --total-num-mbufs=8192 --stats-period 1 --forward-mode=noisy --noisy-tx-sw-buffer-size=512 --noisy-tx-sw-buffer-flushtime=10 --noisy-lkup-memory=16 --noisy-lkup-num-reads-writes=8
+  Rx-pps:      5054593          Rx-bps:   2587952072
+  Rx-pps:      5058698          Rx-bps:   2590053792
+  Rx-pps:      5058701          Rx-bps:   2590055072
+
+=== R7: reconfigure queues and descriptors at run time ===
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-r7 --vdev=net_null0 --vdev=net_null1 -- -i --total-num-mbufs=8192 < recipes/r7_runtime.txt
+Configuring Port 0 (socket 0)
+testpmd> show config rxtx
+  port 0: RX queue number: 1 Tx queue number: 1
+      RX desc=0 - RX free threshold=0
+  port 1: RX queue number: 1 Tx queue number: 1
+      RX desc=0 - RX free threshold=0
+testpmd> port stop all
+testpmd> port config all rxq 2
+testpmd> port config all txq 2
+testpmd> port config all rxd 512
+testpmd> port start all
+Configuring Port 0 (socket 0)
+testpmd> show config rxtx
+  port 0: RX queue number: 2 Tx queue number: 2
+      RX desc=512 - RX free threshold=0
+  port 1: RX queue number: 2 Tx queue number: 2
+      RX desc=512 - RX free threshold=0
+testpmd> show port 0 rxq 1 desc 0 status
+Invalid input: queue id = 1, desc id = 0
+testpmd> quit
+
+
+=== R8: the minimal-reproducer template, run with --cmdline-file ===
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-r8 --vdev=net_null0 --vdev=net_null1 -- -i --total-num-mbufs=8192 --cmdline-file=recipes/r8_reproducer.txt
+[r8_reproducer.txt] # Minimal reproducer template for a bug report.
+[r8_reproducer.txt] # Run:   dpdk-testpmd <EAL args> -- -i --total-num-mbufs=8192 --cmdline-file=r8_reproducer.txt
+[r8_reproducer.txt] # Keep: exact DPDK version, EAL args, PMD + devargs, then the shortest command list.
+[r8_reproducer.txt] show port info 0
+Driver name: net_null
+[r8_reproducer.txt] show port 0 rx_offload configuration
+Rx Offloading Configuration of port 0 :
+[r8_reproducer.txt] set fwd io
+[r8_reproducer.txt] set verbose 0
+[r8_reproducer.txt] start
+[r8_reproducer.txt] stop
+[r8_reproducer.txt] show port stats all
+  ######################## NIC statistics for port 0  ########################
+  RX-packets: 477120     RX-missed: 0          RX-bytes:  30535680
+  ######################## NIC statistics for port 1  ########################
+  RX-packets: 479168     RX-missed: 0          RX-bytes:  30666752
+[r8_reproducer.txt] show fwd stats all
+[r8_reproducer.txt] <End-Of-File>
+Bye...
+
+=== R9: surprise - net_null copy=1 under io forwarding stops after one pool ===
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-r9 --vdev=net_null0,copy=1 --vdev=net_null1,copy=1 -- --total-num-mbufs=8192 --stats-period 1 --forward-mode=io
+  Rx-pps:            0          Rx-bps:            0
+  Rx-pps:            0          Rx-bps:            0
+  Rx-pps:         3903          Rx-bps:      1998496
+  Rx-pps:         3839          Rx-bps:      1965728
+  RX-packets: 8032           RX-dropped: 0             RX-total: 8032
+(drivers/net/null/rte_eth_null.c: eth_null_copy_tx() copies but never frees the mbufs)
+
+=== D1a: debugger on vhost-user + virtio_user (two processes), default flags ===
+
+$ dpdk-testpmd -l 2-3 --no-pci --no-huge -m 256 --file-prefix=ch09-d1av --vdev=net_vhost0,iface=/tmp/ch09-d1.sock,queues=1 -- -i --total-num-mbufs=8192 --port-topology=loop < recipes/d1_vhost.txt
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-d1a --vdev=net_virtio_user0,path=/tmp/ch09-d1.sock -- -i --total-num-mbufs=8192 --port-topology=loop < recipes/d1_virtio.txt
+--- virtio_user side:
+testpmd> show port info 0
+Driver name: net_virtio_user
+Link status: up
+testpmd> show rxq info 0 0
+Number of RXDs: 256
+Burst mode: Scalar
+testpmd> show txq info 0 0
+Number of TXDs: 256
+Burst mode: Scalar in order
+testpmd> show port 0 rxq 0 desc 0 status
+Invalid input: queue id = 0, desc id = 0
+testpmd> set fwd io
+testpmd> set record-burst-stats on
+testpmd> start tx_first
+testpmd> stop
+  RX-packets: 0              RX-dropped: 0             RX-total: 0
+  RX-bursts : 611357607 [100% of 0 pkts]
+  TX-bursts : 1 [0% of 0 pkts + 100% of 32 pkts]
+testpmd> VIRTIO_DRIVER: vhost_user_update_link_state(): virtio-user port 0 is down
+--- vhost side:
+testpmd> VHOST_CONFIG: (/tmp/ch09-d1.sock) new vhost user connection is 20
+VHOST_CONFIG: (/tmp/ch09-d1.sock) new device, handle is 0
+VHOST_CONFIG: (/tmp/ch09-d1.sock) negotiated Virtio features: 0x950008000
+Port 0: link state change event
+RxQ 0 used desc count = 32
+testpmd> set fwd io
+testpmd> start
+testpmd> show port 0 rxq 0 desc used count
+RxQ 0 used desc count = 0
+testpmd> stop
+  RX-packets: 0              RX-dropped: 0             RX-total: 0
+testpmd> show rxq info 0 0
+Number of RXDs: 256
+testpmd> quit
+Port 0: link state change event
+
+=== D1b: the same, vhost side started with --no-flush-rx ===
+
+$ dpdk-testpmd -l 2-3 --no-pci --no-huge -m 256 --file-prefix=ch09-d1bv --vdev=net_vhost0,iface=/tmp/ch09-d1.sock,queues=1 -- -i --total-num-mbufs=8192 --port-topology=loop --no-flush-rx < recipes/d1_vhost.txt
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-d1b --vdev=net_virtio_user0,path=/tmp/ch09-d1.sock -- -i --total-num-mbufs=8192 --port-topology=loop < recipes/d1_virtio.txt
+--- virtio_user side:
+testpmd> show port info 0
+Driver name: net_virtio_user
+Link status: up
+testpmd> show rxq info 0 0
+Number of RXDs: 256
+Burst mode: Scalar
+testpmd> show txq info 0 0
+Number of TXDs: 256
+Burst mode: Scalar in order
+testpmd> show port 0 rxq 0 desc 0 status
+Invalid input: queue id = 0, desc id = 0
+testpmd> set fwd io
+testpmd> set record-burst-stats on
+testpmd> start tx_first
+testpmd> stop
+  RX-packets: 11386560       RX-dropped: 0             RX-total: 11386560
+  RX-bursts : 474496707 [99% of 0 pkts + 1% of 32 pkts]
+  TX-bursts : 355831 [0% of 0 pkts + 100% of 32 pkts]
+testpmd> VIRTIO_DRIVER: vhost_user_update_link_state(): virtio-user port 0 is down
+--- vhost side:
+testpmd> VHOST_CONFIG: (/tmp/ch09-d1.sock) new vhost user connection is 20
+VHOST_CONFIG: (/tmp/ch09-d1.sock) new device, handle is 0
+VHOST_CONFIG: (/tmp/ch09-d1.sock) negotiated Virtio features: 0x950008000
+Port 0: link state change event
+RxQ 0 used desc count = 32
+testpmd> set fwd io
+testpmd> start
+testpmd> show port 0 rxq 0 desc used count
+RxQ 0 used desc count = 0
+testpmd> stop
+  RX-packets: 11386560       RX-dropped: 0             RX-total: 11386560
+testpmd> show rxq info 0 0
+Number of RXDs: 256
+testpmd> quit
+Port 0: link state change event
+
+=== D2: testpmd as a debugger on net_null, plus hotplug of a pcap port ===
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-d2 --vdev=net_null0 --vdev=net_null1 -- -i --total-num-mbufs=8192 --record-burst-stats < recipes/d2_null.txt
+testpmd> show port 0 rx_offload capabilities
+Rx Offloading Capabilities of port 0 :
+testpmd> port attach net_pcap2,rx_pcap=$WORK/three.pcap
+Port 2 is attached. Now total ports is 3
+testpmd> port start 2
+testpmd> show port info 2
+Driver name: net_pcap
+Link status: up
+testpmd> set portlist 2
+testpmd> set fwd rxonly
+testpmd> set verbose 1
+testpmd> start
+  src=02:00:00:00:00:01 - dst=02:00:00:00:00:02 - pool=mb_pool_0 - type=0x0800 - length=56 - nb_segs=1 - sw ptype: L2_ETHER L3_IPV4 L4_UDP  - l2_len=14 - l3_len=20 - l4_len=8 - Receive queue=0x0
+  ol_flags: RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN 
+  src=02:00:00:00:00:01 - dst=02:00:00:00:00:02 - pool=mb_pool_0 - type=0x0800 - length=56 - nb_segs=1 - sw ptype: L2_ETHER L3_IPV4 L4_UDP  - l2_len=14 - l3_len=20 - l4_len=8 - Receive queue=0x0
+  ol_flags: RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN 
+  src=02:00:00:00:00:01 - dst=02:00:00:00:00:02 - pool=mb_pool_0 - type=0x0800 - length=56 - nb_segs=1 - sw ptype: L2_ETHER L3_IPV4 L4_UDP  - l2_len=14 - l3_len=20 - l4_len=8 - Receive queue=0x0
+  ol_flags: RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN 
+testpmd> stop
+  RX-bursts : 28957324 [100% of 0 pkts]
+testpmd> set verbose 0
+testpmd> port stop 2
+testpmd> port detach 2
+Device is detached
+testpmd> set portlist 0,1
+testpmd> set fwd io
+testpmd> clear port xstats all
+testpmd> start
+testpmd> stop
+  RX-bursts : 2157804 [0% of 0 pkts + 100% of 32 pkts]
+  TX-bursts : 2157804 [0% of 0 pkts + 100% of 32 pkts]
+  RX-bursts : 2157804 [0% of 0 pkts + 100% of 32 pkts]
+  TX-bursts : 2157804 [0% of 0 pkts + 100% of 32 pkts]
+testpmd> show fwd stats all
+  RX-bursts : 2157804 [0% of 0 pkts + 100% of 32 pkts]
+  TX-bursts : 2157804 [0% of 0 pkts + 100% of 32 pkts]
+  RX-bursts : 2157804 [0% of 0 pkts + 100% of 32 pkts]
+  TX-bursts : 2157804 [0% of 0 pkts + 100% of 32 pkts]
+testpmd> set xstats-hide-zero on
+testpmd> show port xstats 0
+rx_good_packets: 69377408
+tx_good_packets: 69049728
+rx_good_bytes: 4440154112
+tx_good_bytes: 4419182592
+rx_q0_packets: 69377408
+rx_q0_bytes: 4440154112
+tx_q0_packets: 69049728
+tx_q0_bytes: 4419182592
+testpmd> quit
+
+################ 8. exercise solutions ################
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-ex1 --vdev=net_pcap0,tx_pcap=$WORK/fg.pcap -- -i --total-num-mbufs=8192 --forward-mode=flowgen --flowgen-flows=1 --burst=8 < solutions/ex1_flowgen.txt
+tx_good_packets: 2320256
+frames=2320256 distinct_flows=1 ip_csum_ok=2320256 l4_csum_ok=0 udp_csum_zero=2320256
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-ex1 --vdev=net_pcap0,tx_pcap=$WORK/fg.pcap -- -i --total-num-mbufs=8192 --forward-mode=flowgen --flowgen-flows=16 --burst=8 < solutions/ex1_flowgen.txt
+tx_good_packets: 2438760
+frames=2438760 distinct_flows=16 ip_csum_ok=2438760 l4_csum_ok=0 udp_csum_zero=2438760
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-ex1 --vdev=net_pcap0,tx_pcap=$WORK/fg.pcap -- -i --total-num-mbufs=8192 --forward-mode=flowgen --flowgen-flows=100 --burst=8 < solutions/ex1_flowgen.txt
+tx_good_packets: 2396096
+frames=2396096 distinct_flows=100 ip_csum_ok=2396096 l4_csum_ok=0 udp_csum_zero=2396096
+input:
+frames=4 distinct_flows=4 ip_csum_ok=4 l4_csum_ok=0 udp_csum_zero=2
+
+$ dpdk-testpmd -l 0-1 --no-pci --no-huge -m 256 --file-prefix=ch09-ex2 --vdev=net_pcap0,rx_pcap=$WORK/in.pcap,tx_pcap=$WORK/out.pcap -- -i --total-num-mbufs=8192 --forward-mode=csum --port-topology=loop --no-flush-rx < solutions/ex2_csum.txt
+testpmd> set verbose 1
+testpmd> start
+  ol_flags: RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN 
+  ol_flags: RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN 
+  ol_flags: RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN 
+  ol_flags: RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN 
+port=0, mbuf=0x10d8ed040, pkt_len=56, nb_segs=1:
+rx: l2_len=14 ethertype=800 l3_len=20 l4_proto=17 l4_len=8 flags=RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN 
+tx: flags=RTE_MBUF_F_TX_L4_NO_CKSUM RTE_MBUF_F_TX_IPV4 
+port=0, mbuf=0x10d8ec040, pkt_len=56, nb_segs=1:
+rx: l2_len=14 ethertype=800 l3_len=20 l4_proto=17 l4_len=8 flags=RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN 
+tx: flags=RTE_MBUF_F_TX_L4_NO_CKSUM RTE_MBUF_F_TX_IPV4 
+port=0, mbuf=0x10d8eb040, pkt_len=68, nb_segs=1:
+rx: l2_len=14 ethertype=800 l3_len=20 l4_proto=6 l4_len=20 flags=RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN 
+tx: flags=RTE_MBUF_F_TX_L4_NO_CKSUM RTE_MBUF_F_TX_IPV4 
+port=0, mbuf=0x10d8ea040, pkt_len=68, nb_segs=1:
+rx: l2_len=14 ethertype=800 l3_len=20 l4_proto=6 l4_len=20 flags=RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN 
+tx: flags=RTE_MBUF_F_TX_L4_NO_CKSUM RTE_MBUF_F_TX_IPV4 
+testpmd> stop
+  RX-packets: 4              RX-dropped: 0             RX-total: 4
+  Bad-ipcsum: 0              Bad-l4csum: 0             Bad-outer-l4csum: 0             
+  Bad-outer-ipcsum: 0             
+  RX-packets: 4              RX-dropped: 0             RX-total: 4
+testpmd> quit
+output:
+frames=4 distinct_flows=4 ip_csum_ok=4 l4_csum_ok=2 udp_csum_zero=2
+
+################ 9. the software-PMD ladder ################
+ladder: 5 runs x 5s per backend, metric = last 1 s stats block
+  ring         runs(pps): 311751959 315482720 306414963 317566107 316668708
+  null         runs(pps): 102718432 112944092 107035626 105593825 112757234
+  null rxonly  runs(pps): 136136217 132836994 134424403 128481065 132467591
+  null copy=1  runs(pps): 92260291 92195210 85176102 91391722 92123608
+  pcap         runs(pps): 56959792 57007600 56990675 57064095 56922643
+  memif        runs(pps): 9996287 9746207 9807581 6753537 9238736
+  vhost-user   runs(pps): 6321115 6275319 8082637 7943564 7971184
+  tap          runs(pps): 3027278 2871099 3063187 3102163 3108884
+  af_packet    runs(pps): 1821844 1728086 1569443 1540656 1646444
+  af_xdp       runs(pps): 2087082 2033581 1873291 2003589 1896540
+
+Software-PMD ladder (Mpps, median of 5, shared VM - not NIC line rate)
+backend      mode                         median      min      max
+ring         io, 2 ports, tx_first        315.48   306.41   317.57
+null         io, 2 ports                  107.04   102.72   112.94
+null rxonly  rxonly, 2 ports              132.84   128.48   136.14
+null copy=1  rxonly, 2 ports               92.12    85.18    92.26
+pcap         io loop, infinite_rx          56.99    56.92    57.06
+memif        io loop, 2 processes           9.75     6.75    10.00
+vhost-user   io loop, 2 processes           7.94     6.28     8.08
+tap          txonly into kernel             3.06     2.87     3.11
+af_packet    io, veth pair, tx_first        1.65     1.54     1.82
+af_xdp       io, veth pair, tx_first        2.00     1.87     2.09

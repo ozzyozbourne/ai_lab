@@ -1,0 +1,264 @@
+
+$ ./mempool_basics -l 0 --no-pci --no-huge -m 64 --file-prefix=ch06-basic
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch06-basic/mp_socket
+EAL: Selected IOVA mode 'VA'
+[1] created 'ch06_basic': size=1023 cache_size=32 ops=ring_mp_mc
+    avail=1023 in_use=0 full=1 empty=0
+[2] got obj 0x1040b5a00 seq=15; header at 0x1040b59e8 (obj - 24), hdr->mp=this pool
+    rte_mempool_from_obj(obj) == mp: yes; iova=0x1040b5a00
+    avail=1022 in_use=1  (1 handed out, 15 sit in this lcore's cache)
+[3] get_bulk(8) = 0, seq numbers: 15 14 13 12 11 10 9 8
+    distance between consecutive objects in memory: 192 bytes
+    get_bulk(1019) = 0; avail now 4
+    get_bulk(8) with only 4 left = -105 (No buffer space available); avail still 4
+    after returning everything: avail=1023 in_use=0 full=1
+[4] memory footprint
+  pool ch06_basic elt=64 hdr=64 trailer=64 -> total_obj_size=192
+           page size used for layout: 4096 bytes; 1 chunk(s), 199680 bytes
+           => 195 bytes of memory per object (1023 objects)
+  pool ch06_big elt=2304 hdr=64 trailer=0 -> total_obj_size=2368
+           page size used for layout: 4096 bytes; 1 chunk(s), 2093696 bytes
+           => 4097 bytes of memory per object (511 objects)
+[5] rte_mempool_lookup("ch06_basic") found it
+mempool <ch06_basic>@0x1040e7e00
+  flags=10
+  socket_id=0
+  pool=0x1040e5b00
+  iova=0x1040e7e00
+  nb_mem_chunks=1
+  size=1023
+  populated_size=1023
+  header_size=64
+  elt_size=64
+  trailer_size=64
+  total_obj_size=192
+  private_data_size=0
+  ops_index=1
+  ops_name: <ring_mp_mc>
+  memory chunk at 0x1040b4dc0, addr=0x1040b4e80, iova=0x1040b4e80, len=199680
+  avg bytes/object=195.190616
+  internal cache infos (hide zero value items):
+    cache_size=32
+    total_cache_count=0
+  common_pool_count=1023
+  no statistics available
+
+$ ./mempool_basics -l 0 --no-pci -m 64 --file-prefix=ch06-basic-huge
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch06-basic-huge/mp_socket
+EAL: Selected IOVA mode 'PA'
+[1] created 'ch06_basic': size=1023 cache_size=32 ops=ring_mp_mc
+    avail=1023 in_use=0 full=1 empty=0
+[2] got obj 0x1041c0600 seq=15; header at 0x1041c05e8 (obj - 24), hdr->mp=this pool
+    rte_mempool_from_obj(obj) == mp: yes; iova=0x1997c0600
+    avail=1022 in_use=1  (1 handed out, 15 sit in this lcore's cache)
+[3] get_bulk(8) = 0, seq numbers: 15 14 13 12 11 10 9 8
+    distance between consecutive objects in memory: 192 bytes
+    get_bulk(1019) = 0; avail now 4
+    get_bulk(8) with only 4 left = -105 (No buffer space available); avail still 4
+    after returning everything: avail=1023 in_use=0 full=1
+[4] memory footprint
+  pool ch06_basic elt=64 hdr=64 trailer=64 -> total_obj_size=192
+           page size used for layout: 2097152 bytes; 1 chunk(s), 196608 bytes
+           => 192 bytes of memory per object (1023 objects)
+  pool ch06_big elt=2304 hdr=64 trailer=0 -> total_obj_size=2368
+           page size used for layout: 2097152 bytes; 1 chunk(s), 1212416 bytes
+           => 2373 bytes of memory per object (511 objects)
+[5] rte_mempool_lookup("ch06_basic") found it
+mempool <ch06_basic>@0x1041f1e00
+  flags=10
+  socket_id=0
+  pool=0x1041efb00
+  iova=0x1997f1e00
+  nb_mem_chunks=1
+  size=1023
+  populated_size=1023
+  header_size=64
+  elt_size=64
+  trailer_size=64
+  total_obj_size=192
+  private_data_size=0
+  ops_index=1
+  ops_name: <ring_mp_mc>
+  memory chunk at 0x1041bf9c0, addr=0x1041bfa80, iova=0x1997bfa80, len=196608
+  avg bytes/object=192.187683
+  internal cache infos (hide zero value items):
+    cache_size=32
+    total_cache_count=0
+  common_pool_count=1023
+  no statistics available
+
+$ ./cache_explorer -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch06-cache
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch06-cache/mp_socket
+EAL: Selected IOVA mode 'VA'
+[A] pool n=4095, cache size=256 (size/2=128) on lcore 0
+  start               cache.len=0    backend=4095 
+  stock 400 (cache=NULL) cache.len=0    backend=3695  | app now holds 400
+  get 1    -> ret=0 cache.len=127  backend=3567  | miss: refill size/2=128 from backend, hand out 1
+  put 1    ->       cache.len=128  backend=3567  | fits: push on top of the cache
+  put 100  ->       cache.len=228  backend=3567  | fits: 128+100 <= 256
+  put 50   ->       cache.len=150  backend=3695  | overflow: flush the bottom 128, keep hot 100, add 50
+  get 150  -> ret=0 cache.len=0    backend=3695  | hit: all 150 served from the cache
+  get 32   -> ret=0 cache.len=96   backend=3567  | miss: refill 128, hand out 32
+  get 200  -> ret=0 cache.len=24   backend=3439  | drain 96, remaining 104 <= 128: refill 128, give 104
+  get 200  -> ret=0 cache.len=0    backend=3263  | drain 24, remaining 176 > 128: direct from backend
+  put 200  ->       cache.len=200  backend=3263  | fits: 0+200 <= 256 (even though 200 > size/2)
+  put 200  ->       cache.len=200  backend=3463  | no room and 200 > size/2: bypass, straight to backend
+  cache_flush ->      cache.len=0    backend=3663  | everything cached goes back
+  put 432  ->       cache.len=0    backend=4095  | return the rest (direct: > size/2 and no room)
+  in_use=0, nheld=0
+[B] cache_size limits (pool n=4095, RTE_MEMPOOL_CACHE_MAX_SIZE=512)
+  cache_size=512   ok, sizeof_cache_per_lcore=4224 bytes
+  cache_size=1024  ok, sizeof_cache_per_lcore=8320 bytes
+  cache_size=4095  ok, sizeof_cache_per_lcore=32896 bytes
+  cache_size=4096  FAILED: Invalid argument
+[C] non-EAL pthread: rte_lcore_id()=LCORE_ID_ANY, default cache=(nil)
+  user cache: generic_get(32) -> cache.len=96 (refill 128, hand out 32)
+  user cache: generic_put(32) -> cache.len=128
+  after flush cache.len=0, pool avail=4095
+[D] 2 lcores (0 and 1) each: get_bulk(32)+put_bulk(32) x 200000, 5 runs
+  cache 0    : median   71.95 cycles per get+put of one object (min 69.01, max 79.91)
+  cache 256  : median    1.12 cycles per get+put of one object (min 1.11, max 1.33)
+  cache 1024 : median    1.11 cycles per get+put of one object (min 1.09, max 1.12)
+
+$ ./handler_bakeoff -l 0 --no-pci --no-huge -m 128 --file-prefix=ch06-ops
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch06-ops/mp_socket
+EAL: Selected IOVA mode 'VA'
+pool n=2047, elt 64 B, cache 0, 1 lcore; burst 32 x 100000 iterations, 5 runs
+handler       median      min      max | singles: 1st get->reget | bulk64 reget[0..4] (got[0..4])
+ring_mp_mc      2.02     2.02     2.07 | 648,649,650->653,654,655 | 722 723 724 725 726 (658 659 660 661 662)
+ring_sp_sc      1.56     1.55     1.57 | 648,649,650->653,654,655 | 722 723 724 725 726 (658 659 660 661 662)
+ring_mt_hts     2.06     2.04     2.16 | 648,649,650->653,654,655 | 722 723 724 725 726 (658 659 660 661 662)
+stack           2.65     2.64     3.90 | 2046,2045,2044->2042,2043,2044 | 1983 1984 1985 1986 1987 (2046 2045 2044 2043 2042)
+lf_stack       10.93    10.89    11.05 | 2046,2045,2044->2042,2043,2044 | 1983 1984 1985 1986 1987 (2046 2045 2044 2043 2042)
+pile            4.54     4.48     7.30 | 2014,2013,2012->2010,2011,2012 | 2014 2013 2012 2011 2010 (2046 2045 2044 2043 2042)
+bucket         10.95    10.83    14.71 | 37,38,39->21,22,23     | 63 64 65 66 67 (0 1 2 3 4)
+(cycles per object for one get + one put; VM, software only)
+
+$ ./stranded_cache -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch06-strand
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch06-strand/mp_socket
+EAL: Selected IOVA mode 'VA'
+pool n=256, cache_size=128, 3 lcores
+[1] after workers ran a balanced get/put loop and stopped:
+  avail_count=256 in_use=0 | cache[0]=0 cache[1]=128 cache[2]=128 | in backend=0
+  main lcore: get_bulk(1) = -105 FAILED although avail_count says there are free objects
+  main lcore: get_bulk(64) = -105 FAILED although avail_count says there are free objects
+[2] after each worker ran rte_mempool_cache_flush() on itself:
+  avail_count=256 in_use=0 | cache[0]=0 cache[1]=0 cache[2]=0 | in backend=256
+  main lcore: get_bulk(256) = 0 ok
+[3] resized pool: n = in_flight 256 + 3 lcores x cache 128 = 640
+    after the same worker loop:
+  avail_count=640 in_use=0 | cache[0]=0 cache[1]=128 cache[2]=128 | in backend=384
+  main lcore: get_bulk(256) = 0 ok
+mempool <ch06_strand2>@0x1040cfe00
+  flags=10
+  socket_id=0
+  pool=0x1040cdb00
+  iova=0x1040cfe00
+  nb_mem_chunks=1
+  size=640
+  populated_size=640
+  header_size=64
+  elt_size=64
+  trailer_size=64
+  total_obj_size=192
+  private_data_size=0
+  ops_index=1
+  ops_name: <ring_mp_mc>
+  memory chunk at 0x1040af180, addr=0x1040af240, iova=0x1040af240, len=124992
+  avg bytes/object=195.300000
+  internal cache infos (hide zero value items):
+    cache_size=128
+    cache_count[1]=128
+    cache_count[2]=128
+    total_cache_count=256
+  common_pool_count=384
+  no statistics available
+
+$ ./custom_ops -l 0 --no-pci --no-huge -m 64 --file-prefix=ch06-custom
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch06-custom/mp_socket
+EAL: Selected IOVA mode 'VA'
+[1] registered mempool handlers (rte_mempool_ops_table, 11 entries):
+  0:ch06_array 1:bucket 2:ring_mp_mc 3:ring_sp_sc 4:ring_mp_sc 5:ring_sp_mc 6:ring_mt_rts 7:ring_mt_hts 8:stack 9:lf_stack 10:pile 
+[2] pool 'ch06_custom' ops_index=0 ops=ch06_array; store holds 1023, enqueue calls=1023 (populate)
+[3] put a=0x1040f1b80, put b=0x1040f1ac0, get -> 0x1040f1ac0 (b: LIFO)
+[4] get_bulk(1023)=0, then get_bulk(1)=-105 (No buffer space available)
+[5] cache 0 : 10000 x (get 32 + put 32) -> handler dequeue=10000 enqueue=10000 calls
+    cache 64: 10000 x (get 32 + put 32) -> handler dequeue=1 enqueue=0 calls
+
+$ ./stack_demo -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch06-stack
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch06-stack/mp_socket
+EAL: Selected IOVA mode 'VA'
+[1] push 1..64 in ONE call, then pop 64; and push 1,2,3 one by one, pop 3
+  std  pushed 64 popped 64: out[0..3]=64 63 62 61  out[31..33]=33 32 31 | singles -> 3 2 1
+  lf   pushed 64 popped 64: out[0..3]=64 63 62 61  out[31..33]=33 32 31 | singles -> 3 2 1
+  pile pushed 64 popped 64: out[0..3]=33 34 35 36  out[31..33]=64 1 2 | singles -> 3 2 1
+[2] capacity 64: push 64 singles, then try one 64-object bulk
+  std  singles pushed=64 count=64 free_count=0 | bulk push(64) -> 0, count=64
+  lf   singles pushed=64 count=64 free_count=0 | bulk push(64) -> 0, count=64
+  pile singles pushed=64 count=64 free_count=0 | bulk push(64) -> 64, count=64
+[3] each lcore pops then pushes a burst, 100000 iterations, 5 runs
+  1 lcore  burst 1  std  median   69.44 cycles/obj (min 68.68, max 70.76)
+  1 lcore  burst 1  lf   median  129.26 cycles/obj (min 128.35, max 138.39)
+  1 lcore  burst 1  pile median  129.94 cycles/obj (min 129.35, max 130.68)
+  1 lcore  burst 32 std  median    3.23 cycles/obj (min 3.21, max 3.25)
+  1 lcore  burst 32 lf   median   13.27 cycles/obj (min 13.17, max 13.74)
+  1 lcore  burst 32 pile median    4.33 cycles/obj (min 4.32, max 4.62)
+  2 lcores burst 1  std  median  948.95 cycles/obj (min 744.75, max 1664.67)
+  2 lcores burst 1  lf   median 2485.38 cycles/obj (min 1294.14, max 3403.38)
+  2 lcores burst 1  pile median 2301.61 cycles/obj (min 1880.59, max 3225.04)
+  2 lcores burst 32 std  median   27.32 cycles/obj (min 26.24, max 40.63)
+  2 lcores burst 32 lf   median   86.63 cycles/obj (min 77.85, max 87.61)
+  2 lcores burst 32 pile median   59.35 cycles/obj (min 28.29, max 63.92)
+
+$ ./pool_sizing -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch06-size
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch06-size/mp_socket
+EAL: Selected IOVA mode 'VA'
+Rx+Tx rings 8192 + 4 lcores x cache 256 + 4 lcores x burst 32 = 9344 objects
+n=9344  caches: 256 256 256 256 | full caches 4/4 -> worst case fits
+n=9343  caches: 256 256 256 128 | full caches 3/4 -> TOO SMALL: some lcore would fail a get
+round up to 2^q - 1 for a ring-backed pool: 16383
+
+$ ./bakeoff_mp -l 0-2 --no-pci --no-huge -m 128 --file-prefix=ch06-opsmp
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch06-opsmp/mp_socket
+EAL: Selected IOVA mode 'VA'
+3 lcores hammer one pool (n=2047, cache 0), burst 32 x 50000, 5 runs
+  ring_mp_mc  median   115.56 cycles/obj (min 115.15, max 116.42)
+  ring_mt_hts median    66.47 cycles/obj (min 49.53, max 68.88)
+  !! ring_mt_rts: 224 objects missing
+  !! ring_mt_rts: 224 objects missing
+  !! ring_mt_rts: 224 objects missing
+  !! ring_mt_rts: 224 objects missing
+  !! ring_mt_rts: 224 objects missing
+  ring_mt_rts median   165.92 cycles/obj (min 160.67, max 168.96)
+  stack       median   114.28 cycles/obj (min 83.63, max 118.42)
+  lf_stack    median   190.22 cycles/obj (min 181.02, max 194.04)
+  pile        median   195.93 cycles/obj (min 187.64, max 210.58)
+  bucket      median   294.47 cycles/obj (min 289.89, max 315.82)
+(per lcore, one get + one put of one object; VM, software only)

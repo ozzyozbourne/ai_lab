@@ -1,0 +1,1678 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 Memory: Hugepages, Memzones, rte_malloc and IOVA | DPDK from Zero to Expert</title>
+<meta name="description" content="Why DPDK needs special memory: TLB reach and hugepages, the EAL memory options and the files they create, rte_malloc and memzones, IOVA and why a NIC needs it, NUMA, the startup-error catalogue, and an optional deep dive into memsegs, heap internals, memory events, external memory and rte_dev_dma_map.">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  /* ---- chapter 4 specific ---- */
+  .seg-btns { display: inline-flex; gap: .25rem; flex-wrap: wrap; }
+  .seg-btns .btn[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--heading); }
+  .w-note { font-size: .82rem; color: var(--text-muted); margin: .4rem 0 0; }
+  .verdict { padding: .5rem .7rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); margin: .5rem 0 0; font-size: .9rem; min-height: 2.6em; }
+  .verdict.bad { border-color: var(--c4); background: var(--c4-soft); }
+  .verdict.good { border-color: var(--c2); background: var(--c2-soft); }
+  .dec-in { display: grid; gap: .5rem; margin-bottom: .6rem; }
+  .dec-in select, .dec-in textarea { width: 100%; font: .8rem/1.35 var(--font-mono); padding: .4rem .5rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
+  .dec-in textarea { min-height: 4.2rem; resize: vertical; }
+  .dec-out { display: grid; grid-template-columns: 7.5rem 1fr; gap: .3rem .8rem; font-size: .88rem; margin-top: .6rem; }
+  .dec-out dt { font-weight: 700; color: var(--text-muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; padding-top: .12rem; }
+  .dec-out dd { margin: 0; overflow-wrap: anywhere; }
+  .dec-out pre { margin: 0; font-size: .74rem; white-space: pre-wrap; }
+  @media (max-width: 560px) { .dec-out { grid-template-columns: 1fr; } .dec-out dd { margin-bottom: .4rem; } }
+  .steps-list { list-style: none; margin: .4rem 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .25rem .5rem; font-size: .78rem; }
+  .steps-list li { padding: .2rem .45rem; border-radius: 5px; border: 1px solid var(--border); color: var(--text-muted); transition: background .2s, color .2s; }
+  .steps-list li.on { background: var(--c2-soft); border-color: var(--c2); color: var(--heading); font-weight: 650; }
+  .steps-list li code { font-size: .74rem; }
+  .review-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: .7rem; }
+  .review-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: .7rem .8rem; background: var(--surface); }
+  .review-card .rq { font-weight: 650; margin-bottom: .4rem; }
+  .review-card details summary { cursor: pointer; color: var(--accent); font-size: .86rem; }
+  .review-card details p { font-size: .88rem; margin: .4rem 0 0; }
+  .deep-banner { border: 2px dashed var(--c5); border-radius: var(--radius-sm); padding: .6rem .9rem; background: var(--c5-soft); margin: 1.2rem 0; }
+  .deep-banner strong { color: var(--heading); }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 04 &middot; Memory and Hugepages</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../03-eal-fundamentals/index.html"><span class="dir">&larr; Previous</span><span class="ttl">03 &middot; The EAL: Lcores, Launching Work, Threads, Logging and Time</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../05-rings/index.html"><span class="dir">Next &rarr;</span><span class="ttl">05 &middot; rte_ring: Lock-Free Queues Between Cores</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 04 &middot; end of band 1</div>
+      <h1>Memory: Hugepages, Memzones, <code>rte_malloc</code> and IOVA</h1>
+      <p class="chapter-subtitle">Every packet buffer, ring and table in DPDK lives in memory that the EAL prepared before <code>main()</code> got control back. After this chapter you can say why that memory is special, choose the right memory options, allocate from it, explain the address a NIC uses to write into it, and read the error when <code>rte_eal_init()</code> refuses to start.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-beginner">Beginner core</span></li>
+        <li><span class="badge level-advanced">+ optional deep dive</span></li>
+        <li><span class="badge">~90 min (+45 deep dive)</span></li>
+        <li><span class="badge">Prerequisites: ch3</span></li>
+        <li><span class="tag api">rte_malloc</span></li>
+        <li><span class="tag api">rte_memzone_reserve</span></li>
+        <li><span class="tag api">rte_mem_virt2iova</span></li>
+        <li><span class="tag api">rte_extmem_register</span></li>
+        <li><span class="tag api">rte_dev_dma_map</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Explain what the TLB is, why 4 KB pages make it miss on packet-sized working sets, and measure the difference hugepages make on this machine.</li>
+        <li>Reserve and inspect Linux hugepages, choose between the EAL memory modes (<code>-m</code>, <code>--no-huge</code>, <code>--in-memory</code>, <code>--single-file-segments</code>, <code>--legacy-mem</code>) and find the files each one creates.</li>
+        <li>Allocate with <code>rte_malloc</code>/<code>rte_zmalloc</code>/<code>rte_calloc</code>/<code>rte_realloc</code>, read heap statistics, and reserve, look up and free named <span class="key-term">memzones</span>.</li>
+        <li>Explain what an <span class="key-term">IOVA</span> is, how the EAL picks PA or VA mode, and why a large DMA region needs <code>RTE_MEMZONE_IOVA_CONTIG</code>.</li>
+        <li>Place memory on the right NUMA node and recognise what changes on a two-socket server.</li>
+        <li>Decode the most common <code>rte_eal_init()</code> failures from their log lines (startup-error catalogue, part 1).</li>
+        <li><em>Deep dive:</em> walk memsegs, describe how the malloc heap splits, merges, grows and shrinks, use memory event callbacks and validators, and make external memory usable for DMA with <code>rte_extmem_register</code> + <code>rte_dev_dma_map</code>.</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>/proc/meminfo</code>, <code>/sys/kernel/mm/hugepages/</code>, <code>mount</code>: the kernel's view of hugepages.</li>
+        <li><code>dpdk-hugepages.py</code> (from <code>usertools/</code>, installed in <code>bin/</code>): show, reserve and mount hugepages.</li>
+        <li><code>/proc/&lt;pid&gt;/maps</code> and <code>/proc/&lt;pid&gt;/status</code>: what a running DPDK process has mapped.</li>
+        <li><code>unshare -m</code> and a private <code>hugetlbfs</code> mount: break things safely on a shared machine.</li>
+        <li>All code is in <code>code/</code>. <code>./run.sh</code> builds and runs every example (about 20 s) and its real output is <code>code/expected_output.txt</code>. <code>code/errors.tsv</code> is written by <code>startup_errors.sh</code>.</li>
+      </ul>
+    </section>
+
+    <!-- ============================================================ 1 -->
+    <h2 id="nic-needs"><span class="sec-num">1</span>Why a NIC cares where your buffer lives</h2>
+    <p>In ch1's two-lane race the DPDK lane started with "NIC DMA": the network card copies an arriving frame into RAM by itself, without the CPU. To do that the card needs an address. The driver gives it one by writing it into a receive <span class="key-term">descriptor</span>. The card then writes the frame to exactly that address and the program reads the frame through its own pointer.</p>
+    <p>Those two addresses are not the same kind of address. Your C pointer is a <span class="key-term">virtual address</span> (VA): the CPU's memory management unit (MMU) translates it, page by page, into a <span class="key-term">physical address</span> (PA) in RAM. The NIC does not use your page tables. It sees addresses on the PCIe bus, which DPDK calls <span class="key-term">IOVA</span> (I/O virtual address). For the frame to show up behind your pointer, the IOVA in the descriptor must lead to the same physical bytes as your VA. Figure 1 is the picture to keep in mind for the whole chapter.</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 260" role="img" aria-labelledby="f-bridge-t">
+        <title id="f-bridge-t">The CPU reaches a buffer through its virtual address and the page tables, the NIC reaches the same physical frame through an IOVA</title>
+        <text class="svg-title" x="20" y="22">CPU side</text>
+        <text class="svg-title" x="520" y="22">device side</text>
+        <rect class="svg-box c1" x="20" y="40" width="170" height="54"/>
+        <text class="svg-label center bold" x="105" y="58">your code</text>
+        <text class="svg-label center mono small" x="105" y="78">buf = 0x100400000</text>
+        <rect class="svg-box c6" x="20" y="130" width="170" height="54"/>
+        <text class="svg-label center bold" x="105" y="148">MMU + page tables</text>
+        <text class="svg-label center small" x="105" y="168">TLB caches translations</text>
+        <path class="svg-arrow c1" d="M105,94 L105,126"/>
+        <text class="svg-label small muted" x="112" y="114">VA</text>
+        <rect class="svg-box c2" x="270" y="175" width="180" height="62"/>
+        <text class="svg-label center bold" x="360" y="196">physical frame in RAM</text>
+        <text class="svg-label center mono small" x="360" y="218">PA 0x198800000</text>
+        <path class="svg-arrow c6" d="M190,170 L266,196"/>
+        <text class="svg-label small muted" x="200" y="200">PA</text>
+        <rect class="svg-box c4" x="530" y="40" width="170" height="54"/>
+        <text class="svg-label center bold" x="615" y="58">NIC</text>
+        <text class="svg-label center small" x="615" y="78">Rx descriptor: IOVA</text>
+        <rect class="svg-box c7 dashed" x="530" y="130" width="170" height="54"/>
+        <text class="svg-label center bold" x="615" y="148">IOMMU (optional)</text>
+        <text class="svg-label center small" x="615" y="168">IOVA &#8594; PA</text>
+        <path class="svg-arrow c4" d="M615,94 L615,126"/>
+        <text class="svg-label small muted" x="622" y="114">DMA write</text>
+        <path class="svg-arrow c4" d="M530,170 L454,196"/>
+        <path class="svg-arrow accent dashed" d="M300,62 L524,62"/>
+        <text class="svg-label center small" x="360" y="50">the driver writes the buffer's IOVA</text>
+        <text class="svg-label center small" x="360" y="80">into the descriptor (rte_mbuf::buf_iova, ch7)</text>
+        <text class="svg-label center small muted" x="360" y="252">both paths must end at the same bytes, and the bytes must not move or be swapped out</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>Two ways into one buffer. The CPU translates a VA through the page tables; the NIC writes to an IOVA, which is either the physical address itself (PA mode) or an address that an IOMMU translates (VA mode, Section 8).</figcaption>
+    </figure>
+
+    <p>That one picture explains the three things DPDK demands from its memory, and the rest of the chapter takes them one at a time:</p>
+    <ul>
+      <li><strong>Fast to translate</strong> for the CPU: few, large pages, so the TLB covers all packet buffers (Section 2).</li>
+      <li><strong>Pinned</strong>: the kernel must never move a page or swap it out while a device may write to it. Hugepages are never swapped (Sections 3 and 4).</li>
+      <li><strong>Known to the device</strong>: DPDK records the IOVA of every page so a driver can put it into a descriptor (Section 8, and the external-memory deep dive).</li>
+    </ul>
+
+    <!-- ============================================================ 2 -->
+    <h2 id="tlb"><span class="sec-num">2</span>Pages, the TLB, and why 4 KB pages hurt</h2>
+    <p>The MMU does not translate byte by byte; it translates <span class="key-term">pages</span>. On x86-64 the normal page is 4 KB. To translate an address the CPU walks a four-level tree of page tables (PML4, PDPT, PD, PT): four dependent memory reads before it can even start loading your data. That would be far too slow for every load, so the CPU keeps recent translations in a small cache, the <span class="key-term">TLB</span> (translation lookaside buffer). A TLB hit costs nothing extra; a miss costs a page walk.</p>
+    <p>The TLB holds a fixed number of entries, typically a few dozen in the first level and one or two thousand in the second. What matters is its <span class="key-term">reach</span>: entries &times; page size. With 4 KB pages, 1536 entries reach 6 MB. A packet application touches far more than that: a pool of 16384 mbufs of 2 KB each is 32 MB, plus rings, tables and statistics. Accesses land on random packets, so most of them would miss. A 2 MB <span class="key-term">hugepage</span> is one TLB entry for 512 times more memory and needs one level less to walk; a 1 GB page saves another level. Try it.</p>
+
+    <div class="widget" id="w-tlb">
+      <div class="widget-head"><span class="widget-title">TLB reach: page size against working set</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg viewBox="0 0 640 250" role="img" aria-label="Bar showing how much of the working set the TLB covers, and the page-table walk for the chosen page size" style="min-width:520px"></svg></div>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">pages to map</div><div class="stat-value" id="tlb-pages">-</div></div>
+          <div class="stat"><div class="stat-label">TLB reach</div><div class="stat-value" id="tlb-reach">-</div></div>
+          <div class="stat"><div class="stat-label">random accesses that miss</div><div class="stat-value" id="tlb-miss">-</div></div>
+          <div class="stat"><div class="stat-label">reads per miss</div><div class="stat-value" id="tlb-walk">-</div></div>
+        </div>
+      </div>
+      <div class="controls">
+        <span class="seg-btns" id="tlb-ps" role="group" aria-label="page size">
+          <button class="btn small" type="button" data-i="0">4 KB</button>
+          <button class="btn small" type="button" data-i="1">2 MB</button>
+          <button class="btn small" type="button" data-i="2">1 GB</button>
+        </span>
+        <label>TLB entries <input type="range" id="tlb-ent" min="0" max="6" step="1" value="5"> <output id="tlb-ent-o"></output></label>
+        <label>working set <input type="range" id="tlb-ws" min="0" max="7" step="1" value="3"> <output id="tlb-ws-o"></output></label>
+      </div>
+    </div>
+    <p class="w-note">The miss share assumes uniformly random accesses, which is close to what a packet pool sees. In a virtual machine like this one a miss is worse than shown: with nested paging the walk goes through the guest's and the host's page tables, up to 24 memory reads.</p>
+
+    <h3 id="tlb-measure">Measure it: one pointer chase, two page sizes</h3>
+    <p><code>tlb_bench.c</code> builds a single random cycle through a 64 MB buffer that touches one cache line in each 4 KB page, and follows it with dependent loads (<code>pos = mem[pos]</code>). The 16384 lines it touches are only 1 MB, so the data stays in the CPU caches; what changes between the two runs is the translation: 16384 pages with 4 KB pages, 32 with 2 MB pages. Each run does 5 rounds of 4 million loads and prints the median, minimum and maximum.</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/tlb_bench.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="59" data-hl="81"><code class="language-c">	/* Sattolo&#x27;s algorithm: a random permutation that is ONE cycle. */
+	for (uint64_t i = 0; i &lt; n; i++)
+		perm[i] = i;
+	for (uint64_t i = n - 1; i &gt; 0; i--) {
+		uint64_t j = rte_rand_max(i);          /* 0 &lt;= j &lt; i */
+		uint32_t t = perm[i]; perm[i] = perm[j]; perm[j] = t;
+	}
+	/* word index of the slot in page p: page start + rotating line */
+#define SLOT_IDX(p) ((uint64_t)(p) * (PAGE4K / 8) + (((p) &gt;&gt; 5) % 64) * 8)
+	/* slot of page perm[i] holds the index of the slot of page perm[i+1] */
+	for (uint64_t i = 0; i &lt; n; i++)
+		mem[SLOT_IDX(perm[i])] = SLOT_IDX(perm[(i + 1) % n]);
+	uint32_t perm0 = perm[0];
+	free(perm);
+
+	double cyc[RUNS];
+	uint64_t pos = SLOT_IDX(perm0);
+	for (uint64_t i = 0; i &lt; STEPS; i++)            /* warm up */
+		pos = mem[pos];
+	for (int r = 0; r &lt; RUNS; r++) {
+		uint64_t t0 = rte_rdtsc_precise();
+		for (uint64_t i = 0; i &lt; STEPS; i++)
+			pos = mem[pos];                 /* the dependent load */
+		cyc[r] = (double)(rte_rdtsc_precise() - t0) / STEPS;</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./tlb_bench -l 0 --no-pci --no-huge -m 128 --file-prefix=ch04-tlb4k</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-tlb4k/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+  run 1: 47.1 cycles per load
+  run 2: 46.9 cycles per load
+  run 3: 45.4 cycles per load
+  run 4: 44.1 cycles per load
+  run 5: 44.7 cycles per load
+<span class="hl">4 KB pages: median 45.4 cycles/load (min 44.1, max 47.1) over 5 runs [pos=0]</span>
+<span class="prompt">$ </span><span class="cmd">./tlb_bench -l 0 --no-pci --huge-unlink --file-prefix=ch04-tlb2m</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-tlb2m/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;PA&#x27;</span>
+  run 1: 11.3 cycles per load
+  run 2: 11.3 cycles per load
+  run 3: 11.3 cycles per load
+  run 4: 11.3 cycles per load
+  run 5: 11.3 cycles per load
+<span class="hl">2 MB pages: median 11.3 cycles/load (min 11.3, max 11.3) over 5 runs [pos=0]</span></pre>
+</div>
+    <p class="output-caption">Same code, same data, same CPU: about 3.7&times; more cycles per load with 4 KB pages (medians of 5 rounds, the spread is under 4%), because nearly every load needs a page walk. These are numbers from a VM, where a walk is especially expensive; on bare metal the gap is smaller, but it does not go away. A pitfall worth remembering from the comment in the source: if every page uses the same line offset, the 2 MB version gets <em>slower</em>, because cache-set conflicts then dominate. Benchmarks lie easily.</p>
+
+    <!-- ============================================================ 3 -->
+    <h2 id="linux-hugepages"><span class="sec-num">3</span>Hugepages on Linux</h2>
+    <p>Linux keeps hugepages in a separate pool that you reserve in advance. Pages in the pool are never swapped and never moved, which also gives us the "pinned" property from Section 1. The kernel exposes the pool in three places:</p>
+    <ul>
+      <li><code>/proc/meminfo</code>: <code>HugePages_Total</code>, <code>HugePages_Free</code> and <code>Hugepagesize</code> (the default size).</li>
+      <li><code>/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages</code> (and <code>-1048576kB</code> for 1 GB): write a number here to reserve pages. Per NUMA node it is <code>/sys/devices/system/node/nodeN/hugepages/...</code>.</li>
+      <li>A <span class="key-term">hugetlbfs</span> mount, usually <code>/dev/hugepages</code>. Every file you create there is backed by hugepages. This is how DPDK gets hugepage memory that another process can map too.</li>
+    </ul>
+<pre><code class="language-console">$ grep -i huge /proc/meminfo | head -6
+AnonHugePages:         0 kB
+ShmemHugePages:        0 kB
+FileHugePages:         0 kB
+HugePages_Total:    1024
+HugePages_Free:     1024
+HugePages_Rsvd:        0
+$ dpdk-hugepages.py -s
+Node  Pages  Size  Total
+0      1024   2Mb    2Gb
+
+Huge page filesystems mounted at: /dev/hugepages
+$ mount | grep hugetlbfs
+nodev on /dev/hugepages type hugetlbfs (rw,relatime,pagesize=2M)</code></pre>
+    <p class="output-caption">This machine: 1024 pages of 2 MB on one NUMA node, shared by everyone who uses it, so the examples in this chapter take 16 to 64 MB at a time. No 1 GB pages are reserved.</p>
+    <div class="callout note"><div class="callout-title">Transparent hugepages are a different thing</div><p><code>AnonHugePages</code> counts <em>transparent</em> hugepages (THP): the kernel may merge ordinary memory into 2 MB pages when it feels like it, and split or move them later. DPDK does not rely on THP, because "may" and "move" are exactly what a DMA buffer cannot accept.</p></div>
+
+    <!-- ============================================================ 4 -->
+    <h2 id="eal-options"><span class="sec-num">4</span>EAL memory options and the files they create</h2>
+    <p>Chapter 3 treated memory options as boilerplate (<code>--no-huge -m 64</code>). Now we can read them properly. The EAL reads the hugepage pool at start-up, reserves a large window of virtual addresses, and maps pages into it as needed. The options decide how much it maps up front, where the backing comes from, and what it leaves on disk.</p>
+
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Option</th><th>What it does</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td><code>-m &lt;MB&gt;</code></td><td>Maps this much at start-up and <strong>pins</strong> it: these pages are never given back.</td><td>A floor, not a cap: the heap can grow past it (Exercise 2).</td></tr>
+          <tr><td><code>--numa-mem a,b</code></td><td>Like <code>-m</code>, per NUMA node (node 0 gets <i>a</i> MB, node 1 <i>b</i>).</td><td>Replaces <code>--socket-mem</code>, still accepted.</td></tr>
+          <tr><td><code>--numa-limit a,b</code></td><td>A cap per node: the heap may not grow beyond it.</td><td>Replaces <code>--socket-limit</code>.</td></tr>
+          <tr><td><code>--no-huge</code></td><td>Uses ordinary 4 KB anonymous memory; <code>-m</code> is then its exact size (default 64 MB).</td><td>IOVA = VA, no physical addresses. Fine for tests, not for speed (Section 2).</td></tr>
+          <tr><td><code>--in-memory</code></td><td>Hugepages from <code>memfd</code>, no files in hugetlbfs, no shared config in <code>/run/dpdk</code>.</td><td>No secondary processes (ch16). The cleanest choice when you do not need them.</td></tr>
+          <tr><td><code>--single-file-segments</code></td><td>One hugetlbfs file per memory type instead of one per page.</td><td>Saves file descriptors.</td></tr>
+          <tr><td><code>--huge-dir &lt;dir&gt;</code></td><td>Which hugetlbfs mount to use.</td><td>Used in the error lab (Section 11).</td></tr>
+          <tr><td><code>--huge-unlink</code></td><td>Delete the hugepage files right after mapping them.</td><td>Nothing to clean up after a crash; no secondaries.</td></tr>
+          <tr><td><code>--file-prefix &lt;p&gt;</code></td><td>Names the files (<code>&lt;p&gt;map_*</code>) and the runtime directory <code>/run/dpdk/&lt;p&gt;</code>.</td><td>Unique per independent process. Default <code>rte</code>.</td></tr>
+          <tr><td><code>--legacy-mem</code></td><td>Map all memory at start-up and never change it (the pre-18.05 behaviour).</td><td>No runtime growth; deep dive.</td></tr>
+          <tr><td><code>--iova-mode pa|va</code></td><td>Force the IOVA mode instead of letting EAL choose.</td><td>Section 8.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="see-files">See the files: four modes side by side</h3>
+    <p><code>see_the_files.sh</code> starts <code>sleeper</code> (it initialises EAL, allocates 8 MB and sleeps) in four modes and looks at what each one creates while it runs. Figure 2 summarises the result; the real output follows.</p>
+
+    <figure class="diagram">
+      <div class="scroll-x">
+      <svg viewBox="0 0 720 250" role="img" aria-labelledby="f-modes-t" style="min-width:560px">
+        <title id="f-modes-t">What each memory mode creates: hugepage files, runtime directory, and the kind of mapping</title>
+        <text class="svg-label bold" x="10" y="58">backing</text>
+        <text class="svg-label bold" x="10" y="108">in /dev/hugepages</text>
+        <text class="svg-label bold" x="10" y="158">in /run/dpdk/&lt;p&gt;</text>
+        <text class="svg-label bold" x="10" y="208">secondaries</text>
+        <g>
+          <rect class="svg-box c2" x="140" y="16" width="133" height="26"/><text class="svg-label center bold small" x="207" y="29">default -m 32</text>
+          <text class="svg-label center small" x="207" y="58">hugetlbfs file / page</text>
+          <text class="svg-label center mono small" x="207" y="108">16 x &lt;p&gt;map_0_N</text>
+          <text class="svg-label center small" x="207" y="158">config, fbarrays, mp_socket</text>
+          <text class="svg-label center small" x="207" y="208">yes</text>
+        </g>
+        <g>
+          <rect class="svg-box c2" x="279" y="16" width="146" height="26"/><text class="svg-label center bold small" x="352" y="29">--single-file-segments</text>
+          <text class="svg-label center small" x="352" y="58">one file, grown/punched</text>
+          <text class="svg-label center mono small" x="352" y="108">1 x &lt;p&gt;map_0 (32M)</text>
+          <text class="svg-label center small" x="352" y="158">same as default</text>
+          <text class="svg-label center small" x="352" y="208">yes</text>
+        </g>
+        <g>
+          <rect class="svg-box c5" x="431" y="16" width="133" height="26"/><text class="svg-label center bold small" x="497" y="29">--in-memory</text>
+          <text class="svg-label center small" x="497" y="58">memfd hugepages</text>
+          <text class="svg-label center small" x="497" y="108">nothing</text>
+          <text class="svg-label center small" x="497" y="158">only telemetry socket</text>
+          <text class="svg-label center small" x="497" y="208">no</text>
+        </g>
+        <g>
+          <rect class="svg-box c7" x="575" y="16" width="135" height="26"/><text class="svg-label center bold small" x="642" y="29">--no-huge</text>
+          <text class="svg-label center small" x="642" y="58">memfd "nohuge", 4 KB</text>
+          <text class="svg-label center small" x="642" y="108">nothing</text>
+          <text class="svg-label center small" x="642" y="158">config, fbarray_nohugemem</text>
+          <text class="svg-label center small" x="642" y="208">no (cannot share 4 KB map)</text>
+        </g>
+        <line class="svg-grid" x1="10" y1="80" x2="710" y2="80"/><line class="svg-grid" x1="10" y1="130" x2="710" y2="130"/><line class="svg-grid" x1="10" y1="180" x2="710" y2="180"/>
+        <text class="svg-label small muted" x="10" y="240">HugetlbPages in /proc/PID/status: 32768 kB for the three hugepage modes, 0 kB for --no-huge</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>The four modes as observed by <code>see_the_files.sh</code> on this machine.</figcaption>
+    </figure>
+
+    <details><summary>The real output of <code>see_the_files.sh</code> (long)</summary>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre>HugePages_Free before: 1024 (shared with other users of this machine)
+
+------------------------------------------------------------------
+mode: default
+<span class="prompt">$ </span><span class="cmd">./sleeper -l 0 --no-pci -m 32 --file-prefix=ch04-files-default -- 8 &amp;</span>
+<span class="dim">  EAL: Selected IOVA mode &#x27;PA&#x27;</span>
+  READY pid=5784 buf=0x1019fdf80 mapped=32MB
+<span class="prompt">$ </span><span class="cmd">ls /dev/hugepages | grep ch04-files-default</span>
+  ch04-files-defaultmap_0_0
+  ch04-files-defaultmap_0_1
+  ch04-files-defaultmap_0_10
+  ch04-files-defaultmap_0_11
+  (16 file(s), 32M on disk)
+<span class="prompt">$ </span><span class="cmd">ls /run/dpdk/ch04-files-default</span>
+  config dpdk_telemetry.v2 fbarray_memseg-2048k-0-0 fbarray_memzone hugepage_info mp_socket 
+<span class="prompt">$ </span><span class="cmd">grep -E &#x27;map_|memfd|nohuge|fbarray|config&#x27; /proc/5784/maps   (first 5)</span>
+  100000000-100007000         rw-s /run/dpdk/ch04-files-default/config 
+  100007000-100035000         rw-s /run/dpdk/ch04-files-default/fbarray_memzone 
+  100035000-1001b7000         rw-s /run/dpdk/ch04-files-default/fbarray_memseg-2048k-0-0 
+  100200000-100400000         rw-s /dev/hugepages/ch04-files-defaultmap_0_0 
+  100400000-100600000         rw-s /dev/hugepages/ch04-files-defaultmap_0_1 
+<span class="prompt">$ </span><span class="cmd">grep HugetlbPages /proc/5784/status</span>
+<span class="hl">  HugetlbPages:	   32768 kB</span>
+  sleeper 5784: clean exit
+<span class="hl">  files left in /dev/hugepages after exit: 0</span>
+
+------------------------------------------------------------------
+mode: single
+<span class="prompt">$ </span><span class="cmd">./sleeper -l 0 --no-pci -m 32 --single-file-segments --file-prefix=ch04-files-single -- 8 &amp;</span>
+<span class="dim">  EAL: Selected IOVA mode &#x27;PA&#x27;</span>
+  READY pid=5829 buf=0x1019fdf80 mapped=32MB
+<span class="prompt">$ </span><span class="cmd">ls /dev/hugepages | grep ch04-files-single</span>
+  ch04-files-singlemap_0
+  (1 file(s), 32M on disk)
+<span class="prompt">$ </span><span class="cmd">ls /run/dpdk/ch04-files-single</span>
+  config dpdk_telemetry.v2 fbarray_memseg-2048k-0-0 fbarray_memzone hugepage_info mp_socket 
+<span class="prompt">$ </span><span class="cmd">grep -E &#x27;map_|memfd|nohuge|fbarray|config&#x27; /proc/5829/maps   (first 5)</span>
+  100000000-100007000         rw-s /run/dpdk/ch04-files-single/config 
+  100007000-100035000         rw-s /run/dpdk/ch04-files-single/fbarray_memzone 
+  100035000-1001b7000         rw-s /run/dpdk/ch04-files-single/fbarray_memseg-2048k-0-0 
+  100200000-100400000         rw-s /dev/hugepages/ch04-files-singlemap_0 
+  100400000-100600000         rw-s /dev/hugepages/ch04-files-singlemap_0 
+<span class="prompt">$ </span><span class="cmd">grep HugetlbPages /proc/5829/status</span>
+<span class="hl">  HugetlbPages:	   32768 kB</span>
+  sleeper 5829: clean exit
+<span class="hl">  files left in /dev/hugepages after exit: 0</span>
+
+------------------------------------------------------------------
+mode: inmemory
+<span class="prompt">$ </span><span class="cmd">./sleeper -l 0 --no-pci -m 32 --in-memory --file-prefix=ch04-files-inmemory -- 8 &amp;</span>
+<span class="dim">  EAL: Selected IOVA mode &#x27;PA&#x27;</span>
+<span class="err">  EAL: No free 1048576 kB hugepages reported on node 0</span>
+  READY pid=5874 buf=0x11417fdf80 mapped=32MB
+<span class="prompt">$ </span><span class="cmd">ls /dev/hugepages | grep ch04-files-inmemory</span>
+  (no files)
+<span class="prompt">$ </span><span class="cmd">ls /run/dpdk/ch04-files-inmemory</span>
+  dpdk_telemetry.v2 
+<span class="prompt">$ </span><span class="cmd">grep -E &#x27;map_|memfd|nohuge|fbarray|config&#x27; /proc/5874/maps   (first 5)</span>
+  1140000000-1140200000       rw-s /memfd:seg_1-0 (deleted)
+  1140200000-1140400000       rw-s /memfd:seg_1-1 (deleted)
+  1140400000-1140600000       rw-s /memfd:seg_1-2 (deleted)
+  1140600000-1140800000       rw-s /memfd:seg_1-3 (deleted)
+  1140800000-1140a00000       rw-s /memfd:seg_1-4 (deleted)
+<span class="prompt">$ </span><span class="cmd">grep HugetlbPages /proc/5874/status</span>
+<span class="hl">  HugetlbPages:	   32768 kB</span>
+  sleeper 5874: clean exit
+<span class="hl">  files left in /dev/hugepages after exit: 0</span>
+
+------------------------------------------------------------------
+mode: nohuge
+<span class="prompt">$ </span><span class="cmd">./sleeper -l 0 --no-pci -m 32 --no-huge --file-prefix=ch04-files-nohuge -- 8 &amp;</span>
+<span class="dim">  EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+  READY pid=5905 buf=0x101893f80 mapped=32MB
+<span class="prompt">$ </span><span class="cmd">ls /dev/hugepages | grep ch04-files-nohuge</span>
+  (no files)
+<span class="prompt">$ </span><span class="cmd">ls /run/dpdk/ch04-files-nohuge</span>
+  config dpdk_telemetry.v2 fbarray_memzone fbarray_nohugemem mp_socket 
+<span class="prompt">$ </span><span class="cmd">grep -E &#x27;map_|memfd|nohuge|fbarray|config&#x27; /proc/5905/maps   (first 5)</span>
+  100000000-100007000         rw-s /run/dpdk/ch04-files-nohuge/config 
+  100007000-100035000         rw-s /run/dpdk/ch04-files-nohuge/fbarray_memzone 
+  100035000-100096000         rw-s /run/dpdk/ch04-files-nohuge/fbarray_nohugemem 
+  100096000-102096000         rw-s /memfd:nohuge (deleted)
+<span class="prompt">$ </span><span class="cmd">grep HugetlbPages /proc/5905/status</span>
+<span class="hl">  HugetlbPages:	       0 kB</span>
+  sleeper 5905: clean exit
+<span class="hl">  files left in /dev/hugepages after exit: 0</span>
+
+------------------------------------------------------------------
+mode: crash (kill -9 a default-mode sleeper)
+<span class="prompt">$ </span><span class="cmd">kill -9 5938</span>
+<span class="hl">  files left in /dev/hugepages: 16</span>
+  HugePages_Free: 1024 before the run, 1008 now (the files still hold the pages)
+<span class="prompt">$ </span><span class="cmd">rm -f /dev/hugepages/ch04-files-crashmap_* &amp;&amp; rm -rf /run/dpdk/ch04-files-crash</span>
+<span class="hl">  files left: 0, HugePages_Free: 1024</span></pre>
+</div>
+    </details>
+    <p class="output-caption">Things to notice. The default mode maps the shared config at <code>0x100000000</code>, then the fbarrays (Section 12), then the hugepages from <code>0x100200000</code>. <code>--single-file-segments</code> maps the same addresses from one file. <code>--in-memory</code> prints the harmless "No free 1048576 kB hugepages" notice because memfd could create 1 GB pages, and its pages start at <code>0x1140000000</code>, after a 64 GB window reserved for the (empty) 1 GB list. A clean exit (<code>rte_eal_cleanup()</code>) removes the files. A <code>kill -9</code> does not: 16 files and their 16 hugepages stay taken until someone deletes them.</p>
+
+    <div class="callout warning"><div class="callout-title">Hygiene on shared machines</div><p>Always pass a unique <code>--file-prefix</code>. Two primaries with the same prefix collide: the second one fails to start (error E3 in Section 11). Leftover <code>&lt;prefix&gt;map_*</code> files of a dead process hold hugepages forever; delete them only after checking that no process with that prefix is alive (<code>fuser /dev/hugepages/&lt;prefix&gt;map_*</code>). If no secondary process will ever attach, <code>--in-memory</code> leaves nothing behind at all.</p></div>
+
+    <!-- ============================================================ 5 -->
+    <h2 id="layers"><span class="sec-num">5</span>The memory layer cake</h2>
+    <p>Before the APIs, the big picture. Everything you allocate in DPDK sits on the same stack of layers (Figure 3). You will normally use only the top two: <code>rte_malloc</code> and memzones here, and later the libraries built on them (rings in ch5, mempools in ch6, mbufs in ch7).</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 320" role="img" aria-labelledby="f-cake-t">
+        <title id="f-cake-t">Memory layers from kernel backing at the bottom to mempools, rings and mbufs at the top</title>
+        <rect class="svg-box c3" x="40" y="14" width="640" height="40"/>
+        <text class="svg-label center bold" x="360" y="34">rte_ring (ch5) &#183; rte_mempool (ch6) &#183; rte_mbuf pools (ch7) &#183; hash, LPM, ethdev queues ...</text>
+        <rect class="svg-box c2" x="40" y="66" width="315" height="46"/>
+        <text class="svg-label center bold" x="197" y="84">rte_malloc family</text>
+        <text class="svg-label center small" x="197" y="101">anonymous, any size</text>
+        <rect class="svg-box c2" x="365" y="66" width="315" height="46"/>
+        <text class="svg-label center bold" x="522" y="84">memzone</text>
+        <text class="svg-label center small" x="522" y="101">named block + descriptor in shared memory</text>
+        <rect class="svg-box c2" x="40" y="124" width="640" height="46"/>
+        <text class="svg-label center bold" x="360" y="142">malloc heap: one per NUMA node (+ external heaps)</text>
+        <text class="svg-label center small" x="360" y="159">free lists of malloc_elem; grows by mapping pages, shrinks by unmapping them</text>
+        <rect class="svg-box c6" x="40" y="182" width="640" height="46"/>
+        <text class="svg-label center bold" x="360" y="200">memseg lists: one reserved VA window per (page size, NUMA node)</text>
+        <text class="svg-label center small" x="360" y="217">each mapped page = one memseg {va, iova, len, socket, flags}, kept in an fbarray</text>
+        <rect class="svg-box c7" x="40" y="240" width="640" height="46"/>
+        <text class="svg-label center bold" x="360" y="258">kernel backing</text>
+        <text class="svg-label center small" x="360" y="275">hugetlbfs files &#183; memfd (--in-memory) &#183; 4 KB memfd (--no-huge) &#183; your own memory (external)</text>
+        <path class="svg-arrow c7" d="M700,286 L700,18"/>
+        <text class="svg-label small muted" x="40" y="306">lib/eal/common/: eal_common_memory.c, malloc_heap.c, malloc_elem.c, eal_common_memzone.c &#183; lib/eal/linux/eal_memalloc.c</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>One idea per layer: a memseg is a page, a memseg list is a VA window for one page type, the heap turns pages into allocations of any size, and a memzone is a heap allocation with a name.</figcaption>
+    </figure>
+
+    <!-- ============================================================ 6 -->
+    <h2 id="rte-malloc"><span class="sec-num">6</span>Allocating: the <code>rte_malloc</code> family</h2>
+    <p>The API looks like libc on purpose (<code>lib/eal/include/rte_malloc.h</code>):</p>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Call</th><th>Like</th><th>Extra</th></tr></thead>
+        <tbody>
+          <tr><td><code>rte_malloc(type, size, align)</code></td><td><code>malloc</code></td><td><code>align</code>: 0 = cache line (64 B), otherwise a power of two. <code>type</code> is ignored (a label for you).</td></tr>
+          <tr><td><code>rte_zmalloc(type, size, align)</code></td><td><code>malloc</code> + <code>memset 0</code></td><td>Zeroed.</td></tr>
+          <tr><td><code>rte_calloc(type, num, size, align)</code></td><td><code>calloc</code></td><td>Zeroed array.</td></tr>
+          <tr><td><code>rte_realloc(ptr, size, align)</code></td><td><code>realloc</code></td><td>May move the block.</td></tr>
+          <tr><td><code>rte_malloc_socket(..., socket)</code> and <code>_zmalloc/_calloc/_realloc_socket</code></td><td></td><td>From a given NUMA node's heap, or <code>SOCKET_ID_ANY</code>. The plain calls use the caller's node.</td></tr>
+          <tr><td><code>rte_free(ptr)</code></td><td><code>free</code></td><td>Never mix: <code>free()</code> on an <code>rte_malloc</code> pointer corrupts memory, and vice versa.</td></tr>
+          <tr><td><code>rte_malloc_validate(ptr, &amp;size)</code></td><td></td><td>0 if <code>ptr</code> is a live block; returns its usable size.</td></tr>
+          <tr><td><code>rte_malloc_get_socket_stats(socket, &amp;st)</code>, <code>rte_malloc_dump_stats(f, NULL)</code></td><td></td><td>Heap size, free/allocated bytes, element counts.</td></tr>
+          <tr><td><code>rte_mem_virt2iova(ptr)</code>, <code>rte_malloc_virt2iova(ptr)</code></td><td></td><td>The IOVA a device would use for this address (Section 8).</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Why not plain <code>malloc()</code>? Because its memory is 4 KB pages that the kernel may move, the device cannot be told its address, and another process cannot map it. <code>rte_malloc</code> is for set-up time, though: it takes a lock and searches free lists. On the packet path you allocate fixed-size objects from mempools (ch6) instead.</p>
+
+    <h3 id="hello-memory">hello_memory.c</h3>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/hello_memory.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="70" data-hl="89-92,109,118,132-138"><code class="language-c">int main(int argc, char **argv)
+{
+	int ret = rte_eal_init(argc, argv);
+	if (ret &lt; 0) {
+		fprintf(stderr, &quot;rte_eal_init failed: %s\n&quot;, rte_strerror(rte_errno));
+		return 1;
+	}
+
+	/* 1. What did EAL set up? */
+	printf(&quot;IOVA mode        : %s\n&quot;, iova_mode_str(rte_eal_iova_mode()));
+	printf(&quot;hugepages        : %s\n&quot;, rte_eal_has_hugepages() ? &quot;yes&quot; : &quot;no (--no-huge, 4 KB pages)&quot;);
+	printf(&quot;physical addrs   : %s\n&quot;, rte_eal_using_phys_addrs() ? &quot;readable&quot; : &quot;not used&quot;);
+	printf(&quot;mapped memory    : %&quot; PRIu64 &quot; MB\n&quot;, rte_eal_get_physmem_size() &gt;&gt; 20);
+	printf(&quot;NUMA nodes       : %u (this lcore is on node %u)\n&quot;, rte_socket_count(), rte_socket_id());
+
+	/* 2. Allocate a few buffers and look at them. */
+	printf(&quot;\nheap of node 0:\n&quot;);
+	heap_line(&quot;before&quot;);
+
+	char *a = rte_malloc(&quot;demo&quot;, 100, 0);      /* align 0 = cache line (64 B) */
+	char *b = rte_malloc(&quot;demo&quot;, 100, 4096);   /* page aligned */
+	char *z = rte_zmalloc(&quot;demo&quot;, 1500, 0);    /* zeroed, like calloc */
+	int  *c = rte_calloc(&quot;demo&quot;, 256, sizeof(int), 0);
+	heap_line(&quot;after 4 allocations&quot;);
+
+	printf(&quot;\nbuffers:\n&quot;);
+	show(&quot;rte_malloc(100, 0)&quot;, a);
+	show(&quot;rte_malloc(100, 4096)&quot;, b);
+	show(&quot;rte_zmalloc(1500, 0)&quot;, z);
+	show(&quot;rte_calloc(256, 4, 0)&quot;, c);
+
+	/* rte_zmalloc really zeroes: check every byte. */
+	int nonzero = 0;
+	for (int i = 0; i &lt; 1500; i++)
+		nonzero += (z[i] != 0);
+	printf(&quot;  zmalloc&#x27;d bytes that are not zero: %d\n&quot;, nonzero);
+
+	/* rte_realloc may move the block, exactly like realloc(). */
+	strcpy(a, &quot;kept across realloc&quot;);
+	char *a2 = rte_realloc(a, 64 * 1024, 0);
+	show(&quot;rte_realloc(a, 64K, 0)&quot;, a2);
+	printf(&quot;  content after realloc: \&quot;%s\&quot; (%s)\n&quot;, a2, a2 == a ? &quot;same address&quot; : &quot;moved&quot;);
+	a = a2;
+
+	/* 3. Ask for memory on NUMA node 1. This VM has one node, so there is no
+	 * heap for node 1. An explicit socket never falls back to another one. */
+	printf(&quot;\nNUMA:\n&quot;);
+	rte_errno = 0;
+	void *remote = rte_malloc_socket(&quot;demo&quot;, 4096, 0, 1);
+	if (remote == NULL)
+		/* rte_malloc*() report failure only through NULL: rte_errno
+		 * is left untouched (we zeroed it above, it is still 0). */
+		printf(&quot;  rte_malloc_socket(..., socket 1) = NULL  rte_errno=%d (not set by rte_malloc)\n&quot;,
+		       rte_errno);
+	else    /* with --no-huge EAL treats every socket as SOCKET_ID_ANY */
+		printf(&quot;  rte_malloc_socket(..., socket 1) = %p  (accepted: no-huge memory has no node)\n&quot;,
+		       remote);
+	void *any = rte_malloc_socket(&quot;demo&quot;, 4096, 0, SOCKET_ID_ANY);
+	printf(&quot;  rte_malloc_socket(..., SOCKET_ID_ANY) = %p (ok, node %d)\n&quot;,
+	       any, rte_socket_id());
+
+	/* 4. Free everything with rte_free (never with free()). */
+	rte_free(any);
+	rte_free(remote);                           /* NULL is fine */
+	rte_free(a);
+	rte_free(b);
+	rte_free(z);
+	rte_free(c);
+	rte_free(NULL);                             /* allowed, like free(NULL) */
+	heap_line(&quot;after rte_free&quot;);
+
+	rte_eal_cleanup();
+	return 0;
+}</code></pre>
+</div>
+    <div class="tabs">
+      <div class="tab-list"><button class="tab-btn" data-tab="nh">--no-huge (VA mode)</button><button class="tab-btn" data-tab="hp">hugepages (PA mode)</button></div>
+      <div class="tab-panel" data-tab="nh"><div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./hello_memory -l 0 --no-pci --no-huge -m 64 --file-prefix=ch04-hm</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-hm/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+<span class="hl">IOVA mode        : VA (device uses our virtual addresses)</span>
+hugepages        : no (--no-huge, 4 KB pages)
+physical addrs   : not used
+mapped memory    : 64 MB
+NUMA nodes       : 1 (this lcore is on node 0)
+
+heap of node 0:
+  before                 total= 67108864  alloc=     8320  free= 67100544  allocs=  1  free-elems=1
+  after 4 allocations    total= 67108864  alloc=    11648  free= 67097216  allocs=  5  free-elems=2
+
+buffers:
+<span class="hl">  rte_malloc(100, 0)           va=0x1040f3f00  iova=0x01040f3f00  64B-aligned  usable=128</span>
+<span class="hl">  rte_malloc(100, 4096)        va=0x1040f3000  iova=0x01040f3000  4K-aligned   usable=128</span>
+<span class="hl">  rte_zmalloc(1500, 0)         va=0x1040f3880  iova=0x01040f3880  64B-aligned  usable=1536</span>
+<span class="hl">  rte_calloc(256, 4, 0)        va=0x1040f3400  iova=0x01040f3400  64B-aligned  usable=1024</span>
+  zmalloc&#x27;d bytes that are not zero: 0
+<span class="hl">  rte_realloc(a, 64K, 0)       va=0x1040e2f80  iova=0x01040e2f80  64B-aligned  usable=65536</span>
+  content after realloc: &quot;kept across realloc&quot; (moved)
+
+NUMA:
+<span class="hl">  rte_malloc_socket(..., socket 1) = 0x1040e1f00  (accepted: no-huge memory has no node)</span>
+  rte_malloc_socket(..., SOCKET_ID_ANY) = 0x1040e0e80 (ok, node 0)
+  after rte_free         total= 67108864  alloc=     8320  free= 67100544  allocs=  1  free-elems=1</pre>
+</div></div>
+      <div class="tab-panel" data-tab="hp"><div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./hello_memory -l 0 --no-pci -m 64 --file-prefix=ch04-hm2</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-hm2/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;PA&#x27;</span>
+<span class="hl">IOVA mode        : PA (device uses physical addresses)</span>
+hugepages        : yes
+physical addrs   : readable
+mapped memory    : 64 MB
+NUMA nodes       : 1 (this lcore is on node 0)
+
+heap of node 0:
+  before                 total= 67108864  alloc=     8320  free= 67100544  allocs=  1  free-elems=1
+  after 4 allocations    total= 67108864  alloc=    11648  free= 67097216  allocs=  5  free-elems=2
+
+buffers:
+<span class="hl">  rte_malloc(100, 0)           va=0x1041fdf00  iova=0x01997fdf00  64B-aligned  usable=128</span>
+<span class="hl">  rte_malloc(100, 4096)        va=0x1041fd000  iova=0x01997fd000  4K-aligned   usable=128</span>
+<span class="hl">  rte_zmalloc(1500, 0)         va=0x1041fd880  iova=0x01997fd880  64B-aligned  usable=1536</span>
+<span class="hl">  rte_calloc(256, 4, 0)        va=0x1041fd400  iova=0x01997fd400  64B-aligned  usable=1024</span>
+  zmalloc&#x27;d bytes that are not zero: 0
+<span class="hl">  rte_realloc(a, 64K, 0)       va=0x1041ecf80  iova=0x01997ecf80  64B-aligned  usable=65536</span>
+  content after realloc: &quot;kept across realloc&quot; (moved)
+
+NUMA:
+<span class="err">  rte_malloc_socket(..., socket 1) = NULL  rte_errno=0 (not set by rte_malloc)</span>
+  rte_malloc_socket(..., SOCKET_ID_ANY) = 0x1041ebf00 (ok, node 0)
+  after rte_free         total= 67108864  alloc=     8320  free= 67100544  allocs=  1  free-elems=1</pre>
+</div></div>
+    </div>
+    <p class="output-caption">Read the two runs side by side. <strong>Alignment</strong>: <code>align=0</code> gives 64-byte blocks, 4096 gives a page-aligned one, and <code>rte_malloc(100)</code> has 128 usable bytes because sizes round up to whole cache lines. <strong>Heap stats</strong>: the heap is the whole 64 MB from <code>-m 64</code>; it already holds one 8320-byte block that EAL itself allocated, and after <code>rte_free</code> we are back to exactly that. <strong>IOVA</strong>: with <code>--no-huge</code> the IOVA equals the VA; with hugepages as root it is a physical address (<code>0x199...</code>) that has nothing to do with the VA. <strong>NUMA</strong>: with hugepages, asking for node 1 returns NULL; with <code>--no-huge</code> the same call succeeds, because 4 KB anonymous memory has no node and EAL ignores the socket. Note also that <code>rte_malloc</code> reports failure only with NULL: <code>rte_errno</code> is left at 0.</p>
+
+    <div class="callout tip"><div class="callout-title">What an allocation really costs</div><p>Exercise 1 measures it: on DPDK 26.11 for x86-64 each block carries a <code>malloc_elem</code> header of 128 bytes (two cache lines) in front of your data. 100 &times; <code>rte_malloc(1024)</code> uses 1152 bytes each. Many tiny allocations waste a lot; put them in one array or a mempool.</p></div>
+
+    <!-- ============================================================ 7 -->
+    <h2 id="memzones"><span class="sec-num">7</span>Memzones: named memory</h2>
+    <p>A <span class="key-term">memzone</span> is a heap allocation with a name and a descriptor (<code>struct rte_memzone</code>: name, VA, IOVA, length, page size, socket, flags) stored in a table in shared memory. Anyone who knows the name can find it with <code>rte_memzone_lookup()</code>, including a secondary process (ch16). DPDK libraries use memzones for everything that must be found by name or that hardware touches: a ring's memory, a mempool's objects, a NIC queue's descriptor ring.</p>
+    <ul>
+      <li><code>rte_memzone_reserve(name, len, socket, flags)</code>: cache-line aligned.</li>
+      <li><code>rte_memzone_reserve_aligned(..., align)</code>: power-of-two alignment.</li>
+      <li><code>rte_memzone_reserve_bounded(..., align, bound)</code>: the zone must not cross a multiple of <code>bound</code> (some devices can only DMA within, say, a 4 GB window).</li>
+      <li>Flags: <code>RTE_MEMZONE_IOVA_CONTIG</code> (contiguous for the device too, Section 8), page-size hints <code>RTE_MEMZONE_2MB</code>/<code>_1GB</code> and <code>RTE_MEMZONE_SIZE_HINT_ONLY</code>.</li>
+      <li><code>rte_memzone_lookup</code>, <code>rte_memzone_free</code>, <code>rte_memzone_walk</code>, <code>rte_memzone_dump</code>.</li>
+      <li>The table has a fixed size, 2560 by default; <code>rte_memzone_max_set(n)</code> changes it, <strong>before</strong> <code>rte_eal_init()</code>.</li>
+    </ul>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/memzones.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="45" data-hl="48,57,61,69,78,85,88-90,97"><code class="language-c">int main(int argc, char **argv)
+{
+	/* The table size is fixed at init time (default 2560 entries). */
+	if (rte_memzone_max_set(4) != 0)
+		printf(&quot;rte_memzone_max_set failed\n&quot;);
+
+	if (rte_eal_init(argc, argv) &lt; 0) {
+		fprintf(stderr, &quot;rte_eal_init failed: %s\n&quot;, rte_strerror(rte_errno));
+		return 1;
+	}
+	printf(&quot;memzone table size: %zu\n\n&quot;, rte_memzone_max_get());
+
+	printf(&quot;reserve:\n&quot;);
+	const struct rte_memzone *cfg = rte_memzone_reserve(&quot;app_cfg&quot;, 4096, SOCKET_ID_ANY, 0);
+	print_mz(&quot;reserve(app_cfg, 4096)&quot;, cfg);
+
+	const struct rte_memzone *ring = rte_memzone_reserve_aligned(&quot;rx_ring&quot;, 16384,
+			SOCKET_ID_ANY, RTE_MEMZONE_IOVA_CONTIG, 4096);
+	print_mz(&quot;reserve_aligned(rx_ring, 16K, 4K)&quot;, ring);
+	printf(&quot;    rx_ring va %% 4096 = %lu, iova=0x%&quot; PRIx64 &quot;\n&quot;,
+	       (unsigned long)((uintptr_t)ring-&gt;addr % 4096), ring-&gt;iova);
+
+	/* bounded: the zone must not cross a 1 MB boundary (think: a device
+	 * that can only DMA within one 1 MB window). */
+	const struct rte_memzone *bnd = rte_memzone_reserve_bounded(&quot;stats&quot;, 300000,
+			SOCKET_ID_ANY, 0, 64, 1 &lt;&lt; 20);
+	print_mz(&quot;reserve_bounded(stats, 300000, 1M)&quot;, bnd);
+	uintptr_t start = (uintptr_t)bnd-&gt;addr, end = start + bnd-&gt;len - 1;
+	printf(&quot;    first byte in MB #%lu, last byte in MB #%lu -&gt; %s\n&quot;,
+	       (unsigned long)(start &gt;&gt; 20), (unsigned long)(end &gt;&gt; 20),
+	       (start &gt;&gt; 20) == (end &gt;&gt; 20) ? &quot;does not cross&quot; : &quot;CROSSES&quot;);
+
+	printf(&quot;\nlookup by name:\n&quot;);
+	const struct rte_memzone *found = rte_memzone_lookup(&quot;rx_ring&quot;);
+	printf(&quot;  rte_memzone_lookup(\&quot;rx_ring\&quot;) = %p (%s)\n&quot;, (const void *)found,
+	       found == ring ? &quot;same descriptor&quot; : &quot;different!&quot;);
+	printf(&quot;  rte_memzone_lookup(\&quot;nope\&quot;)    = %p\n&quot;,
+	       (const void *)rte_memzone_lookup(&quot;nope&quot;));
+
+	printf(&quot;\nerrors:\n&quot;);
+	print_mz(&quot;reserve(app_cfg) again&quot;, rte_memzone_reserve(&quot;app_cfg&quot;, 64, SOCKET_ID_ANY, 0));
+	/* names are at most RTE_MEMZONE_NAMESIZE - 1 = 31 characters */
+	print_mz(&quot;reserve(&lt;32-character name&gt;)&quot;,
+		 rte_memzone_reserve(&quot;a_name_that_is_32_characters_xxx&quot;, 64, SOCKET_ID_ANY, 0));
+	print_mz(&quot;reserve(extra1)  [4th entry]&quot;, rte_memzone_reserve(&quot;extra1&quot;, 64, SOCKET_ID_ANY, 0));
+	print_mz(&quot;reserve(extra2)  [5th entry]&quot;, rte_memzone_reserve(&quot;extra2&quot;, 64, SOCKET_ID_ANY, 0));
+
+	printf(&quot;\nrte_memzone_walk:\n&quot;);
+	int n = 0;
+	rte_memzone_walk(walk_cb, &amp;n);
+
+	printf(&quot;\nfree app_cfg and reuse the name:\n&quot;);
+	printf(&quot;  rte_memzone_free(app_cfg) = %d\n&quot;, rte_memzone_free(cfg));
+	print_mz(&quot;reserve(app_cfg, 128)&quot;, rte_memzone_reserve(&quot;app_cfg&quot;, 128, SOCKET_ID_ANY, 0));
+
+	rte_memzone_free(bnd);   /* keeps the dump short: 300 KB = 74 small pages */
+	printf(&quot;\nrte_memzone_dump(stdout) after freeing \&quot;stats\&quot;:\n&quot;);
+	rte_memzone_dump(stdout);</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./memzones -l 0 --no-pci --no-huge -m 64 --file-prefix=ch04-mz</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-mz/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+memzone table size: 4
+
+reserve:
+  reserve(app_cfg, 4096)             -&gt; &quot;app_cfg&quot; va=0x1040c5f80 len=4096 socket=0
+  reserve_aligned(rx_ring, 16K, 4K)  -&gt; &quot;rx_ring&quot; va=0x1040c1000 len=16384 socket=0
+<span class="hl">    rx_ring va % 4096 = 0, iova=0x1040c1000</span>
+  reserve_bounded(stats, 300000, 1M) -&gt; &quot;stats&quot; va=0x104077b80 len=300032 socket=0
+    first byte in MB #4160, last byte in MB #4160 -&gt; does not cross
+
+lookup by name:
+  rte_memzone_lookup(&quot;rx_ring&quot;) = 0x100007048 (same descriptor)
+  rte_memzone_lookup(&quot;nope&quot;)    = (nil)
+
+errors:
+<span class="err">  reserve(app_cfg) again             -&gt; NULL, rte_errno=17 EEXIST (File exists)</span>
+<span class="err">  reserve(&lt;32-character name&gt;)       -&gt; NULL, rte_errno=36 ENAMETOOLONG (File name too long)</span>
+  reserve(extra1)  [4th entry]       -&gt; &quot;extra1&quot; va=0x1040c5ec0 len=64 socket=0
+<span class="dim">EAL: memzone_reserve_aligned_thread_unsafe(): Number of requested memzone segments exceeds maximum 4</span>
+<span class="err">  reserve(extra2)  [5th entry]       -&gt; NULL, rte_errno=28 ENOSPC (No space left on device)</span>
+
+rte_memzone_walk:
+    [0] app_cfg        4096 bytes at 0x1040c5f80
+    [1] rx_ring       16384 bytes at 0x1040c1000
+    [2] stats        300032 bytes at 0x104077b80
+    [3] extra1           64 bytes at 0x1040c5ec0
+
+free app_cfg and reuse the name:
+  rte_memzone_free(app_cfg) = 0
+  reserve(app_cfg, 128)              -&gt; &quot;app_cfg&quot; va=0x1040c5dc0 len=128 socket=0
+
+rte_memzone_dump(stdout) after freeing &quot;stats&quot;:
+Zone 0: name:&lt;app_cfg&gt;, len:0x80, virt:0x1040c5dc0, socket_id:0, flags:0
+physical segments used:
+  addr: 0x1040c5000 iova: 0x1040c5000 len: 0x1000 pagesz: 0x1000
+Zone 1: name:&lt;rx_ring&gt;, len:0x4000, virt:0x1040c1000, socket_id:0, flags:0
+physical segments used:
+  addr: 0x1040c1000 iova: 0x1040c1000 len: 0x1000 pagesz: 0x1000
+  addr: 0x1040c2000 iova: 0x1040c2000 len: 0x1000 pagesz: 0x1000
+  addr: 0x1040c3000 iova: 0x1040c3000 len: 0x1000 pagesz: 0x1000
+  addr: 0x1040c4000 iova: 0x1040c4000 len: 0x1000 pagesz: 0x1000
+Zone 3: name:&lt;extra1&gt;, len:0x40, virt:0x1040c5ec0, socket_id:0, flags:0
+physical segments used:
+  addr: 0x1040c5000 iova: 0x1040c5000 len: 0x1000 pagesz: 0x1000
+Total Memory Zones size = 0M</pre>
+</div>
+    <p class="output-caption">Each error comes back as NULL plus <code>rte_errno</code>: <code>EEXIST</code> for a name that is taken, <code>ENAMETOOLONG</code> for a 32-character name (the limit is 31), <code>ENOSPC</code> when the 4-entry table is full, with an EAL log line. The bounded 300000-byte zone sits inside one 1 MB block. The lookup returns the very same descriptor pointer, and a freed name can be reused. In the dump, the 16 KB <code>rx_ring</code> zone is four 4 KB pages, because this run used <code>--no-huge</code>.</p>
+
+    <!-- ============================================================ 8 -->
+    <h2 id="iova"><span class="sec-num">8</span>IOVA: the address a device uses</h2>
+    <p>Back to Figure 1. When a driver gives a NIC a buffer, it gives it the buffer's IOVA: <code>rte_mem_virt2iova(va)</code>, or for an mbuf the precomputed <code>buf_iova</code>. The EAL works in one of three <span class="key-term">IOVA modes</span> (<code>rte_eal_iova_mode()</code>):</p>
+    <ul>
+      <li><strong>PA</strong>: IOVA = physical address. EAL reads every page's physical address from <code>/proc/self/pagemap</code>, which needs root (<code>CAP_SYS_ADMIN</code>). Used with UIO drivers and with VFIO when there is no IOMMU.</li>
+      <li><strong>VA</strong>: IOVA = your virtual address. This needs an <span class="key-term">IOMMU</span>: the kernel's VFIO driver programs it so that the device's address <code>0x100400000</code> is translated to the right physical page, exactly like the MMU does for the CPU. It works without root and it is the recommended mode.</li>
+      <li><strong>DC</strong> ("don't care"): what a bus reports when it has no preference; EAL then picks one of the two.</li>
+    </ul>
+    <p>How EAL decides (<code>lib/eal/linux/eal.c</code>, "IOVA Mode Detection" in the programmer's guide): every bus reports a preference after scanning its devices. If they agree, that wins. If all say DC, EAL picks VA when physical addresses are not available or when IOMMU groups exist, and PA otherwise. <code>--iova-mode</code> overrides the choice. On this VM there is no IOMMU (<code>/sys/kernel/iommu_groups</code> is empty) and we run as root, so the default is <strong>PA</strong>; <code>--no-huge</code> has no physical addresses, so it is <strong>VA</strong>.</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 210" role="img" aria-labelledby="f-iommu-t">
+        <title id="f-iommu-t">PA mode without IOMMU compared with VA mode through an IOMMU programmed by VFIO</title>
+        <text class="svg-title" x="20" y="20">PA mode (no IOMMU, or UIO)</text>
+        <rect class="svg-box c4" x="20" y="40" width="120" height="44"/><text class="svg-label center bold" x="80" y="62">NIC</text>
+        <rect class="svg-box c2" x="230" y="40" width="120" height="44"/><text class="svg-label center bold" x="290" y="62">RAM</text>
+        <path class="svg-arrow c4" d="M140,62 L226,62"/><text class="svg-label center small" x="185" y="54">PA</text>
+        <text class="svg-label small muted" x="20" y="108">device can write anywhere in RAM;</text>
+        <text class="svg-label small muted" x="20" y="124">needs root to learn PAs; big buffers</text>
+        <text class="svg-label small muted" x="20" y="140">need physically adjacent pages</text>
+        <text class="svg-title" x="380" y="20">VA mode (VFIO + IOMMU)</text>
+        <rect class="svg-box c4" x="380" y="40" width="90" height="44"/><text class="svg-label center bold" x="425" y="62">NIC</text>
+        <rect class="svg-box c6" x="500" y="40" width="90" height="44"/><text class="svg-label center bold" x="545" y="56">IOMMU</text><text class="svg-label center small" x="545" y="73">VA &#8594; PA</text>
+        <rect class="svg-box c2" x="620" y="40" width="80" height="44"/><text class="svg-label center bold" x="660" y="62">RAM</text>
+        <path class="svg-arrow c4" d="M470,62 L496,62"/><path class="svg-arrow c6" d="M590,62 L616,62"/>
+        <rect class="svg-box c7 dashed" x="470" y="120" width="150" height="40"/><text class="svg-label center small" x="545" y="134">vfio-pci + VFIO maps</text><text class="svg-label center small" x="545" y="150">every DPDK page (ch23)</text>
+        <path class="svg-arrow c7 dashed" d="M545,120 L545,88"/>
+        <text class="svg-label small muted" x="380" y="186">device limited to mapped pages; no root needed;</text>
+        <text class="svg-label small muted" x="380" y="202">VA-contiguous is IOVA-contiguous</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>VFIO, IOMMU groups, the cdev/IOMMUFD mode and the (now internal) <code>rte_vfio_*</code> functions are ch23's subject; here only the consequence matters: in VA mode the device sees your addresses.</figcaption>
+    </figure>
+
+    <h3 id="iova-contig">The contiguity trap, live</h3>
+    <p>The CPU is happy with memory that is contiguous in VA: the page tables glue the pages together. A device that is given one start address and a length (a descriptor ring, a large DMA buffer) needs the range to be contiguous <em>in IOVA</em>. In VA mode, VA-contiguous is IOVA-contiguous. In PA mode it is contiguous only if the kernel happened to hand out physically adjacent pages <em>in the same order</em>. The widget uses the real pages from the <code>memseg_walk</code> run below.</p>
+
+    <div class="widget" id="w-iova">
+      <div class="widget-head"><span class="widget-title">VA pages and the frames behind them</span><span class="badge">interactive &middot; predict</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg viewBox="0 0 640 330" role="img" aria-label="Eight virtual pages on the left mapped to physical frames on the right" style="min-width:540px"></svg></div>
+        <div class="predict" id="iova-predict">
+          <div class="predict-q">Predict: will <code>rte_memzone_reserve_aligned("dma_ring", 3 MB, ..., RTE_MEMZONE_IOVA_CONTIG, ...)</code> succeed in this mode?</div>
+          <div class="predict-opts"><button class="btn small" type="button" data-p="1">It succeeds</button><button class="btn small" type="button" data-p="0">It fails</button></div>
+        </div>
+        <div class="verdict" id="iova-verdict" aria-live="polite">Choose a mode, predict, and the widget checks every pair of neighbouring pages.</div>
+      </div>
+      <div class="controls">
+        <span class="seg-btns" id="iova-mode" role="group" aria-label="IOVA mode">
+          <button class="btn small" type="button" data-m="pa">PA mode (real run)</button>
+          <button class="btn small" type="button" data-m="va">VA mode</button>
+          <button class="btn small" type="button" data-m="legacy">--legacy-mem</button>
+        </span>
+      </div>
+    </div>
+
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/memseg_walk.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="100" data-hl="101-102"><code class="language-c">	/* The IOVA-contiguity experiment. */
+	printf(&quot;\nrte_memzone_reserve_aligned(\&quot;dma_ring\&quot;, 3 MB, RTE_MEMZONE_IOVA_CONTIG):\n&quot;);
+	const struct rte_memzone *mz = rte_memzone_reserve_aligned(&quot;dma_ring&quot;, 3 &lt;&lt; 20,
+			SOCKET_ID_ANY, RTE_MEMZONE_IOVA_CONTIG, 4096);
+	if (mz == NULL) {
+		printf(&quot;  FAILED: rte_errno=%d (%s)\n&quot;, rte_errno, rte_strerror(rte_errno));
+	} else {
+		printf(&quot;  OK: va=%p iova=0x%&quot; PRIx64 &quot; len=%zu page=%&quot; PRIu64 &quot;K\n&quot;,
+		       mz-&gt;addr, mz-&gt;iova, mz-&gt;len, mz-&gt;hugepage_sz &gt;&gt; 10);
+		rte_memzone_free(mz);
+	}
+	/* Without the flag the same size always works: VA-contiguous is enough
+	 * for the CPU, only a device needs IOVA contiguity. */
+	mz = rte_memzone_reserve_aligned(&quot;cpu_only&quot;, 3 &lt;&lt; 20, SOCKET_ID_ANY, 0, 4096);
+	printf(&quot;  same size without IOVA_CONTIG: %s\n&quot;, mz ? &quot;OK&quot; : rte_strerror(rte_errno));</code></pre>
+</div>
+    <div class="tabs">
+      <div class="tab-list"><button class="tab-btn" data-tab="pa">PA, -m 32</button><button class="tab-btn" data-tab="tries">PA, no -m, 5 tries</button><button class="tab-btn" data-tab="va">--iova-mode=va</button></div>
+      <div class="tab-panel" data-tab="pa"><div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./memseg_walk -l 0 --no-pci -m 32 --file-prefix=ch04-ms</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-ms/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;PA&#x27;</span>
+IOVA mode: PA
+
+memseg lists (VA reserved, not memory):
+  list: base_va=0x100200000 page=  2048K socket=0 VA window= 65536 MB slots=32768 used=16
+
+memsegs (pages actually mapped):
+<span class="hl">  seg 0: va=0x100200000 iova=0x19c200000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)</span>
+<span class="hl">  seg 1: va=0x100400000 iova=0x19c000000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)</span>
+<span class="hl">  seg 2: va=0x100600000 iova=0x19be00000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)</span>
+<span class="hl">  seg 3: va=0x100800000 iova=0x19bc00000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)</span>
+<span class="hl">  seg 4: va=0x100a00000 iova=0x19ba00000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)</span>
+<span class="hl">  seg 5: va=0x100c00000 iova=0x11d200000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)</span>
+<span class="hl">  seg 6: va=0x100e00000 iova=0x11d400000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)</span>
+<span class="hl">  seg 7: va=0x101000000 iova=0x11d800000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)</span>
+<span class="hl">  ... 16 segments, 14 of 15 neighbours are NOT adjacent in IOVA</span>
+
+contiguous in VA (says nothing about IOVA):
+<span class="hl">  VA-contiguous run: va=0x100200000 len=32 MB (first iova=0x19c200000)</span>
+
+<span class="hl">rte_mem_virt2memseg(0x1021fdb80) -&gt; page va=0x102000000 iova=0x11d000000</span>
+
+rte_memzone_reserve_aligned(&quot;dma_ring&quot;, 3 MB, RTE_MEMZONE_IOVA_CONTIG):
+<span class="hl">  OK: va=0x100cff000 iova=0x11d2ff000 len=3145728 page=2048K</span>
+<span class="hl">  same size without IOVA_CONTIG: OK</span></pre>
+</div></div>
+      <div class="tab-panel" data-tab="tries"><div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre>--- 3b. no -m (heap grows page by page), PA mode: the 3 MB IOVA_CONTIG zone, 5 tries
+<span class="err">  try 1:  FAILED: rte_errno=12 (Cannot allocate memory)</span>
+<span class="err">  try 2:  FAILED: rte_errno=12 (Cannot allocate memory)</span>
+<span class="err">  try 3:  FAILED: rte_errno=12 (Cannot allocate memory)</span>
+<span class="err">  try 4:  FAILED: rte_errno=12 (Cannot allocate memory)</span>
+<span class="err">  try 5:  FAILED: rte_errno=12 (Cannot allocate memory)</span></pre>
+</div></div>
+      <div class="tab-panel" data-tab="va"><div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./memseg_walk -l 0 --no-pci --iova-mode=va --file-prefix=ch04-ms</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-ms/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+IOVA mode: VA
+
+memseg lists (VA reserved, not memory):
+  list: base_va=0x100200000 page=  2048K socket=0 VA window= 65536 MB slots=32768 used=1
+
+memsegs (pages actually mapped):
+<span class="hl">  seg 0: va=0x100200000 iova=0x100200000 len=2048K flags=0</span>
+<span class="hl">  ... 1 segments, 0 of 0 neighbours are NOT adjacent in IOVA</span>
+
+contiguous in VA (says nothing about IOVA):
+<span class="hl">  VA-contiguous run: va=0x100200000 len=2 MB (first iova=0x100200000)</span>
+
+<span class="hl">rte_mem_virt2memseg(0x1003fdb80) -&gt; page va=0x100200000 iova=0x100200000</span>
+
+rte_memzone_reserve_aligned(&quot;dma_ring&quot;, 3 MB, RTE_MEMZONE_IOVA_CONTIG):
+<span class="hl">  OK: va=0x100500000 iova=0x100500000 len=3145728 page=2048K</span>
+<span class="hl">  same size without IOVA_CONTIG: OK</span></pre>
+</div></div>
+    </div>
+    <p class="output-caption">In PA mode most VA neighbours have a <em>lower</em> physical address than the page before them (the kernel tends to hand out free hugepages from the top down), and there are gaps where other programs hold pages. Adjacent, but in the wrong order, does not help. In this capture of the <code>-m 32</code> run, pages 5 and 6 happen to be ascending neighbours, so the 3 MB zone fits exactly there (<code>iova=0x11d2ff000</code> spans them); another run on this machine found no such pair and failed. When the heap grows page by page (no <code>-m</code>), the reservation failed with <code>ENOMEM</code> 5 out of 5 times, with plenty of memory free. With <code>--iova-mode=va</code> every IOVA equals its VA and it always works, and without the flag the same 3 MB always works, because only the CPU needs to see it. Never rely on luck; ask for what you need, and prefer VA mode.</p>
+
+    <div class="callout pitfall"><div class="callout-title">Pitfall: <code>rte_malloc</code> memory is not IOVA-contiguous</div><p>A block from <code>rte_malloc</code> is only VA-contiguous. If a device will DMA across it as one range, reserve a memzone with <code>RTE_MEMZONE_IOVA_CONTIG</code> (that is what PMDs do for descriptor rings, ch23), or keep each DMA buffer inside one page, which is what mempools arrange for mbufs (ch6).</p></div>
+
+    <!-- ============================================================ 9 -->
+    <h2 id="numa"><span class="sec-num">9</span>NUMA: memory has a location</h2>
+    <p>A server with two CPU sockets has two memory controllers. Each socket reaches its own RAM directly and the other socket's RAM over the inter-socket link (UPI on Intel, Infinity Fabric on AMD), which costs extra latency and shares limited bandwidth. A PCIe NIC is attached to one socket too. Linux calls each socket with its memory a <span class="key-term">NUMA node</span>; DPDK calls it a <span class="key-term">socket</span>, and new options say <code>numa</code>.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 230" role="img" aria-labelledby="f-numa-t">
+        <title id="f-numa-t">Two NUMA nodes, each with cores and memory, a NIC on node 0, and local versus remote access paths</title>
+        <rect class="svg-box ghost" x="20" y="14" width="312" height="200"/>
+        <text class="svg-label bold" x="32" y="34">socket 0 = NUMA node 0</text>
+        <rect class="svg-box c1" x="36" y="52" width="120" height="44"/><text class="svg-label center bold" x="96" y="74">lcores 0-15</text>
+        <rect class="svg-box c2" x="196" y="52" width="120" height="44"/><text class="svg-label center bold" x="256" y="68">DRAM 0</text><text class="svg-label center small" x="256" y="85">heap socket_0</text>
+        <rect class="svg-box c4" x="36" y="124" width="120" height="44"/><text class="svg-label center bold" x="96" y="140">NIC (PCIe)</text><text class="svg-label center small" x="96" y="157">dev socket = 0</text>
+        <path class="svg-arrow c2 both" d="M160,74 L192,74"/>
+        <path class="svg-arrow c2 both" d="M160,146 L236,146 L236,100"/>
+        <text class="svg-label small" x="166" y="116">local paths</text>
+        <rect class="svg-box ghost" x="388" y="14" width="312" height="200"/>
+        <text class="svg-label bold" x="400" y="34">socket 1 = NUMA node 1</text>
+        <rect class="svg-box c2" x="404" y="52" width="120" height="44"/><text class="svg-label center bold" x="464" y="68">DRAM 1</text><text class="svg-label center small" x="464" y="85">heap socket_1</text>
+        <rect class="svg-box c1" x="564" y="52" width="120" height="44"/><text class="svg-label center bold" x="624" y="74">lcores 16-31</text>
+        <rect class="svg-box c7" x="334" y="182" width="52" height="16"/><text class="svg-label center small bold" x="360" y="172">UPI link</text>
+        <path class="svg-arrow c4 dashed" d="M624,100 L624,190 L292,190 L292,100"/>
+        <text class="svg-label small" x="432" y="140">remote: lcore 16 polling the</text>
+        <text class="svg-label small" x="432" y="156">NIC's pool in DRAM 0 crosses</text>
+        <text class="svg-label small" x="432" y="172">the inter-socket link every time</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The rule: put a port's rings and mbuf pool on the port's node (<code>rte_eth_dev_socket_id(port)</code>, ch8) and poll it from lcores on the same node. The dashed red path is what happens otherwise.</figcaption>
+    </figure>
+    <ul>
+      <li><code>rte_socket_id()</code>: the node of the calling lcore; <code>rte_lcore_to_socket_id(lcore)</code>; <code>rte_socket_count()</code>.</li>
+      <li><code>SOCKET_ID_ANY</code> (-1): "any node, prefer mine". It falls back to other nodes if the local one is full.</li>
+      <li>An <strong>explicit</strong> socket id never falls back. That is deliberate (you asked for local memory) and it is the classic failure on servers where hugepages were reserved on node 0 only: <code>hello_memory</code>'s <code>rte_malloc_socket(..., 1)</code> above returns NULL. Virtual devices may report <code>SOCKET_ID_ANY</code> from <code>rte_eth_dev_socket_id()</code>; handle -1.</li>
+    </ul>
+    <p>This VM has one node, so we cannot measure remote access; the code in this course is written to be correct on two-socket machines anyway.</p>
+
+    <!-- ============================================================ 10 -->
+    <h2 id="real-hw"><span class="sec-num">10</span>Sidebar: on real hardware</h2>
+    <div class="box">
+      <div class="box-title">What you do once on a real server (details in ch29)</div>
+      <ul>
+        <li><strong>Reserve hugepages at boot</strong>, before memory fragments: kernel command line <code>default_hugepagesz=1G hugepagesz=1G hugepages=16</code> (1 GB pages can only be reserved reliably at boot), or for 2 MB pages <code>dpdk-hugepages.py --setup 2G</code> (reserve and mount) or <code>-p 2M -r 2G</code> after boot. Reserve per node with <code>--node</code> or the <code>/sys/devices/system/node/nodeN/</code> files.</li>
+        <li><strong>Mount</strong> <code>hugetlbfs</code> for each page size (<code>mount -t hugetlbfs -o pagesize=1G none /dev/hugepages1G</code>) and point EAL at it with <code>--huge-dir</code> if needed.</li>
+        <li><strong>Turn the IOMMU on</strong>: <code>intel_iommu=on</code> or <code>amd_iommu=on</code>, usually with <code>iommu=pt</code> (pass-through for host devices, so only VFIO-bound devices pay for translation). Bind the NIC to <code>vfio-pci</code> (ch9 sidebar). EAL then picks VA mode and DPDK can run without root.</li>
+        <li><strong>Raise limits</strong> for non-root users: <code>RLIMIT_MEMLOCK</code> and the number of open files (one fd per hugepage in the default mode; <code>--single-file-segments</code> helps).</li>
+      </ul>
+      <p class="small muted">None of this is done here: the VM has no IOMMU and no NIC that may be bound, so the chapter uses virtual devices and PA/VA as EAL selects them.</p>
+    </div>
+
+    <!-- ============================================================ 11 -->
+    <h2 id="startup-errors"><span class="sec-num">11</span>When <code>rte_eal_init()</code> fails: the error catalogue, part 1</h2>
+    <p><code>rte_eal_init()</code> runs a fixed sequence of phases (Figure 6, from <code>lib/eal/linux/eal.c</code>). It stops at the first failure, logs one or more lines, and returns -1 with <code>rte_errno</code> set, mostly. Knowing which phase a line comes from tells you where to look. <code>startup_errors.sh</code> triggered every failure we can reproduce here, safely: a private 64 MB hugetlbfs mount for the "mount too small" case, and a private mount namespace with fake sysfs counters for the "no free hugepages" case, so the shared pool is never touched. Each row went into <code>errors.tsv</code>, and the decoder below is built from it.</p>
+
+    <div class="widget" id="w-err">
+      <div class="widget-head"><span class="widget-title">EAL error decoder</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="dec-in">
+          <label class="small muted" for="err-pick">Pick a captured error</label>
+          <select id="err-pick"></select>
+          <label class="small muted" for="err-text">or paste a log line from your own run</label>
+          <textarea id="err-text" spellcheck="false" placeholder="EAL: Cannot create lock on '/var/run/dpdk/rte/config'. Is another primary process running?"></textarea>
+          <div><button class="btn small primary" type="button" id="err-go">Decode</button></div>
+        </div>
+        <div class="scroll-x"><svg viewBox="0 0 640 96" role="img" aria-label="rte_eal_init phases, with the failing phase highlighted" style="min-width:520px"></svg></div>
+        <dl class="dec-out" id="err-out" aria-live="polite"></dl>
+      </div>
+    </div>
+
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre>==== errors.tsv (9 rows): id | phase | key line
+<span class="err">  E1  | 1 parse arguments             | EAL: lcore 7 unavailable</span>
+<span class="err">  E2  | 1 parse arguments             | ARGPARSE: unknown argument --memory=16!</span>
+<span class="err">  E3  | 2 config and lock             | EAL: Cannot create lock on &#x27;/var/run/dpdk/ch04-err-dup/config&#x27;. Is another primary process running?</span>
+<span class="err">  E4  | 5 hugepage info               | EAL: No free 2048 kB hugepages reported on node 0</span>
+<span class="err">  E5  | 6 memory init                 | EAL: Not enough memory available! Requested: 99999MB, available: 2048MB</span>
+<span class="err">  E6  | 6 memory init                 | EAL: Cannot init memory</span>
+<span class="err">  E7  | 6 memory init                 | EAL: Not enough memory available on socket 1! Requested: 32MB, available: 0MB</span>
+<span class="err">  E8  | 4 IOVA mode                   | EAL: Cannot use IOVA as &#x27;PA&#x27; since physical addresses are not available</span>
+<span class="err">  E9  | after init (allocation)       | rte_malloc_socket(..., socket 1) = NULL  rte_errno=0 (not set by rte_malloc)</span>
+<span class="hl">hugepage files left by this script: 0</span></pre>
+</div>
+    <p class="output-caption">The nine rows, as <code>startup_errors.sh</code> summarises them. Three lessons hide in the details. The duplicate-prefix failure (E3) leaves <code>rte_errno</code> at 0, so <code>rte_strerror</code> prints "Success". The empty pool (E4) says "Permission denied". And the mount quota (E6) only says "Cannot init memory" until you rerun with <code>--log-level=lib.eal:debug</code>. Read the log lines, not just the errno. Port-start errors are catalogued in ch8, multi-process errors in ch16, and ch13 merges all three tables.</p>
+    <details><summary>startup_errors.sh (the E6 trial and the fake-sysfs trick)</summary>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/startup_errors.sh</span><span class="lang">bash</span></div>
+<pre data-lines data-start="80"><code class="language-bash">mkdir -p &quot;$FAKE/g&quot; &quot;$FAKE/n&quot;
+for f in /sys/kernel/mm/hugepages/hugepages-2048kB/*; do echo 0 &gt; &quot;$FAKE/g/${f##*/}&quot;; done
+for f in /sys/devices/system/node/node0/hugepages/hugepages-2048kB/*; do echo 0 &gt; &quot;$FAKE/n/${f##*/}&quot;; done
+echo 1024 &gt; &quot;$FAKE/g/nr_hugepages&quot;; echo 1024 &gt; &quot;$FAKE/n/nr_hugepages&quot;
+trial E4 &quot;5 hugepage info&quot; &quot;No free 2048 kB&quot; \
+	&quot;The kernel reports free_hugepages=0 (all pages used by other programs or leaked files). With no usable page size EAL stops; the &#x27;Permission denied&#x27; is misleading.&quot; \
+	&quot;Check grep Huge /proc/meminfo. Remove leaked files (/dev/hugepages/&lt;prefix&gt;map_*) of dead processes, reserve more pages (dpdk-hugepages.py -r 1G), or run with --no-huge for testing.&quot; \
+	-- timeout -k 5 15 unshare -m sh -c &quot;mount --make-rprivate / &amp;&amp;
+	   mount --bind $FAKE/g /sys/kernel/mm/hugepages/hugepages-2048kB &amp;&amp;
+	   mount --bind $FAKE/n /sys/devices/system/node/node0/hugepages/hugepages-2048kB &amp;&amp;
+	   $T $APP -l 0 --no-pci --file-prefix=ch04-err-nofree&quot;
+
+# 5. -m larger than the free hugepages
+trial E5 &quot;6 memory init&quot; &quot;Not enough memory available&quot; \
+	&quot;-m asks for 99999 MB up front, but the hugepage pool has only 2048 MB.&quot; \
+	&quot;Ask for less (-m is a pinned minimum, the heap can still grow later) or reserve more hugepages.&quot; \
+	-- $T $APP -l 0 --no-pci -m 99999 --file-prefix=ch04-err-big
+
+# 6. -m larger than what the hugetlbfs mount allows (private mount, size=64M)
+mkdir -p &quot;$MNT&quot;
+mount -t hugetlbfs -o size=64M,pagesize=2M nodev &quot;$MNT&quot;
+trial E6 &quot;6 memory init&quot; &quot;Cannot init memory&quot; \
+	&quot;The pool has enough free pages, but the --huge-dir mount has a size=64M quota, so mmap() of page 33 fails. With --log-level=lib.eal:debug EAL says: &#x27;attempted to allocate 64 segments, but only 32 were allocated&#x27;.&quot; \
+	&quot;Rerun with --log-level=lib.eal:debug to see which page failed. Check the mount options (mount | grep hugetlbfs), cgroup hugetlb limits, and the -m value.&quot; \
+	-- $T $APP -l 0 --no-pci -m 128 --huge-dir &quot;$MNT&quot; --file-prefix=ch04-err-hd
+echo &quot;  (with --log-level=lib.eal:debug:)&quot;
+$T $APP -l 0 --no-pci -m 128 --huge-dir &quot;$MNT&quot; --file-prefix=ch04-err-hd --log-level=lib.eal:debug 2&gt;&amp;1 |
+	grep -E &#x27;alloc_seg|attempted to allocate&#x27; | head -2 | sed &#x27;s/^/  /&#x27;
+umount &quot;$MNT&quot;
+</code></pre>
+</div>
+    </details>
+
+    <!-- ============================================================ 12 -->
+    <div class="deep-banner"><strong>Deep dive, optional on first read.</strong> Sections 12.1 to 12.4 open the layers of Figure 3. You can go straight to <a href="#pitfalls">Common pitfalls</a> and come back when ch6 (mempools) or ch23 (drivers) sends you here.</div>
+    <h2 id="deep-dive"><span class="sec-num">12</span>Deep dive: inside DPDK memory</h2>
+
+    <h3 id="memsegs">12.1 Memseg lists, memsegs and the VA window</h3>
+    <p>At start-up EAL reserves one huge window of virtual addresses per <span class="key-term">memory type</span> (page size &times; NUMA node), mapped <code>PROT_NONE</code> so that nothing else can use it. That is a <span class="key-term">memseg list</span>: here one list of 32768 slots of 2 MB, 64 GB of VA. Reserving VA costs nothing; only pages that are actually mapped use memory. Each mapped page becomes a <span class="key-term">memseg</span> (<code>struct rte_memseg</code> in <code>rte_memory.h</code>: <code>addr</code>, <code>iova</code>, <code>len</code>, <code>socket_id</code>, <code>flags</code>), kept in an <span class="key-term">fbarray</span>: a fixed array plus a used-bitmap, stored in a shared file (<code>/run/dpdk/&lt;p&gt;/fbarray_memseg-2048k-0-0</code>) so secondary processes see the same table. The animation shows the window and what <code>alloc_seg()</code> in <code>lib/eal/linux/eal_memalloc.c</code> does for each new page.</p>
+
+    <div class="widget" id="w-vawin">
+      <div class="widget-head"><span class="widget-title">The DPDK VA window while the heap grows and shrinks</span><span class="badge">animation</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg viewBox="0 0 640 210" role="img" aria-label="Reserved virtual address window with hugepages being mapped and unmapped" style="min-width:540px"></svg></div>
+        <ol class="steps-list" id="vawin-steps">
+          <li>1 open hugepage file, lock it</li>
+          <li>2 <code>ftruncate</code> to 2 MB</li>
+          <li>3 <code>mmap(MAP_FIXED)</code> into the slot</li>
+          <li>4 touch the page (fault it in)</li>
+          <li>5 read IOVA (<code>/proc/self/pagemap</code>)</li>
+          <li>6 check NUMA node</li>
+          <li>7 fill the memseg, mark used</li>
+          <li>8 heap grows, ALLOC event</li>
+        </ol>
+        <div class="verdict" id="vawin-cap" aria-live="off"></div>
+      </div>
+      <div class="controls"></div>
+    </div>
+    <p class="w-note">The numbers follow the real run 5a below: the heap starts with one 2 MB page, <code>rte_zmalloc(5 MB)</code> maps three more (6144 KB, one ALLOC event), and <code>rte_free</code> unmaps them again.</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/memseg_walk.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="25"><code class="language-c">/* rte_memseg_list_walk() callback: one line per memseg list. */
+static int msl_cb(const struct rte_memseg_list *msl, void *arg)
+{
+	(void)arg;
+	printf(&quot;  list: base_va=%p page=%6&quot; PRIu64 &quot;K socket=%d VA window=%6zu MB &quot;
+	       &quot;slots=%5u used=%u%s\n&quot;,
+	       msl-&gt;base_va, msl-&gt;page_sz &gt;&gt; 10, msl-&gt;socket_id, msl-&gt;len &gt;&gt; 20,
+	       msl-&gt;memseg_arr.len, msl-&gt;memseg_arr.count,
+	       msl-&gt;external ? &quot; (external)&quot; : &quot;&quot;);
+	return 0;   /* 0 = keep walking */
+}
+
+struct seg_state {
+	int n;               /* segments seen */
+	int jumps;           /* neighbours whose IOVAs are not adjacent */
+	rte_iova_t next_iova;
+};
+
+/* rte_memseg_walk() callback: called for every mapped page. */
+static int ms_cb(const struct rte_memseg_list *msl, const struct rte_memseg *ms, void *arg)
+{
+	struct seg_state *s = arg;
+	(void)msl;
+
+	if (s-&gt;n &gt; 0 &amp;&amp; ms-&gt;iova != s-&gt;next_iova)
+		s-&gt;jumps++;
+	s-&gt;next_iova = ms-&gt;iova + ms-&gt;len;
+	if (s-&gt;n &lt; 8)
+		printf(&quot;  seg %d: va=%p iova=0x%09&quot; PRIx64 &quot; len=%4zuK flags=%#x%s\n&quot;,
+		       s-&gt;n, ms-&gt;addr, ms-&gt;iova, ms-&gt;len &gt;&gt; 10, ms-&gt;flags,
+		       (ms-&gt;flags &amp; RTE_MEMSEG_FLAG_DO_NOT_FREE) ? &quot; (DO_NOT_FREE: pinned by -m)&quot; : &quot;&quot;);
+	s-&gt;n++;
+	return 0;
+}
+
+/* rte_memseg_contig_walk(): runs of pages that are contiguous in VA. */
+static int contig_cb(const struct rte_memseg_list *msl, const struct rte_memseg *ms,
+		     size_t len, void *arg)
+{
+	(void)msl; (void)arg;
+	printf(&quot;  VA-contiguous run: va=%p len=%zu MB (first iova=0x%&quot; PRIx64 &quot;)\n&quot;,
+	       ms-&gt;addr, len &gt;&gt; 20, ms-&gt;iova);
+	return 0;</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./memseg_walk -l 0 --no-pci --no-huge -m 32 --file-prefix=ch04-ms</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-ms/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+IOVA mode: VA
+
+memseg lists (VA reserved, not memory):
+  list: base_va=0x100096000 page=     4K socket=0 VA window=    32 MB slots= 8192 used=8192
+
+memsegs (pages actually mapped):
+<span class="hl">  seg 0: va=0x100096000 iova=0x100096000 len=   4K flags=0</span>
+<span class="hl">  seg 1: va=0x100097000 iova=0x100097000 len=   4K flags=0</span>
+<span class="hl">  seg 2: va=0x100098000 iova=0x100098000 len=   4K flags=0</span>
+<span class="hl">  seg 3: va=0x100099000 iova=0x100099000 len=   4K flags=0</span>
+<span class="hl">  seg 4: va=0x10009a000 iova=0x10009a000 len=   4K flags=0</span>
+<span class="hl">  seg 5: va=0x10009b000 iova=0x10009b000 len=   4K flags=0</span>
+<span class="hl">  seg 6: va=0x10009c000 iova=0x10009c000 len=   4K flags=0</span>
+<span class="hl">  seg 7: va=0x10009d000 iova=0x10009d000 len=   4K flags=0</span>
+<span class="hl">  ... 8192 segments, 0 of 8191 neighbours are NOT adjacent in IOVA</span>
+
+contiguous in VA (says nothing about IOVA):
+<span class="hl">  VA-contiguous run: va=0x100096000 len=32 MB (first iova=0x100096000)</span>
+
+<span class="hl">rte_mem_virt2memseg(0x102093b80) -&gt; page va=0x102093000 iova=0x102093000</span>
+
+rte_memzone_reserve_aligned(&quot;dma_ring&quot;, 3 MB, RTE_MEMZONE_IOVA_CONTIG):
+<span class="hl">  OK: va=0x101d93000 iova=0x101d93000 len=3145728 page=4K</span>
+<span class="hl">  same size without IOVA_CONTIG: OK</span></pre>
+</div>
+    <p class="output-caption">With <code>--no-huge</code> the list has 4 KB slots and all 8192 are used from the start: the whole <code>-m 32</code> is mapped at once and every 4 KB page is its own memseg. <code>rte_memseg_contig_walk()</code> reports runs that are contiguous in <em>VA</em>; compare the PA run above, where the single 32 MB VA run had 15 IOVA breaks.</p>
+
+    <h3 id="heap-internals">12.2 The malloc heap: split, merge, grow, shrink</h3>
+    <p>Each heap (<code>struct malloc_heap</code>, <code>lib/eal/common/malloc_heap.h</code>) is a list of <span class="key-term">elements</span> in address order. Every element starts with a <code>struct malloc_elem</code> header (<code>malloc_elem.h</code>): neighbour pointers, its memseg list, a state (FREE, BUSY or PAD) and its size. Free elements also sit on one of 13 free lists by size class (powers of 4 from 256 bytes: <code>malloc_elem_free_list_index()</code>). Allocation (<code>malloc_elem_alloc()</code> in <code>malloc_elem.c</code>) takes the new block from the <strong>end</strong> of a free element, so the free element only shrinks and keeps its place; if alignment leaves a gap in front too small to be a free element, the gap becomes a PAD header that points to the real one. Freeing merges with free neighbours, so two free elements are never adjacent, and whole pages that are free and not pinned by <code>-m</code> are unmapped. Step through it, predicting first.</p>
+
+    <div class="widget" id="w-heap">
+      <div class="widget-head"><span class="widget-title">Malloc heap elements</span><span class="badge">predict, then step</span></div>
+      <div class="widget-body">
+        <div class="scroll-x"><svg viewBox="0 0 640 250" role="img" aria-label="Strip of heap memory with element headers, free and busy elements, and free-list buckets" style="min-width:540px"></svg></div>
+      </div>
+    </div>
+
+    <h3 id="mem-events">12.3 Dynamic memory, events and validators</h3>
+    <p>Since DPDK 18.05 memory is <span class="key-term">dynamic</span> by default: the heap grows and shrinks at run time as Section 12.2 showed. Two hooks let you watch and control that (<code>rte_memory.h</code>):</p>
+    <ul>
+      <li><code>rte_mem_event_callback_register(name, cb, arg)</code>: <code>cb(RTE_MEM_EVENT_ALLOC|FREE, addr, len, arg)</code> runs whenever pages are mapped or unmapped. Drivers that keep their own DMA tables use it. The callback runs with the memory hotplug lock held, so it must not allocate, free or walk memsegs (that deadlocks).</li>
+      <li><code>rte_mem_alloc_validator_register(name, cb, socket, limit)</code>: <code>cb</code> is asked before the heap grows past <code>limit</code> and can say no (-1). <code>--numa-limit</code> installs such a limit for you.</li>
+    </ul>
+    <p>With <code>--legacy-mem</code> (or <code>--no-huge</code>) all memory is mapped once at start-up and never changes, so both registrations fail with <code>ENOTSUP</code>. Legacy mode has one advantage: it sorts pages by physical address, so large IOVA-contiguous zones work even in PA mode.</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/heap_events.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="27"><code class="language-c">/* Called by EAL with the memory hotplug lock held: do not allocate,
+ * free, or call rte_memseg_walk() in here (deadlock). Printing is fine. */
+static void on_mem_event(enum rte_mem_event type, const void *addr, size_t len, void *arg)
+{
+	(void)arg;
+	printf(&quot;    [mem event] %-5s addr=%p len=%zu KB\n&quot;,
+	       type == RTE_MEM_EVENT_ALLOC ? &quot;ALLOC&quot; : &quot;FREE&quot;, addr, len &gt;&gt; 10);
+}
+
+/* Called before the heap grows past the limit. -1 = deny. */
+static int on_validate(int socket_id, size_t cur_limit, size_t new_len)
+{
+	printf(&quot;    [validator] socket %d: growing to %zu MB would pass the %zu MB limit -&gt; deny\n&quot;,
+	       socket_id, new_len &gt;&gt; 20, cur_limit &gt;&gt; 20);
+	return -1;
+}
+</code></pre>
+</div>
+    <div class="tabs">
+      <div class="tab-list"><button class="tab-btn" data-tab="a">dynamic</button><button class="tab-btn" data-tab="b">-m 16</button><button class="tab-btn" data-tab="c">--no-huge</button><button class="tab-btn" data-tab="d">--legacy-mem</button></div>
+      <div class="tab-panel" data-tab="a"><div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./heap_events -l 0 --no-pci --huge-unlink --file-prefix=ch04-ev</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-ev/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;PA&#x27;</span>
+A. memory event callbacks
+<span class="hl">  rte_mem_event_callback_register = 0</span>
+  heap 0 size at start:                       2 MB
+  rte_zmalloc(5 MB):
+<span class="hl">    [mem event] ALLOC addr=0x100400000 len=6144 KB</span>
+  heap 0 size after 5 MB:                     8 MB
+  rte_free(5 MB):
+<span class="hl">    [mem event] FREE  addr=0x100400000 len=6144 KB</span>
+  heap 0 size after free:                     2 MB
+
+<span class="hl">B. allocation validator, limit 16 MB on socket 0</span>
+<span class="hl">  rte_mem_alloc_validator_register = 0</span>
+  rte_malloc(24 MB):
+<span class="hl">    [validator] socket 0: growing to 28 MB would pass the 16 MB limit -&gt; deny</span>
+<span class="err">  -&gt; NULL (denied or no memory)</span>
+
+C. external heap on 4 MB of mmap()ed memory
+  rte_malloc_heap_create = 0
+  rte_malloc_heap_memory_add(4 MB, page 4K, no IOVAs):
+<span class="hl">    [mem event] ALLOC addr=0x7f3067800000 len=4096 KB</span>
+    = 0
+<span class="hl">  heap socket id = 256, external = 1</span>
+  rte_malloc_socket(1000, socket 256) = 0x7f3067bffc00, inside our mmap: yes
+<span class="hl">  rte_malloc_virt2iova = 0xffffffffffffffff (RTE_BAD_IOVA: no IOVA given)</span>
+  remove memory + destroy heap:
+<span class="hl">    [mem event] FREE  addr=0x7f3067800000 len=4096 KB</span>
+    = 0</pre>
+</div></div>
+      <div class="tab-panel" data-tab="b"><div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./heap_events -l 0 --no-pci -m 16 --huge-unlink --file-prefix=ch04-ev</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-ev/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;PA&#x27;</span>
+A. memory event callbacks
+<span class="hl">  rte_mem_event_callback_register = 0</span>
+  heap 0 size at start:                      16 MB
+  rte_zmalloc(5 MB):
+  heap 0 size after 5 MB:                    16 MB
+  rte_free(5 MB):
+  heap 0 size after free:                    16 MB
+
+<span class="hl">B. allocation validator, limit 16 MB on socket 0</span>
+<span class="hl">  rte_mem_alloc_validator_register = 0</span>
+  rte_malloc(24 MB):
+<span class="hl">    [validator] socket 0: growing to 42 MB would pass the 16 MB limit -&gt; deny</span>
+<span class="err">  -&gt; NULL (denied or no memory)</span>
+
+C. external heap on 4 MB of mmap()ed memory
+  rte_malloc_heap_create = 0
+  rte_malloc_heap_memory_add(4 MB, page 4K, no IOVAs):
+<span class="hl">    [mem event] ALLOC addr=0x7f6532200000 len=4096 KB</span>
+    = 0
+<span class="hl">  heap socket id = 256, external = 1</span>
+  rte_malloc_socket(1000, socket 256) = 0x7f65325ffc00, inside our mmap: yes
+<span class="hl">  rte_malloc_virt2iova = 0xffffffffffffffff (RTE_BAD_IOVA: no IOVA given)</span>
+  remove memory + destroy heap:
+<span class="hl">    [mem event] FREE  addr=0x7f6532200000 len=4096 KB</span>
+    = 0</pre>
+</div></div>
+      <div class="tab-panel" data-tab="c"><div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./heap_events -l 0 --no-pci --no-huge -m 64 --file-prefix=ch04-ev</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-ev/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+A. memory event callbacks
+<span class="err">  rte_mem_event_callback_register = -1, rte_errno=Operation not supported</span>
+  -&gt; this memory mode is not dynamic: pages are never mapped/unmapped at run time
+  heap 0 size at start:                      64 MB
+  rte_zmalloc(5 MB):
+  heap 0 size after 5 MB:                    64 MB
+  rte_free(5 MB):
+  heap 0 size after free:                    64 MB
+
+<span class="hl">B. allocation validator, limit 16 MB on socket 0</span>
+<span class="err">  rte_mem_alloc_validator_register = -1, rte_errno=Operation not supported</span>
+  rte_malloc(24 MB):
+  -&gt; allocated
+
+C. external heap on 4 MB of mmap()ed memory
+  rte_malloc_heap_create = 0
+  rte_malloc_heap_memory_add(4 MB, page 4K, no IOVAs):
+    = 0
+<span class="hl">  heap socket id = 256, external = 1</span>
+  rte_malloc_socket(1000, socket 256) = 0x7fbfaefffc00, inside our mmap: yes
+<span class="hl">  rte_malloc_virt2iova = 0xffffffffffffffff (RTE_BAD_IOVA: no IOVA given)</span>
+  remove memory + destroy heap:
+    = 0</pre>
+</div></div>
+      <div class="tab-panel" data-tab="d"><div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./heap_events -l 0 --no-pci --legacy-mem -m 16 --file-prefix=ch04-ev</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-ev/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;PA&#x27;</span>
+A. memory event callbacks
+<span class="err">  rte_mem_event_callback_register = -1, rte_errno=Operation not supported</span>
+  -&gt; this memory mode is not dynamic: pages are never mapped/unmapped at run time
+  heap 0 size at start:                      16 MB
+  rte_zmalloc(5 MB):
+  heap 0 size after 5 MB:                    16 MB
+  rte_free(5 MB):
+  heap 0 size after free:                    16 MB
+
+<span class="hl">B. allocation validator, limit 16 MB on socket 0</span>
+<span class="err">  rte_mem_alloc_validator_register = -1, rte_errno=Operation not supported</span>
+  rte_malloc(24 MB):
+<span class="err">  -&gt; NULL (denied or no memory)</span>
+
+C. external heap on 4 MB of mmap()ed memory
+  rte_malloc_heap_create = 0
+  rte_malloc_heap_memory_add(4 MB, page 4K, no IOVAs):
+    = 0
+<span class="hl">  heap socket id = 256, external = 1</span>
+  rte_malloc_socket(1000, socket 256) = 0x7f3f64bffc00, inside our mmap: yes
+<span class="hl">  rte_malloc_virt2iova = 0xffffffffffffffff (RTE_BAD_IOVA: no IOVA given)</span>
+  remove memory + destroy heap:
+    = 0
+[exit code 0]
+<span class="hl">  hugepage files left by the legacy run (no --huge-unlink): 8</span></pre>
+</div></div>
+    </div>
+    <p class="output-caption">Dynamic: 5 MB needs three 2 MB pages (the request plus its header rounds up to 6 MB), the heap goes 2 &rarr; 8 &rarr; 2 MB and the callback sees one ALLOC and one FREE of 6144 KB. With <code>-m 16</code> the 5 MB block fits in pinned memory: no events. The validator denies growing to 28 MB (or 42 MB) past its 16 MB limit and <code>rte_malloc</code> returns NULL. <code>--no-huge</code> and <code>--legacy-mem</code>: <code>ENOTSUP</code> for both hooks; with <code>--no-huge</code> the 24 MB block then simply comes out of the 64 MB that exists. One more surprise: the legacy run, without <code>--huge-unlink</code>, left 8 hugepage files behind even after a clean exit; <code>run.sh</code> removes them.</p>
+
+    <h3 id="extmem">12.4 External memory and <code>rte_dev_dma_map</code></h3>
+    <p>Sometimes the buffers come from somewhere else: your own allocator, a file, GPU memory. DPDK has two ways to use such <span class="key-term">external memory</span> (programmer's guide, "Support for Externally Allocated Memory"):</p>
+    <ol>
+      <li><strong>An external heap</strong>: <code>rte_malloc_heap_create(name)</code>, <code>rte_malloc_heap_memory_add(name, va, len, iovas, n_pages, page_sz)</code>, then allocate with <code>rte_malloc_socket(..., rte_malloc_heap_get_socket(name))</code>, or create a mempool or ring on that socket id. DPDK manages the memory. Part C of <code>heap_events</code> above did this: socket id 256, the pointer inside our <code>mmap</code>, and <code>RTE_BAD_IOVA</code> because we gave no IOVA table, which means no device may DMA there.</li>
+      <li><strong>Registered memory</strong>: <code>rte_extmem_register(va, len, iovas, n_pages, page_sz)</code> only tells EAL that the pages exist (an external memseg list), so <code>rte_mem_virt2memseg()</code> and the drivers can find them. You manage the memory yourself.</li>
+    </ol>
+    <p>Neither step tells a <em>device</em> anything. With an IOMMU, the device can only reach pages that were mapped for it, and EAL maps only its own pages. For external memory that is a second, explicit step: <code>rte_dev_dma_map(dev, va, iova, len)</code> (<code>lib/eal/include/rte_dev.h</code>). It checks that the device is probed, that the bus has a <code>dma_map</code> hook and that the memory was registered, then calls the bus. On PCI with VFIO that creates the IOMMU mapping. Since 26.11 the <code>rte_vfio_*</code> functions are internal, so this is the only public way (ch23). Our VM has no VFIO device, so <code>extmem_dma.c</code> runs it on three virtual devices and shows what the API checks.</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/extmem_dma.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="96" data-hl="109,113,122-124,128"><code class="language-c">	struct rte_device *devs[RTE_MAX_ETHPORTS];
+
+	printf(&quot;step 0: rte_dev_dma_map BEFORE registering the memory\n&quot;);
+	RTE_ETH_FOREACH_DEV(port) {
+		struct rte_eth_dev_info info;
+		char name[RTE_ETH_NAME_MAX_LEN];
+
+		rte_eth_dev_get_name_by_port(port, name, sizeof(name));  /* 26.11: takes a size */
+		if (rte_eth_dev_info_get(port, &amp;info) != 0)
+			continue;
+		devs[port] = info.device;              /* the generic rte_device behind the port */
+		printf(&quot;  port %u %-17s driver=%-16s bus=%s\n&quot;, port, name, info.driver_name,
+		       rte_bus_name(rte_dev_bus(devs[port])));
+		try_map(&quot;not registered:&quot;, devs[port], va, iova, REGION);
+	}
+
+	/* Step 1: register once per process (EEXIST if done already). */
+	int r = rte_extmem_register(va, REGION, NULL, 0, PAGE);
+	printf(&quot;\nstep 1: rte_extmem_register = %d%s%s, rte_mem_virt2memseg_list(va) = %s\n&quot;, r,
+	       r ? &quot;, &quot; : &quot;&quot;, r ? rte_strerror(rte_errno) : &quot;&quot;,
+	       rte_mem_virt2memseg_list(va) ? &quot;found (external list)&quot; : &quot;NULL&quot;);
+
+	/* Step 2: the mapping itself, plus a bad length. */
+	printf(&quot;\nstep 2: rte_dev_dma_map AFTER registering\n&quot;);
+	RTE_ETH_FOREACH_DEV(port) {
+		printf(&quot;  port %u\n&quot;, port);
+		try_map(&quot;registered:&quot;, devs[port], va, iova, REGION);
+		try_map(&quot;len = 0:&quot;, devs[port], va, iova, 0);
+		r = rte_dev_dma_unmap(devs[port], va, iova, REGION);
+		printf(&quot;    %-30s rte_dev_dma_unmap = %d\n&quot;, &quot;undo:&quot;, r);
+	}
+
+	r = rte_extmem_unregister(va, REGION);
+	printf(&quot;\nstep 3: rte_extmem_unregister = %d\n&quot;, r);
+	RTE_ETH_FOREACH_DEV(port) {
+		try_map(&quot;after unregister:&quot;, devs[port], va, iova, REGION);
+		break;
+	}
+	munmap(va, REGION);
+</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./extmem_dma -l 0 --no-pci --no-huge -m 128 --file-prefix=ch04-xdma --log-level=lib.vhost.*:warning --log-level=pmd.net.virtio.*:warning --vdev=net_vhost0,iface=$PWD/x.sock --vdev=net_null0 -- net_virtio_user0,path=$PWD/x.sock</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-xdma/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+configure port 0 (creates the socket) = 0
+VIRTIO_DRIVER: virtio_user_dev_init_mac(): ($PWD/x.sock) No valid MAC in devargs or device, use random
+rte_dev_probe(&quot;net_virtio_user0...&quot;) = 0
+IOVA mode VA, 3 ports
+external region va=0x7f7563800000 len=2048 KB, iova used=0x7f7563800000
+
+<span class="hl">step 0: rte_dev_dma_map BEFORE registering the memory</span>
+  port 0 net_vhost0        driver=net_vhost        bus=vdev
+<span class="err">    not registered:                rte_dev_dma_map = -1  rte_errno=22 Invalid argument</span>
+  port 1 net_null0         driver=net_null         bus=vdev
+<span class="err">    not registered:                rte_dev_dma_map = -1  rte_errno=22 Invalid argument</span>
+  port 2 net_virtio_user0  driver=net_virtio_user  bus=vdev
+<span class="err">    not registered:                rte_dev_dma_map = -1  rte_errno=22 Invalid argument</span>
+
+step 1: rte_extmem_register = 0, rte_mem_virt2memseg_list(va) = found (external list)
+
+<span class="hl">step 2: rte_dev_dma_map AFTER registering</span>
+  port 0
+<span class="hl">    registered:                    rte_dev_dma_map =  0  rte_errno=0  (success)</span>
+<span class="err">    len = 0:                       rte_dev_dma_map = -1  rte_errno=95 Operation not supported</span>
+    undo:                          rte_dev_dma_unmap = 0
+  port 1
+<span class="hl">    registered:                    rte_dev_dma_map =  0  rte_errno=0  (success)</span>
+<span class="err">    len = 0:                       rte_dev_dma_map = -1  rte_errno=95 Operation not supported</span>
+    undo:                          rte_dev_dma_unmap = 0
+  port 2
+<span class="hl">    registered:                    rte_dev_dma_map =  0  rte_errno=0  (success)</span>
+<span class="err">    len = 0:                       rte_dev_dma_map = -1  rte_errno=95 Operation not supported</span>
+    undo:                          rte_dev_dma_unmap = 0
+
+step 3: rte_extmem_unregister = 0
+<span class="err">    after unregister:              rte_dev_dma_map = -1  rte_errno=22 Invalid argument</span>
+<span class="dim">EAL: Some interrupt handle is leaking an event FD: 18 (index 0)</span></pre>
+</div>
+    <p class="output-caption">Before registration every call fails with <code>EINVAL</code>: EAL does not know the address. After <code>rte_extmem_register</code> all three return 0, and after unregistering it is <code>EINVAL</code> again. <code>len = 0</code> gives <code>ENOTSUP</code>. The zero is honest but thin: the vdev bus (<code>drivers/bus/vdev/vdev.c</code>) forwards the call to the driver's <code>dma_map</code> hook and returns 0 when there is none (net_null, net_vhost). <code>virtio_user</code> has the hook, but its vhost-user backend has nothing to map, because vhost-user shares memory as file descriptors; only the vhost-vdpa backend programs a real device. Software devices read memory through the CPU, so for them registration is what matters. The last EAL line is a harmless teardown warning from the hot-plugged virtio_user port. The lesson for real hardware: <strong>register, then map, for every device that will DMA</strong>; an external-memory mempool alone is not enough for I/O.</p>
+
+    <!-- ============================================================ pitfalls -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong>Two programs, same (default) <code>--file-prefix</code></strong>: "Cannot create lock on '/var/run/dpdk/rte/config'". Give each its own prefix, or use <code>--in-memory</code>.</li>
+      <li><strong>Hugepages slowly disappear</strong>: crashed or killed programs left <code>&lt;prefix&gt;map_*</code> files (also <code>--legacy-mem</code> without <code>--huge-unlink</code>). Check with <code>fuser</code>, then delete them; prefer <code>--in-memory</code> or <code>--huge-unlink</code>.</li>
+      <li><strong>Thinking <code>-m</code> is a limit</strong>: it is a pinned minimum; the heap can grow far past it (testpmd's default mbuf pool grows to hundreds of MB, which is why this course always passes <code>--total-num-mbufs</code>). Use <code>--numa-limit</code> for a cap.</li>
+      <li><strong>A large DMA area from <code>rte_malloc</code></strong>: only VA-contiguous. Use <code>RTE_MEMZONE_IOVA_CONTIG</code>; in PA mode even that can fail when memory is fragmented.</li>
+      <li><strong>Reading <code>rte_errno</code> after <code>rte_malloc</code></strong>: the allocator does not set it; NULL is the only signal.</li>
+      <li><strong>An explicit socket id on a node without hugepages</strong>: NULL, no fallback. Use <code>SOCKET_ID_ANY</code> or reserve memory on that node; <code>--no-huge</code> hides the bug because it ignores sockets.</li>
+      <li><strong>Mixing <code>free()</code> and <code>rte_free()</code></strong>: heap corruption or a crash, sometimes much later.</li>
+      <li><strong><code>rte_malloc</code> on the fast path</strong>: a lock and a list search per packet. Use mempools (ch6).</li>
+      <li><strong>Allocating inside a memory event callback</strong>: deadlock on the hotplug lock.</li>
+      <li><strong>Benchmarking with <code>--no-huge</code></strong>: Section 2 measured 3.7&times; more cycles per load on a page-hopping workload. Use hugepages for any number you publish.</li>
+      <li><strong>PA mode as non-root</strong>: physical addresses are not readable, and init fails. On real hardware use VFIO with an IOMMU (VA mode).</li>
+    </ul>
+
+    <!-- ============================================================ check -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions on this chapter</div>
+      <div class="q" data-answer="1" data-explain="TLB reach is entries times page size: 1536 x 2 MB = 3 GB, against 6 MB with 4 KB pages. The bytes themselves are not faster.">
+        <div class="q-text">Why do 2 MB pages make packet processing faster?</div>
+        <div class="q-opts"><button class="q-opt">Hugepage RAM has lower latency</button><button class="q-opt">The same TLB entries cover 512 times more memory, so page walks become rare</button><button class="q-opt">The kernel copies packets into them faster</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="-m maps and pins memory at start-up; the heap can still grow (Exercise 2 grows from 32 to 98 MB). --numa-limit is the cap.">
+        <div class="q-text">You start with <code>-m 32</code> and allocate 64 MB. What happens with default (dynamic) memory?</div>
+        <div class="q-opts"><button class="q-opt">NULL: -m is the limit</button><button class="q-opt">EAL aborts</button><button class="q-opt">It succeeds: the heap maps more hugepages</button></div>
+      </div>
+      <div class="q" data-answer="0" data-explain="In PA mode two VA-adjacent pages are IOVA-adjacent only if the kernel gave out physically adjacent frames in the same order. In the captured runs they mostly came in descending order.">
+        <div class="q-text">Why can a 3 MB <code>RTE_MEMZONE_IOVA_CONTIG</code> reservation fail in PA mode while 30 MB are free?</div>
+        <div class="q-opts"><button class="q-opt">No two VA-neighbouring pages are neighbours in physical memory in the right order</button><button class="q-opt">Memzones are limited to one page</button><button class="q-opt">The memzone table is full</button></div>
+      </div>
+      <div class="q" data-answer="1" data-explain="--in-memory uses memfd hugepages and creates no shared config, so nothing is left behind and no secondary can attach.">
+        <div class="q-text">Which option leaves no hugepage files and no shared config behind, at the price of multi-process support?</div>
+        <div class="q-opts"><button class="q-opt">--single-file-segments</button><button class="q-opt">--in-memory</button><button class="q-opt">--legacy-mem</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="rte_extmem_register only makes EAL aware of the pages; rte_dev_dma_map asks the device's bus (VFIO on PCI) to map them for DMA.">
+        <div class="q-text">You registered external memory with <code>rte_extmem_register</code>. What else does a PCI NIC behind an IOMMU need before it can DMA into it?</div>
+        <div class="q-opts"><button class="q-opt">Nothing</button><button class="q-opt">rte_malloc_heap_memory_add</button><button class="q-opt">rte_dev_dma_map for that device</button></div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ============================================================ band review -->
+    <h2 id="band1">Band 1 review: chapters 1 to 4</h2>
+    <p>This chapter closes the beginner band. Before rings and mempools, check that the foundations hold. The table maps each idea to the chapter that owns it; then predict each answer before you reveal it.</p>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Idea</th><th>Chapter</th><th>One-line reminder</th></tr></thead>
+        <tbody>
+          <tr><td>Kernel path vs bypass, polling, DMA into user buffers</td><td><a href="../01-why-kernel-bypass/index.html">ch1</a></td><td>The PMD in your process reads descriptors the NIC filled; no system call per packet.</td></tr>
+          <tr><td>Build, pkg-config, static link and <code>--whole-archive</code></td><td><a href="../02-build-and-first-app/index.html">ch2</a></td><td>Without it the driver constructors vanish and you see 0 ports.</td></tr>
+          <tr><td><code>main()</code>, <code>rte_eal_init</code>, the <code>--</code> separator</td><td>ch2, ch3</td><td>EAL options first, yours after <code>--</code>; shift argc/argv by the return value.</td></tr>
+          <tr><td>Lcores, <code>-l</code>, launching work, logging, TSC time</td><td><a href="../03-eal-fundamentals/index.html">ch3</a></td><td>One pinned thread per lcore; never <code>-c</code>.</td></tr>
+          <tr><td>Hugepages, TLB reach, EAL memory options and files</td><td>ch4</td><td>Section 2 to 4.</td></tr>
+          <tr><td><code>rte_malloc</code>, memzones, NUMA</td><td>ch4</td><td>Sections 6, 7, 9.</td></tr>
+          <tr><td>IOVA, PA/VA, contiguity</td><td>ch4 (VFIO in ch23)</td><td>Section 8.</td></tr>
+          <tr><td>Startup errors</td><td>ch4 (ports ch8, multi-process ch16, all in ch13)</td><td>Section 11.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="review-grid">
+      <div class="review-card"><div class="rq">A program prints "Detected 0 ports" although you passed <code>--vdev=net_null0</code>. Which chapter's lesson applies, and what is the likely cause?</div><details><summary>Reveal</summary><p>ch2: the static link dropped the driver constructors because the <code>-Wl,--whole-archive</code> bracket from <code>pkg-config --libs --static</code> was lost.</p></details></div>
+      <div class="review-card"><div class="rq"><code>./app -l 0-1 --no-pci --count 3</code>: what happens?</div><details><summary>Reveal</summary><p>The EAL parser sees <code>--count</code>, does not know it, and the process exits. Application options go after <code>--</code> (ch2, and E2 in Section 11).</p></details></div>
+      <div class="review-card"><div class="rq">Two DPDK programs, both without <code>--file-prefix</code>, both with hugepages. What happens to the second?</div><details><summary>Reveal</summary><p>It fails with "Cannot create lock on '/var/run/dpdk/rte/config'" (E3). Use unique prefixes or <code>--in-memory</code>.</p></details></div>
+      <div class="review-card"><div class="rq">Your benchmark runs with <code>--no-huge</code>. Will the numbers transfer to production?</div><details><summary>Reveal</summary><p>No: with 4 KB pages every page hop can cost a TLB miss; Section 2 measured 42 against 11 cycles per load. Measure with hugepages (and the methodology of ch3, deepened in ch22).</p></details></div>
+    </div>
+
+    <!-- ============================================================ exercises -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span> Heap stats overhead</div>
+      <p>Allocate 100 objects of 1 KB with <code>rte_malloc</code>, compare <code>rte_malloc_get_socket_stats()</code> before and after, and explain the difference per object. Try sizes of 1, 64 and 4000 bytes too (<code>-- N SIZE</code>).</p>
+      <details><summary>Hint</summary><p>Look at <code>heap_allocsz_bytes</code> and at the distance between two consecutive pointers. The header is <code>struct malloc_elem</code>; sizes round up to cache lines.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/overhead.c</code>. Real output:</p><div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./solutions/overhead -l 0 --no-pci --no-huge -m 64 --file-prefix=ch04-ex1</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-ex1/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;VA&#x27;</span>
+<span class="hl">100 x rte_malloc(1024): heap_allocsz grew by 115200 bytes</span>
+<span class="hl">  per object: 1152 bytes = 1024 usable + 128 overhead (12.5%)</span>
+  alloc_count 1 -&gt; 101, free elements 1 -&gt; 1
+  neighbours are 1152 bytes apart</pre>
+</div><p>Each 1 KB block costs 1152 bytes: 1024 usable plus a 128-byte header (the cache-aligned <code>malloc_elem</code> is two 64-byte lines in 26.11), 12.5% overhead. All 100 blocks came out of one free element, which only shrank (free elements: 1 before, 1 after).</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span> -m is a floor</div>
+      <p>Show that <code>-m 32</code> does not cap the heap by allocating 64 MB in one block, then make the same allocation fail with <code>--numa-limit</code>. Print <code>rte_eal_get_physmem_size()</code> at each step.</p>
+      <details><summary>Solution</summary><p><code>code/solutions/no_cap.c</code>. Real output:</p><div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./solutions/no_cap -l 0 --no-pci -m 32 --huge-unlink --file-prefix=ch04-ex2</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-ex2/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;PA&#x27;</span>
+mapped at start: 32 MB
+<span class="hl">rte_malloc(64 MB) = OK</span>
+<span class="hl">mapped now:      98 MB</span>
+after rte_free:  32 MB (pages above the -m floor are returned)
+<span class="prompt">$ </span><span class="cmd">./solutions/no_cap -l 0 --no-pci -m 32 --numa-limit 32 --huge-unlink --file-prefix=ch04-ex2</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch04-ex2/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode &#x27;PA&#x27;</span>
+mapped at start: 32 MB
+<span class="err">rte_malloc(64 MB) = NULL</span>
+<span class="hl">mapped now:      32 MB</span>
+after rte_free:  32 MB (pages above the -m floor are returned)</pre>
+</div><p>Without a limit the heap grows from 32 to 98 MB and shrinks back to the pinned 32 MB on <code>rte_free</code>. With <code>--numa-limit 32</code> the built-in validator refuses to grow and the call returns NULL.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag medium">medium</span> Clean up after SIGKILL</div>
+      <p>Start <code>./sleeper -l 0 --no-pci -m 32 --file-prefix=ch04-mine -- 30 &amp;</code>, kill it with <code>kill -9</code>, find its leftover files and the hugepages they hold, and remove them <em>safely</em>. Then repeat with <code>--in-memory</code> and with <code>--huge-unlink</code>.</p>
+      <details><summary>Hint</summary><p><code>ls /dev/hugepages | grep ch04-mine</code>, <code>grep HugePages_Free /proc/meminfo</code>, and <code>fuser -v /dev/hugepages/ch04-minemap_*</code> (no output = nobody uses them). Then <code>rm</code> the files and <code>/run/dpdk/ch04-mine</code>. The last block of <code>see_the_files.sh</code> does exactly this; starting a new primary with the same prefix also removes stale files.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4 <span class="tag stretch">stretch</span> Why descriptor rings need IOVA_CONTIG</div>
+      <p>A NIC queue's descriptor ring is programmed with one base address and a length. Explain, with the PA-mode output of <code>memseg_walk</code>, what the NIC would overwrite if the driver reserved a 4 MB ring with plain <code>rte_malloc</code> in PA mode. Then explain why the same code is safe in VA mode. ch23 shows the real ring set-up in a PMD.</p>
+      <details><summary>Hint</summary><p>The NIC computes <code>base + i * 16</code> for descriptor <i>i</i>. Past the first 2 MB, that address is the physical frame <em>after</em> the first page, which may belong to somebody else: in the capture, VA page 1 sits 2 MB <em>below</em> VA page 0.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 5 <span class="tag medium">medium</span> Catalogue a new startup error</div>
+      <p>Reproduce one <code>rte_eal_init()</code> failure that <code>startup_errors.sh</code> does not cover, capture its exact text, and add a <code>trial</code> row to the script so that it lands in <code>errors.tsv</code> with phase, cause and fix. Ideas: <code>--huge-dir</code> pointing to a directory that is not hugetlbfs, <code>--proc-type=secondary</code> with no primary, <code>--lcores</code> with an overlapping CPU set, <code>--base-virtaddr</code> at an address already in use, or running PA mode as a non-root user.</p>
+      <details><summary>Hint</summary><p>Paste the line into the decoder above first: if nothing matches, you found a new row. Use <code>--log-level=lib.eal:debug</code> to find the phase; the order of phases is in <code>rte_eal_init()</code> in <code>lib/eal/linux/eal.c</code>.</p></details>
+    </div>
+
+    <!-- ============================================================ summary -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li>A NIC writes packets to an IOVA; your code reads them through a VA. DPDK memory is pinned, translated cheaply (hugepages, measured 42 vs 11 cycles per load here) and recorded with its IOVA so drivers can hand it to devices.</li>
+        <li>Hugepages are reserved in a kernel pool and used through hugetlbfs files or memfd. <code>-m</code> pins a minimum, <code>--numa-limit</code> caps, <code>--in-memory</code> leaves nothing behind, <code>--no-huge</code> is for tests. A unique <code>--file-prefix</code> keeps processes apart.</li>
+        <li><code>rte_malloc</code> and friends are libc-like, cache-line aligned, NUMA-aware, and for set-up time only; each block has a 128-byte header. Memzones are named heap blocks that anyone can look up.</li>
+        <li>IOVA mode is PA (physical addresses, root, contiguity is luck) or VA (IOMMU, recommended). Ask for <code>RTE_MEMZONE_IOVA_CONTIG</code> when a device needs one range.</li>
+        <li>Explicit NUMA sockets never fall back; <code>SOCKET_ID_ANY</code> does. Put a port's memory on its node.</li>
+        <li><code>rte_eal_init()</code> runs fixed phases; the log line tells you the phase, and the errno can mislead. Debug logging shows the detail.</li>
+        <li>Deep dive: memseg lists reserve VA, memsegs are pages in fbarrays, the heap splits from the end and merges on free, memory events and validators watch growth, and external memory needs <code>rte_extmem_register</code> <em>and</em> <code>rte_dev_dma_map</code>.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Programmer's Guide, Environment Abstraction Layer: memory sections, hugepage mapping, IOVA mode detection, malloc, external memory <span class="src-path">doc/guides/prog_guide/env_abstraction_layer.rst</span></li>
+        <li>EAL parameters (memory options) <span class="src-path">doc/guides/linux_gsg/linux_eal_parameters.rst</span>, <span class="src-path">doc/guides/linux_gsg/eal_args.include.rst</span></li>
+        <li>System requirements, hugepage set-up <span class="src-path">doc/guides/linux_gsg/sys_reqs.rst</span>, tool <span class="src-path">usertools/dpdk-hugepages.py</span></li>
+        <li>Headers: <span class="src-path">lib/eal/include/rte_malloc.h</span>, <span class="src-path">lib/eal/include/rte_memzone.h</span>, <span class="src-path">lib/eal/include/rte_memory.h</span>, <span class="src-path">lib/eal/include/rte_dev.h</span> (<code>rte_dev_dma_map</code>), <span class="src-path">lib/eal/include/rte_eal.h</span> (<code>rte_eal_iova_mode</code>)</li>
+        <li>Heap: <span class="src-path">lib/eal/common/malloc_heap.c</span>, <span class="src-path">lib/eal/common/malloc_elem.c</span>, <span class="src-path">lib/eal/common/malloc_elem.h</span>; memzones <span class="src-path">lib/eal/common/eal_common_memzone.c</span>; dynamic memory <span class="src-path">lib/eal/common/eal_common_dynmem.c</span>; page allocation <span class="src-path">lib/eal/linux/eal_memalloc.c</span>; hugepage discovery <span class="src-path">lib/eal/linux/eal_hugepage_info.c</span></li>
+        <li>Init sequence and IOVA decision <span class="src-path">lib/eal/linux/eal.c</span> (<code>rte_eal_init</code>); DMA map <span class="src-path">lib/eal/common/eal_common_dev.c</span>, <span class="src-path">drivers/bus/vdev/vdev.c</span>, <span class="src-path">drivers/net/virtio/virtio_user_ethdev.c</span></li>
+        <li>Course research note <span class="src-path">research/03-memory.md</span> and <span class="src-path">research/03-memory-examples/memexp.c</span> (in the course folder)</li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../03-eal-fundamentals/index.html"><span class="dir">&larr; Previous</span><span class="ttl">03 &middot; The EAL: Lcores, Launching Work, Threads, Logging and Time</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../05-rings/index.html"><span class="dir">Next &rarr;</span><span class="ttl">05 &middot; rte_ring: Lock-Free Queues Between Cores</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script>
+window.CH04_ERRORS = [
+ {
+  "id": "E1",
+  "phase": 1,
+  "phaseName": "1 parse arguments",
+  "trigger": "./hello_memory -l 7 --no-pci --no-huge -m 16 --file-prefix=ch04-err-l ",
+  "key": "EAL: lcore 7 unavailable",
+  "errno": "Invalid argument",
+  "cause": "-l 7: there is no CPU 7; EAL only accepts CPUs it detected (0-3 here).",
+  "fix": "Use CPUs that exist: see lscpu or 'EAL: Detected CPU lcores'. Map more lcores onto fewer CPUs with --lcores='(0-7)@(0-3)'.",
+  "log": [
+   "EAL: lcore 7 unavailable",
+   "EAL: No valid lcores in core list",
+   "EAL: invalid coremask or core-list parameter, please check specified cores are part of 0-3",
+   "EAL: Error parsing command line arguments.",
+   "rte_eal_init failed: Invalid argument"
+  ],
+  "re": "lcore \\d+ unavailable|No valid lcores|invalid coremask or core-list"
+ },
+ {
+  "id": "E2",
+  "phase": 1,
+  "phaseName": "1 parse arguments",
+  "trigger": "./hello_memory -l 0 --no-pci --no-huge --memory=16 --file-prefix=ch04-err-opt ",
+  "key": "ARGPARSE: unknown argument --memory=16!",
+  "errno": "(process exited inside rte_eal_init)",
+  "cause": "--memory is not an EAL option. The argument parser prints the problem and exits the process (exit code 234) without returning to main().",
+  "fix": "Check the spelling against 'app --help' or linux_eal_parameters.rst. Put application options after '--'.",
+  "log": [
+   "ARGPARSE: unknown argument --memory=16!"
+  ],
+  "re": "unknown argument|ARGPARSE"
+ },
+ {
+  "id": "E3",
+  "phase": 2,
+  "phaseName": "2 config and lock",
+  "trigger": "./hello_memory -l 1 --no-pci -m 16 --file-prefix=ch04-err-dup ",
+  "key": "EAL: Cannot create lock on '/var/run/dpdk/ch04-err-dup/config'. Is another primary process running?",
+  "errno": "Success",
+  "cause": "Another primary process already holds the lock on /var/run/dpdk/<prefix>/config. Note rte_errno is not set, so rte_strerror says 'Success'.",
+  "fix": "Give every independent DPDK process its own --file-prefix, or use --in-memory when no secondary needs to attach. If no process is running, the lock is stale only if the file is held: check with fuser.",
+  "log": [
+   "EAL: Cannot create lock on '/var/run/dpdk/ch04-err-dup/config'. Is another primary process running?",
+   "EAL: Cannot init config",
+   "rte_eal_init failed: Success"
+  ],
+  "re": "Cannot create lock|Is another primary process running|Cannot init config"
+ },
+ {
+  "id": "E4",
+  "phase": 5,
+  "phaseName": "5 hugepage info",
+  "trigger": "timeout -k 5 15 unshare -m sh -c mount --make-rprivate / && mount --bind $SCR/fakesys/g /sys/kernel/mm/hugepages/hugepages-2048kB && mount --bind $SCR/fakesys/n /sys/devices/system/node/node0/hugepages/hugepages-2048kB && timeout -s INT -k 5 10 ./hello_memory -l 0 --no-pci --file-prefix=ch04-err-nofree ",
+  "key": "EAL: No free 2048 kB hugepages reported on node 0",
+  "errno": "Permission denied",
+  "cause": "The kernel reports free_hugepages=0 (all pages used by other programs or leaked files). With no usable page size EAL stops; the 'Permission denied' is misleading.",
+  "fix": "Check grep Huge /proc/meminfo. Remove leaked files (/dev/hugepages/<prefix>map_*) of dead processes, reserve more pages (dpdk-hugepages.py -r 1G), or run with --no-huge for testing.",
+  "log": [
+   "EAL: Multi-process socket /var/run/dpdk/ch04-err-nofree/mp_socket",
+   "EAL: Selected IOVA mode 'PA'",
+   "EAL: No free 2048 kB hugepages reported on node 0",
+   "EAL: Cannot get hugepage information.",
+   "rte_eal_init failed: Permission denied"
+  ],
+  "re": "No free \\d+ kB hugepages|Cannot get hugepage information"
+ },
+ {
+  "id": "E5",
+  "phase": 6,
+  "phaseName": "6 memory init",
+  "trigger": "./hello_memory -l 0 --no-pci -m 99999 --file-prefix=ch04-err-big ",
+  "key": "EAL: Not enough memory available! Requested: 99999MB, available: 2048MB",
+  "errno": "Cannot allocate memory",
+  "cause": "-m asks for 99999 MB up front, but the hugepage pool has only 2048 MB.",
+  "fix": "Ask for less (-m is a pinned minimum, the heap can still grow later) or reserve more hugepages.",
+  "log": [
+   "EAL: Multi-process socket /var/run/dpdk/ch04-err-big/mp_socket",
+   "EAL: Selected IOVA mode 'PA'",
+   "EAL: Not enough memory available! Requested: 99999MB, available: 2048MB",
+   "EAL: Cannot init memory",
+   "rte_eal_init failed: Cannot allocate memory"
+  ],
+  "re": "Not enough memory available! Requested"
+ },
+ {
+  "id": "E6",
+  "phase": 6,
+  "phaseName": "6 memory init",
+  "trigger": "./hello_memory -l 0 --no-pci -m 128 --huge-dir $SCR/hugemnt --file-prefix=ch04-err-hd ",
+  "key": "EAL: Cannot init memory",
+  "errno": "Cannot allocate memory",
+  "cause": "The pool has enough free pages, but the --huge-dir mount has a size=64M quota, so mmap() of page 33 fails. With --log-level=lib.eal:debug EAL says: 'attempted to allocate 64 segments, but only 32 were allocated'.",
+  "fix": "Rerun with --log-level=lib.eal:debug to see which page failed. Check the mount options (mount | grep hugetlbfs), cgroup hugetlb limits, and the -m value.",
+  "log": [
+   "EAL: Multi-process socket /var/run/dpdk/ch04-err-hd/mp_socket",
+   "EAL: Selected IOVA mode 'PA'",
+   "EAL: Cannot init memory",
+   "rte_eal_init failed: Cannot allocate memory",
+   "EAL: alloc_seg(): mmap() failed: Cannot allocate memory",
+   "EAL: attempted to allocate 64 segments, but only 32 were allocated"
+  ],
+  "re": "attempted to allocate \\d+ segments|alloc_seg\\(\\): mmap\\(\\) failed|^\\s*(EAL: )?Cannot init memory\\s*$"
+ },
+ {
+  "id": "E7",
+  "phase": 6,
+  "phaseName": "6 memory init",
+  "trigger": "./hello_memory -l 0 --no-pci --numa-mem 0,32 --file-prefix=ch04-err-numa ",
+  "key": "EAL: Not enough memory available on socket 1! Requested: 32MB, available: 0MB",
+  "errno": "Cannot allocate memory",
+  "cause": "--numa-mem 0,32 asks for 32 MB on socket 1; this VM has one NUMA node, so socket 1 has no hugepages.",
+  "fix": "Ask only for nodes that exist (lscpu, /sys/devices/system/node). On a 2-socket server reserve hugepages on every node you use.",
+  "log": [
+   "EAL: Multi-process socket /var/run/dpdk/ch04-err-numa/mp_socket",
+   "EAL: Selected IOVA mode 'PA'",
+   "EAL: Not enough memory available on socket 1! Requested: 32MB, available: 0MB",
+   "EAL: Cannot init memory",
+   "rte_eal_init failed: Cannot allocate memory"
+  ],
+  "re": "Not enough memory available on socket"
+ },
+ {
+  "id": "E8",
+  "phase": 4,
+  "phaseName": "4 IOVA mode",
+  "trigger": "./hello_memory -l 0 --no-pci --no-huge -m 16 --iova-mode=pa --file-prefix=ch04-err-iova ",
+  "key": "EAL: Cannot use IOVA as 'PA' since physical addresses are not available",
+  "errno": "Invalid argument",
+  "cause": "--no-huge memory is ordinary 4 KB anonymous memory: EAL cannot read its physical addresses, so PA mode is impossible.",
+  "fix": "Drop --iova-mode=pa (EAL picks VA), or use hugepages as root. Non-root without an IOMMU cannot use PA mode at all.",
+  "log": [
+   "EAL: Multi-process socket /var/run/dpdk/ch04-err-iova/mp_socket",
+   "EAL: Cannot use IOVA as 'PA' since physical addresses are not available",
+   "rte_eal_init failed: Invalid argument"
+  ],
+  "re": "Cannot use IOVA as 'PA'"
+ },
+ {
+  "id": "E9",
+  "phase": 9,
+  "phaseName": "after init (allocation)",
+  "trigger": "./hello_memory -l 0 --no-pci -m 16 (calls rte_malloc_socket(..., 1))",
+  "key": "rte_malloc_socket(..., socket 1) = NULL  rte_errno=0 (not set by rte_malloc)",
+  "errno": "none: rte_malloc returns NULL and leaves rte_errno alone",
+  "cause": "An explicit socket id never falls back to another node; node 1 has no heap on this single-node VM. (With --no-huge the socket is ignored and the call succeeds.)",
+  "fix": "Use SOCKET_ID_ANY, or the device's node (rte_eth_dev_socket_id) and check for NULL. Reserve hugepages on that node.",
+  "log": [
+   "rte_malloc_socket(..., socket 1) = NULL  rte_errno=0 (not set by rte_malloc)"
+  ],
+  "re": "rte_malloc_socket.*NULL"
+ }
+];
+window.CH04_SEGS = [{"va": "0x100200000", "iova": "0x19c200000"}, {"va": "0x100400000", "iova": "0x19c000000"}, {"va": "0x100600000", "iova": "0x19be00000"}, {"va": "0x100800000", "iova": "0x19bc00000"}, {"va": "0x100a00000", "iova": "0x19ba00000"}, {"va": "0x100c00000", "iova": "0x11d200000"}, {"va": "0x100e00000", "iova": "0x11d400000"}, {"va": "0x101000000", "iova": "0x11d800000"}];
+</script>
+<script src="chapter.js"></script>
+</body>
+</html>

@@ -1,0 +1,480 @@
+wrote mixed.pcap (15 frames), in.pcap (100 frames), empty.pcap
+################ 1. cksum_lab: the Internet checksum by hand
+
+$ ./cksum_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch10-ck
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch10-ck/mp_socket
+EAL: Selected IOVA mode 'VA'
+== 1. one's-complement sum of the 10 header words (network order)
+  word 0  bytes 45 00  = 0x4500   running sum 0x04500
+  word 1  bytes 00 73  = 0x0073   running sum 0x04573
+  word 2  bytes 00 00  = 0x0000   running sum 0x04573
+  word 3  bytes 40 00  = 0x4000   running sum 0x08573
+  word 4  bytes 40 11  = 0x4011   running sum 0x0c584
+  word 5  bytes 00 00  = 0x0000   running sum 0x0c584   (checksum field, 0 while computing)
+  word 6  bytes c0 a8  = 0xc0a8   running sum 0x1862c
+  word 7  bytes 00 01  = 0x0001   running sum 0x1862d
+  word 8  bytes c0 a8  = 0xc0a8   running sum 0x246d5
+  word 9  bytes 00 c7  = 0x00c7   running sum 0x2479c
+  32-bit sum            = 0x0002479c
+  fold: 0x479c + 0x2    = 0x479e  (add the carries back in)
+  invert                = 0xb861  <- the checksum, in network order
+
+== 2. the library (this CPU is little-endian)
+  rte_raw_cksum(hdr, 20)   = 0x9e47  (folded, NOT inverted, host-loaded words)
+  rte_ipv4_cksum(hdr)      = 0x61b8
+  rte_ipv4_cksum_simple()  = 0x61b8
+  rte_be_to_cpu_16(lib)    = 0xb861  == by hand 0xb861 ? yes
+
+== 3. storing it: write the value exactly as returned
+  hdr_checksum = rte_ipv4_cksum()      -> bytes b8 61 on the wire (correct)
+  hdr_checksum = rte_cpu_to_be_16(...) -> bytes 61 b8 (WRONG: swapped twice)
+  why: one's-complement sums are byte-order independent; summing
+  byte-swapped words gives the byte-swapped sum, so the result is
+  already in 'memory order'. Swapping it again breaks it.
+
+== 4. verification: sum over a header that INCLUDES its checksum
+  correct header : rte_raw_cksum = 0xffff (0xffff means valid)
+  swapped cksum  : rte_raw_cksum = 0x56a9 (invalid)
+
+== 5. bug: recomputing without zeroing hdr_checksum first
+  rte_ipv4_cksum() on the unzeroed header = 0x0000 (should be 0x61b8)
+  rte_ipv4_cksum_simple() ignores the field = 0x61b8
+
+== 6. router step: TTL 64 -> 63, incremental update (RFC 1624 eqn. 3)
+  HC=0xb861  m=0x4011  m'=0x3f11
+  ~HC + ~m + m' = 0x479e + 0xbfee + 0x3f11 = 0x1469d -> fold 0x469e -> ~ 0xb961
+  full recompute = 0xb961   incremental = 0xb961   MATCH
+  (RFC 1141 shortcut for TTL-1: HC + 0x0100 = 0xb961)
+
+== 7. UDP checksum = sum(pseudo-header) + sum(UDP header + data)
+  pseudo-header = src 192.168.0.1, dst 192.168.0.199, zero, proto 17, len 11
+  rte_ipv4_phdr_cksum()   = 0x3582 (not inverted; also what TX offload
+                            drivers want pre-filled, see ch19)
+  rte_raw_cksum(udp, 11)  = 0x76d8 (odd length: last byte padded with 0)
+  rte_ipv4_udptcp_cksum() = 0x53a5  = ~fold(0x3582 + 0x76d8)
+  rte_ipv4_udptcp_cksum_verify() = 0 (0 = valid)
+  after flipping 1 payload bit: verify = -1
+  after changing only the IP dst (pseudo-header!): verify = -1
+
+################ 2. parse_pcap on mixed.pcap
+
+$ ./parse_pcap -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-parse --vdev=net_pcap0,rx_pcap=mixed.pcap,tx_pcap=/dev/null
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch10-parse/mp_socket
+EAL: Selected IOVA mode 'VA'
+#1  len=54  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :1000 -> :2000 UDP l4csum=ok
+      ptype=0x00000211 L2_ETHER L3_IPV4 L4_UDP 
+      hdr_lens l2=14 l3=20 l4=8
+#2  len=54  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :40000 -> :80 TCP[S] hlen=20 l4csum=ok
+      ptype=0x00000111 L2_ETHER L3_IPV4 L4_TCP 
+      hdr_lens l2=14 l3=20 l4=20
+#3  len=54  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok ICMP echo-request id=0x1234 seq=1 l4csum=ok
+      ptype=0x03000011 L2_ETHER L3_IPV4 INNER_L4_FRAG 
+      hdr_lens l2=14 l3=20 l4=0
+      !! inner bits without a tunnel; outer layers only: ptype=0x00000011 L2_ETHER L3_IPV4 
+#4  len=42  ARP request: who has 10.10.0.2? tell 10.10.0.1 (02:00:00:00:00:01)
+      ptype=0x00000001 L2_ETHER 
+      hdr_lens l2=14 l3=0 l4=0
+#5  len=74  IPv6 fd00:0010:0000:0000:0000:0000:0000:0001 -> fd00:0010:0000:0000:0000:0000:0000:0002 tc=0xb8 flow=0x12345 hlim=64 :5353 -> :5353 UDP l4csum=ok
+      ptype=0x00000241 L2_ETHER L3_IPV6 L4_UDP 
+      hdr_lens l2=14 l3=40 l4=8
+#6  len=82  IPv6 fd00:0010:0000:0000:0000:0000:0000:0001 -> fd00:0010:0000:0000:0000:0000:0000:0002 tc=0x00 flow=0x00000 hlim=64 ext(0,8B) :7000 -> :7001 UDP l4csum(naive)=BAD l4csum=ok
+      ptype=0x000002c1 L2_ETHER L3_IPV6_EXT L4_UDP 
+      hdr_lens l2=14 l3=48 l4=8
+#7  len=58  vlan=100 pcp=5 IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :1001 -> :2001 UDP l4csum=ok
+      ptype=0x00000216 L2_ETHER_VLAN L3_IPV4 L4_UDP 
+      hdr_lens l2=18 l3=20 l4=8
+#8  len=62  ethertype 0x88a8 not handled
+      ptype=0x00000217 L2_ETHER_QINQ L3_IPV4 L4_UDP 
+      hdr_lens l2=22 l3=20 l4=8
+#9  len=104 IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :49152 -> :4789 UDP l4csum=none VXLAN vni=5000 {inner-eth dst=02:00:00:00:00:BB IPv4 192.168.50.1 -> 192.168.50.2 ttl=64 ipcsum=ok :33333 -> :443 TCP[A] hlen=20 l4csum=ok }
+      ptype=0x01113211 L2_ETHER L3_IPV4 L4_UDP TUNNEL_VXLAN INNER_L2_ETHER INNER_L3_IPV4 INNER_L4_TCP 
+      hdr_lens l2=14 l3=20 l4=8 tunnel=8 inner_l2=30 inner_l3=20 inner_l4=20
+#10 len=58  IPv4(+4 opt bytes) 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :1003 -> :2003 UDP l4csum=ok
+      ptype=0x00000231 L2_ETHER L3_IPV4_EXT L4_UDP 
+      hdr_lens l2=14 l3=24 l4=8
+#11 len=74  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok frag(id=77 off=0 MF=1) :1004 -> :2004 UDP l4csum=needs-reassembly
+      ptype=0x00000311 L2_ETHER L3_IPV4 L4_FRAG 
+      hdr_lens l2=14 l3=20 l4=0
+#12 len=66  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok frag(id=77 off=1480 MF=0) proto=17, no L4 header in this fragment
+      ptype=0x00000311 L2_ETHER L3_IPV4 L4_FRAG 
+      hdr_lens l2=14 l3=20 l4=0
+#13 len=24  IPv4 | DROP: truncated IPv4 header (need 20 bytes at offset 14, frame has 24)
+      ptype=0x00000001 L2_ETHER 
+      hdr_lens l2=14 l3=0 l4=0
+#14 len=54  IPv4 | DROP: IHL 3 gives 12-byte header (< 20)
+      ptype=0x00000201 L2_ETHER L4_UDP 
+      hdr_lens l2=14 l3=12 l4=8
+#15 len=54  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=BAD :1005 -> :2005 UDP l4csum=ok
+      ptype=0x00000211 L2_ETHER L3_IPV4 L4_UDP 
+      hdr_lens l2=14 l3=20 l4=8
+parsed 15 frames
+
+== a 2-segment packet: seg0 20 bytes + seg1 34 bytes (pkt_len 54)
+   IPv4 header needs bytes [14,34) but seg0 ends at 20:
+   rte_pktmbuf_mtod_offset(m, ip*, 14) would read 14 bytes past seg0 (garbage)
+   rte_pktmbuf_read() returned our stack copy, ttl=64 total_length=40
+   parse: IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :1000 -> :2000 UDP l4csum=ok
+      ptype=0x00000211 L2_ETHER L3_IPV4 L4_UDP 
+      hdr_lens l2=14 l3=20 l4=8
+
+################ 3. build_packets -> built.pcap, checked by verify.py and parse_pcap
+
+$ ./build_packets -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-build --vdev=net_pcap0,rx_pcap=empty.pcap,tx_pcap=built.pcap
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch10-build/mp_socket
+EAL: Selected IOVA mode 'VA'
+toy header: sizeof packed=8 unpacked=12, offsetof(session)=2
+toy header: alignof(uint32_t)=4 alignof(unaligned_uint32_t)=1, session at frame offset 44, read back 0xc0ffee01
+1 ARP request                  len=42  l2_len=0  crc32=0x63211dd7  L2_ETHER 
+2 ICMP echo request            len=57  l2_len=0  crc32=0xa80e745c  L2_ETHER L3_IPV4 INNER_L4_FRAG 
+3 IPv4/UDP                     len=57  l2_len=14 crc32=0xbe3f45a9  L2_ETHER L3_IPV4 L4_UDP 
+4 IPv6/UDP flow=0xbeef1        len=77  l2_len=0  crc32=0xfc5e03c8  L2_ETHER L3_IPV6 L4_UDP 
+5 VXLAN vni=5000               len=107 l2_len=0  crc32=0xae3a9301  L2_ETHER L3_IPV4 L4_UDP TUNNEL_VXLAN INNER_L2_ETHER INNER_L3_IPV4 INNER_L4_UDP 
+6 toy tunnel (UDP 47000)       len=65  l2_len=0  crc32=0x568597b1  L2_ETHER L3_IPV4 L4_UDP 
+7 802.1Q vlan=100              len=61  l2_len=18 crc32=0x6cbc11c8  L2_ETHER_VLAN L3_IPV4 L4_UDP 
+8 QinQ s-vlan=200 c-vlan=100   len=65  l2_len=22 crc32=0x99861cba  L2_ETHER_QINQ L3_IPV4 L4_UDP 
+rte_vlan_strip: ret=0 len 61 -> 57 vlan_tci=42 ol_flags has RX_VLAN_STRIPPED=1
+sent 8 of 8 frames to port 0
+
+$ python3 -I verify.py built.pcap built.crc
+1 len=42 ARP op=1 tip=10.10.0.2 crc32(zlib 0x63211dd7)=ok
+2 len=57 ipcsum=ok ICMP type=8 code=0 icmpcsum=ok crc32(zlib 0xa80e745c)=ok
+3 len=57 ipcsum=ok UDP 1000->2000 udpcsum=ok crc32(zlib 0xbe3f45a9)=ok
+4 len=77 IPv6 tc=0xb8 flow=0xbeef1 UDP 5353->5353 udpcsum=ok crc32(zlib 0xfc5e03c8)=ok
+5 len=107 ipcsum=ok UDP 52473->4789 udpcsum=none VXLAN vni=5000 I=1 { ipcsum=ok UDP 1111->2222 udpcsum=ok } crc32(zlib 0xae3a9301)=ok
+6 len=65 ipcsum=ok UDP 40000->47000 udpcsum=ok TOY ver=1 flags=1 session=0xc0ffee01 seq=7 crc32(zlib 0x568597b1)=ok
+7 len=61 tag(tpid=0x8100 vid=100 pcp=5) ipcsum=ok UDP 1001->2001 udpcsum=ok crc32(zlib 0x6cbc11c8)=ok
+8 len=65 tag(tpid=0x88a8 vid=200 pcp=0) tag(tpid=0x8100 vid=100 pcp=0) ipcsum=ok UDP 1002->2002 udpcsum=ok crc32(zlib 0x99861cba)=ok
+8 frames, 0 problems -> PASS
+
+$ ./parse_pcap -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-parse --vdev=net_pcap0,rx_pcap=built.pcap,tx_pcap=/dev/null
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch10-parse/mp_socket
+EAL: Selected IOVA mode 'VA'
+#1  len=42  ARP request: who has 10.10.0.2? tell 10.10.0.1 (02:00:00:00:00:01)
+      ptype=0x00000001 L2_ETHER 
+      hdr_lens l2=14 l3=0 l4=0
+#2  len=57  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok ICMP echo-request id=0x1234 seq=1 l4csum=ok
+      ptype=0x03000011 L2_ETHER L3_IPV4 INNER_L4_FRAG 
+      hdr_lens l2=14 l3=20 l4=0
+      !! inner bits without a tunnel; outer layers only: ptype=0x00000011 L2_ETHER L3_IPV4 
+#3  len=57  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :1000 -> :2000 UDP l4csum=ok
+      ptype=0x00000211 L2_ETHER L3_IPV4 L4_UDP 
+      hdr_lens l2=14 l3=20 l4=8
+#4  len=77  IPv6 fd00:0010:0000:0000:0000:0000:0000:0001 -> fd00:0010:0000:0000:0000:0000:0000:0002 tc=0xb8 flow=0xbeef1 hlim=64 :5353 -> :5353 UDP l4csum=ok
+      ptype=0x00000241 L2_ETHER L3_IPV6 L4_UDP 
+      hdr_lens l2=14 l3=40 l4=8
+#5  len=107 IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :52473 -> :4789 UDP l4csum=none VXLAN vni=5000 {inner-eth dst=02:00:00:00:00:BB IPv4 192.168.50.1 -> 192.168.50.2 ttl=64 ipcsum=ok :1111 -> :2222 UDP l4csum=ok }
+      ptype=0x02113211 L2_ETHER L3_IPV4 L4_UDP TUNNEL_VXLAN INNER_L2_ETHER INNER_L3_IPV4 INNER_L4_UDP 
+      hdr_lens l2=14 l3=20 l4=8 tunnel=8 inner_l2=30 inner_l3=20 inner_l4=8
+#6  len=65  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :40000 -> :47000 UDP l4csum=ok
+      ptype=0x00000211 L2_ETHER L3_IPV4 L4_UDP 
+      hdr_lens l2=14 l3=20 l4=8
+#7  len=61  vlan=100 pcp=5 IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :1001 -> :2001 UDP l4csum=ok
+      ptype=0x00000216 L2_ETHER_VLAN L3_IPV4 L4_UDP 
+      hdr_lens l2=18 l3=20 l4=8
+#8  len=65  ethertype 0x88a8 not handled
+      ptype=0x00000217 L2_ETHER_QINQ L3_IPV4 L4_UDP 
+      hdr_lens l2=22 l3=20 l4=8
+parsed 8 frames
+
+== a 2-segment packet: seg0 20 bytes + seg1 37 bytes (pkt_len 57)
+   IPv4 header needs bytes [14,34) but seg0 ends at 20:
+   rte_pktmbuf_mtod_offset(m, ip*, 14) would read 14 bytes past seg0 (garbage)
+   rte_pktmbuf_read() returned our stack copy, ttl=64 total_length=43
+   parse: IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok ICMP echo-request id=0x1234 seq=1 l4csum=ok
+      ptype=0x03000011 L2_ETHER L3_IPV4 INNER_L4_FRAG 
+      hdr_lens l2=14 l3=20 l4=0
+      !! inner bits without a tunnel; outer layers only: ptype=0x00000011 L2_ETHER L3_IPV4 
+
+################ 4. 26.11 API changes at compile time
+
+$ gcc -Wall -DVARIANT=1 -c packed_old.c && nm -S packed_old.o   # old '} __rte_packed;'
+[compiled without any error or warning]
+    0000000000000000 000000000000000c B __rte_packed
+
+$ gcc -Wall -DVARIANT=1 -DWITH_SIZE_CHECK -c packed_old.c   # + static_assert(sizeof == 8)
+packed_old.c:31:1: error: static assertion failed: "toy header must be 8 bytes"
+[exit status 1]
+
+$ gcc -Wall -DVARIANT=2 -c packed_old.c   # old 'typedef struct {...} __rte_packed t;'
+packed_old.c:39:16: error: expected '=', ',', ';', 'asm' or '__attribute__' before 'old_style_hdr_t'
+[exit status 1]
+
+$ gcc -Wall -c build_packets.c   # without -DALLOW_EXPERIMENTAL_API
+    build_packets.c:393:9: warning: 'rte_vlan_insert_tpid' is deprecated: Symbol is not yet part of stable ABI [-Wdeprecated-declarations]
+[exit status 0]
+
+################ 5. mini_l2fwd: TX buffer and drain timer on two net_ring loopbacks
+
+$ ./mini_l2fwd -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-mini --vdev=net_ring0 --vdev=net_ring1 -- --inject 20 --drain-us 0 --seconds 1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch10-mini/mp_socket
+EAL: Selected IOVA mode 'VA'
+port 0 has MAC 00:00:00:00:00:00; default_mac_addr_set -> -95 (Operation not supported), using 02:00:00:00:10:00 in software
+port 0 MAC 02:00:00:00:10:00
+port 1 has MAC 00:00:00:00:00:00; default_mac_addr_set -> -95 (Operation not supported), using 02:00:00:00:10:01 in software
+port 1 MAC 02:00:00:00:10:01
+TSC 2.70 GHz, drain period 0 us = 0 cycles (drain timer OFF)
+injected 20 frames into port 0
+t=1s   port 0: rx=20        tx=0         dropped=0   full-flushes=0        timer-flushes=0        buffered=0
+t=1s   port 1: rx=0         tx=0         dropped=0   full-flushes=0        timer-flushes=0        buffered=20
+final  port 0: rx=20        tx=0         dropped=0   full-flushes=0        timer-flushes=0        buffered=0
+final  port 1: rx=0         tx=0         dropped=0   full-flushes=0        timer-flushes=0        buffered=20
+frame waiting on port 0: none
+frame waiting on port 1: none
+
+$ ./mini_l2fwd -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-mini --vdev=net_ring0 --vdev=net_ring1 -- --inject 20 --drain-us 100 --seconds 2
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch10-mini/mp_socket
+EAL: Selected IOVA mode 'VA'
+port 0 has MAC 00:00:00:00:00:00; default_mac_addr_set -> -95 (Operation not supported), using 02:00:00:00:10:00 in software
+port 0 MAC 02:00:00:00:10:00
+port 1 has MAC 00:00:00:00:00:00; default_mac_addr_set -> -95 (Operation not supported), using 02:00:00:00:10:01 in software
+port 1 MAC 02:00:00:00:10:01
+TSC 2.70 GHz, drain period 100 us = 270000 cycles
+injected 20 frames into port 0
+t=1s   port 0: rx=99980     tx=99960     dropped=0   full-flushes=0        timer-flushes=4998     buffered=20
+t=1s   port 1: rx=99980     tx=99980     dropped=0   full-flushes=0        timer-flushes=4999     buffered=0
+t=2s   port 0: rx=199940    tx=199920    dropped=0   full-flushes=0        timer-flushes=9996     buffered=20
+t=2s   port 1: rx=199940    tx=199940    dropped=0   full-flushes=0        timer-flushes=9997     buffered=0
+final  port 0: rx=199940    tx=199920    dropped=0   full-flushes=0        timer-flushes=9996     buffered=20
+final  port 1: rx=199940    tx=199940    dropped=0   full-flushes=0        timer-flushes=9997     buffered=0
+frame waiting on port 0: none
+frame waiting on port 1: none
+
+$ ./mini_l2fwd -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-mini --vdev=net_ring0 --vdev=net_ring1 -- --inject 100 --drain-us 0 --seconds 1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch10-mini/mp_socket
+EAL: Selected IOVA mode 'VA'
+port 0 has MAC 00:00:00:00:00:00; default_mac_addr_set -> -95 (Operation not supported), using 02:00:00:00:10:00 in software
+port 0 MAC 02:00:00:00:10:00
+port 1 has MAC 00:00:00:00:00:00; default_mac_addr_set -> -95 (Operation not supported), using 02:00:00:00:10:01 in software
+port 1 MAC 02:00:00:00:10:01
+TSC 2.70 GHz, drain period 0 us = 0 cycles (drain timer OFF)
+injected 100 frames into port 0
+t=1s   port 0: rx=56781184  tx=56781184  dropped=0   full-flushes=1774412  timer-flushes=0        buffered=0
+t=1s   port 1: rx=56781184  tx=56781184  dropped=0   full-flushes=1774412  timer-flushes=0        buffered=0
+final  port 0: rx=56781184  tx=56781184  dropped=0   full-flushes=1774412  timer-flushes=0        buffered=0
+final  port 1: rx=56781184  tx=56781184  dropped=0   full-flushes=1774412  timer-flushes=0        buffered=0
+frame waiting on port 0: src 02:00:00:00:10:00 dst 02:00:00:00:00:00
+frame waiting on port 1: none
+
+################ 6. the shipped dpdk-l2fwd on two net_pcap ports
+
+$ $E/dpdk-l2fwd -l 0,1 --no-pci --no-huge -m 128 --file-prefix=ch10-l2 --vdev=net_pcap0,rx_pcap=in.pcap,tx_pcap=l2out0.pcap --vdev=net_pcap1,rx_pcap=empty.pcap,tx_pcap=l2out1.pcap -- -p 0x3 -q 2 -T 1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch10-l2/mp_socket
+EAL: Selected IOVA mode 'VA'
+MAC updating enabled
+Lcore 0: RX port 0 TX port 1
+Lcore 0: RX port 1 TX port 0
+Initializing port 0... done: 
+Port 0, MAC address: 02:70:63:61:70:00
+
+Initializing port 1... done: 
+Port 1, MAC address: 02:70:63:61:70:01
+
+
+Checking link statusdone
+Port 0 Link up at 10 Gbps FDX Fixed None
+Port 1 Link up at 10 Gbps FDX Fixed None
+L2FWD: lcore 1 has nothing to do
+L2FWD: entering main loop on lcore 0
+L2FWD:  -- lcoreid=0 portid=0
+L2FWD:  -- lcoreid=0 portid=1
+
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                    0
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                        0
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:                  0
+Total packets received:              0
+Total packets dropped:               0
+====================================================
+
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                  100
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                      100
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:                100
+Total packets received:            100
+Total packets dropped:               0
+====================================================
+
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                  100
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                      100
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:                100
+Total packets received:            100
+Total packets dropped:               0
+====================================================
+
+Port statistics ====================================
+Statistics for port 0 ------------------------------
+Packets sent:                        0
+Packets received:                  100
+Packets dropped:                     0
+Statistics for port 1 ------------------------------
+Packets sent:                      100
+Packets received:                    0
+Packets dropped:                     0
+Aggregate statistics ===============================
+Total packets sent:                100
+Total packets received:            100
+Total packets dropped:               0
+====================================================
+Closing port 0... Done
+Closing port 1... Done
+Bye...
+[stopped by SIGINT from timeout after 4s]
+
+$ python3 -I l2check.py l2out0.pcap:0:02:70:63:61:70:00 l2out1.pcap:1:02:70:63:61:70:01
+l2out0.pcap (port 0): 0 frames
+l2out1.pcap (port 1): 100 frames
+    dst 02:00:00:00:00:01  src 02:70:63:61:70:01  ttl 64  x100  ok
+MAC rewrite check: PASS
+
+$ ... same run with --no-mac-updating, stats off (-T 0): the check is EXPECTED to fail
+MAC updating disabled
+l2out1.pcap (port 1): 100 frames
+    dst 02:00:00:00:00:02  src 02:00:00:00:00:01  ttl 64  x100  WRONG
+MAC rewrite check: FAIL (100 frames)
+
+################ 7. exercise solutions
+
+$ ./parse_vlan -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-pvlan --vdev=net_pcap0,rx_pcap=mixed.pcap,tx_pcap=/dev/null
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch10-pvlan/mp_socket
+EAL: Selected IOVA mode 'VA'
+#1  len=54  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :1000 -> :2000 UDP l4csum=ok
+      ptype=0x00000211 L2_ETHER L3_IPV4 L4_UDP 
+      hdr_lens l2=14 l3=20 l4=8
+#2  len=54  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :40000 -> :80 TCP[S] hlen=20 l4csum=ok
+      ptype=0x00000111 L2_ETHER L3_IPV4 L4_TCP 
+      hdr_lens l2=14 l3=20 l4=20
+#3  len=54  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok ICMP echo-request id=0x1234 seq=1 l4csum=ok
+      ptype=0x03000011 L2_ETHER L3_IPV4 INNER_L4_FRAG 
+      hdr_lens l2=14 l3=20 l4=0
+      !! inner bits without a tunnel; outer layers only: ptype=0x00000011 L2_ETHER L3_IPV4 
+#4  len=42  ARP request: who has 10.10.0.2? tell 10.10.0.1 (02:00:00:00:00:01)
+      ptype=0x00000001 L2_ETHER 
+      hdr_lens l2=14 l3=0 l4=0
+#5  len=74  IPv6 fd00:0010:0000:0000:0000:0000:0000:0001 -> fd00:0010:0000:0000:0000:0000:0000:0002 tc=0xb8 flow=0x12345 hlim=64 :5353 -> :5353 UDP l4csum=ok
+      ptype=0x00000241 L2_ETHER L3_IPV6 L4_UDP 
+      hdr_lens l2=14 l3=40 l4=8
+#6  len=82  IPv6 fd00:0010:0000:0000:0000:0000:0000:0001 -> fd00:0010:0000:0000:0000:0000:0000:0002 tc=0x00 flow=0x00000 hlim=64 ext(0,8B) :7000 -> :7001 UDP l4csum(naive)=BAD l4csum=ok
+      ptype=0x000002c1 L2_ETHER L3_IPV6_EXT L4_UDP 
+      hdr_lens l2=14 l3=48 l4=8
+#7  len=58  c-vlan=100 pcp=5 IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :1001 -> :2001 UDP l4csum=ok
+      ptype=0x00000216 L2_ETHER_VLAN L3_IPV4 L4_UDP 
+      hdr_lens l2=18 l3=20 l4=8
+#8  len=62  s-vlan=200 pcp=0 c-vlan=100 pcp=0 IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :1002 -> :2002 UDP l4csum=ok
+      ptype=0x00000217 L2_ETHER_QINQ L3_IPV4 L4_UDP 
+      hdr_lens l2=22 l3=20 l4=8
+#9  len=104 IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :49152 -> :4789 UDP l4csum=none VXLAN vni=5000 {inner-eth dst=02:00:00:00:00:BB IPv4 192.168.50.1 -> 192.168.50.2 ttl=64 ipcsum=ok :33333 -> :443 TCP[A] hlen=20 l4csum=ok }
+      ptype=0x01113211 L2_ETHER L3_IPV4 L4_UDP TUNNEL_VXLAN INNER_L2_ETHER INNER_L3_IPV4 INNER_L4_TCP 
+      hdr_lens l2=14 l3=20 l4=8 tunnel=8 inner_l2=30 inner_l3=20 inner_l4=20
+#10 len=58  IPv4(+4 opt bytes) 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :1003 -> :2003 UDP l4csum=ok
+      ptype=0x00000231 L2_ETHER L3_IPV4_EXT L4_UDP 
+      hdr_lens l2=14 l3=24 l4=8
+#11 len=74  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok frag(id=77 off=0 MF=1) :1004 -> :2004 UDP l4csum=needs-reassembly
+      ptype=0x00000311 L2_ETHER L3_IPV4 L4_FRAG 
+      hdr_lens l2=14 l3=20 l4=0
+#12 len=66  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok frag(id=77 off=1480 MF=0) proto=17, no L4 header in this fragment
+      ptype=0x00000311 L2_ETHER L3_IPV4 L4_FRAG 
+      hdr_lens l2=14 l3=20 l4=0
+#13 len=24  IPv4 | DROP: truncated IPv4 header (need 20 bytes at offset 14, frame has 24)
+      ptype=0x00000001 L2_ETHER 
+      hdr_lens l2=14 l3=0 l4=0
+#14 len=54  IPv4 | DROP: IHL 3 gives 12-byte header (< 20)
+      ptype=0x00000201 L2_ETHER L4_UDP 
+      hdr_lens l2=14 l3=12 l4=8
+#15 len=54  IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=BAD :1005 -> :2005 UDP l4csum=ok
+      ptype=0x00000211 L2_ETHER L3_IPV4 L4_UDP 
+      hdr_lens l2=14 l3=20 l4=8
+parsed 15 frames
+
+== a 2-segment packet: seg0 20 bytes + seg1 34 bytes (pkt_len 54)
+   IPv4 header needs bytes [14,34) but seg0 ends at 20:
+   rte_pktmbuf_mtod_offset(m, ip*, 14) would read 14 bytes past seg0 (garbage)
+   rte_pktmbuf_read() returned our stack copy, ttl=64 total_length=40
+   parse: IPv4 10.10.0.1 -> 10.10.0.2 ttl=64 ipcsum=ok :1000 -> :2000 UDP l4csum=ok
+      ptype=0x00000211 L2_ETHER L3_IPV4 L4_UDP 
+      hdr_lens l2=14 l3=20 l4=8
+
+$ ./incr_cksum -l 0 --no-pci --no-huge -m 64 --file-prefix=ch10-incr
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch10-incr/mp_socket
+EAL: Selected IOVA mode 'VA'
+UDP with checksum, rewriting dst 10.10.0.2 step by step:
+  dst -> 10.20.0.9  ip: incr=0x669e full=0x669e  udp: incr=0xb815 full=0xb815  MATCH, verifies
+  dst -> 192.168.1.1  ip: incr=0xaf11 full=0xaf11  udp: incr=0x0089 full=0x0089  MATCH, verifies
+  dst -> 255.255.255.255  ip: incr=0x70bb full=0x70bb  udp: incr=0xc232 full=0xc232  MATCH, verifies
+  dst -> 0.0.0.0  ip: incr=0x70bb full=0x70bb  udp: incr=0xc232 full=0xc232  MATCH, verifies
+  dst -> 10.10.0.2  ip: incr=0x66af full=0x66af  udp: incr=0xb826 full=0xb826  MATCH, verifies
+UDP without checksum (dgram_cksum = 0 must stay 0):
+  dst -> 10.20.0.9  ip: incr=0x669e full=0x669e  udp: incr=0x0000 full=0x0000  MATCH, verifies
+  dst -> 192.168.1.1  ip: incr=0xaf11 full=0xaf11  udp: incr=0x0000 full=0x0000  MATCH, verifies
+100000 random dst rewrites: 0 mismatches against rte_ipv4_cksum()
+7/7 checks passed
+
+$ ./mini_l2fwd_filter -l 0 --no-pci --no-huge -m 128 --file-prefix=ch10-filt --vdev=net_ring0 --vdev=net_ring1 -- --inject 30 --drain-us 100 --seconds 1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch10-filt/mp_socket
+EAL: Selected IOVA mode 'VA'
+port 0 has MAC 00:00:00:00:00:00; default_mac_addr_set -> -95 (Operation not supported), using 02:00:00:00:10:00 in software
+port 0 MAC 02:00:00:00:10:00
+port 1 has MAC 00:00:00:00:00:00; default_mac_addr_set -> -95 (Operation not supported), using 02:00:00:00:10:01 in software
+port 1 MAC 02:00:00:00:10:01
+TSC 2.70 GHz, drain period 100 us = 270000 cycles
+injected 30 frames into port 0
+t=1s   port 0: rx=30        tx=0         dropped=0   full-flushes=0        timer-flushes=0        buffered=0 filtered=10
+t=1s   port 1: rx=20        tx=20        dropped=0   full-flushes=0        timer-flushes=1        buffered=0 filtered=20
+final  port 0: rx=30        tx=0         dropped=0   full-flushes=0        timer-flushes=0        buffered=0 filtered=10
+final  port 1: rx=20        tx=20        dropped=0   full-flushes=0        timer-flushes=1        buffered=0 filtered=20
+frame waiting on port 0: none
+frame waiting on port 1: none

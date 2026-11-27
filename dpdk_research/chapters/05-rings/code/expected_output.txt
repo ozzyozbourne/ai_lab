@@ -1,0 +1,291 @@
+
+=================== 0. build (make, -Wall -Wextra) ===================
+[make exit code 0]
+load average before the runs: 0.57 0.47 0.25 (shared 4-core VM)
+
+=================== 1. ring_basics: API families, bulk vs burst, producer -> consumer ===================
+$ ./ring_basics -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch05-basic
+== Part A: one ring of 16 slots, used by one thread ==
+  size=16 capacity=15 (one slot is kept empty)
+RING: Cannot reserve memory
+  create("demo") again   -> NULL, rte_errno=17 (File exists)
+RING: Requested number of elements is invalid, must be power of 2, and not exceed 2147483647
+  create(count=10)       -> NULL, rte_errno=22 (Invalid argument)
+  rte_ring_lookup("demo") -> same pointer
+  fresh ring:                        count=0   free=15  full=0 empty=1
+  enqueue_bulk(13)  -> 13  free_space=2
+  after 13:                          count=13  free=2   full=0 empty=0
+  enqueue_bulk(4)   ->  0  (all or nothing: 4 > 2 free)
+  enqueue_burst(4)  ->  2  (as many as fit) free_space=0
+  ring is now full:                  count=15  free=0   full=1 empty=0
+  enqueue(1 obj)    -> -105 (-ENOBUFS = -105)
+  dequeue_bulk(20)  ->  0  available=15
+  dequeue_burst(20) -> 15  available=0  first=100 last=114
+  dequeue(1 obj)    -> -2 (-ENOENT = -2)
+  empty again:                       count=0   free=15  full=0 empty=1
+  rte_ring_dump():
+ring <demo>@0x1040f3c80
+  flags=0
+  size=16
+  capacity=15
+  used=0
+  avail=15
+  cons.sync_type=MT
+  cons.head=15
+  cons.tail=15
+  prod.sync_type=MT
+  prod.head=15
+  prod.tail=15
+  after rte_ring_free, lookup("demo") -> NULL
+
+== Part B: lcore 0 -> ring -> lcore 1, 8000000 objects, flags=0 ==
+  prod sync type=0 cons sync type=0 (0=MT 1=ST 2=RTS 3=HTS)
+  received=8000000 out_of_order=0 sum OK
+  producer saw a full ring 822191 times, consumer saw an empty ring 82272 times
+  28.4 cycles per object, 95.0 Mobj/s (TSC 2700 MHz)
+[exit code 0]
+
+=================== 1b. exercise 1: the same program with an SP/SC pipe ring ===================
+$ ./ring_basics_spsc -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch05-basic
+== Part A: one ring of 16 slots, used by one thread ==
+  size=16 capacity=15 (one slot is kept empty)
+RING: Cannot reserve memory
+  create("demo") again   -> NULL, rte_errno=17 (File exists)
+RING: Requested number of elements is invalid, must be power of 2, and not exceed 2147483647
+  create(count=10)       -> NULL, rte_errno=22 (Invalid argument)
+  rte_ring_lookup("demo") -> same pointer
+  fresh ring:                        count=0   free=15  full=0 empty=1
+  enqueue_bulk(13)  -> 13  free_space=2
+  after 13:                          count=13  free=2   full=0 empty=0
+  enqueue_bulk(4)   ->  0  (all or nothing: 4 > 2 free)
+  enqueue_burst(4)  ->  2  (as many as fit) free_space=0
+  ring is now full:                  count=15  free=0   full=1 empty=0
+  enqueue(1 obj)    -> -105 (-ENOBUFS = -105)
+  dequeue_bulk(20)  ->  0  available=15
+  dequeue_burst(20) -> 15  available=0  first=100 last=114
+  dequeue(1 obj)    -> -2 (-ENOENT = -2)
+  empty again:                       count=0   free=15  full=0 empty=1
+  rte_ring_dump():
+ring <demo>@0x1040f3c80
+  flags=0
+  size=16
+  capacity=15
+  used=0
+  avail=15
+  cons.sync_type=MT
+  cons.head=15
+  cons.tail=15
+  prod.sync_type=MT
+  prod.head=15
+  prod.tail=15
+  after rte_ring_free, lookup("demo") -> NULL
+
+== Part B: lcore 0 -> ring -> lcore 1, 8000000 objects, flags=0x0001|0x0002 ==
+  prod sync type=1 cons sync type=1 (0=MT 1=ST 2=RTS 3=HTS)
+  received=8000000 out_of_order=0 sum OK
+  producer saw a full ring 285948 times, consumer saw an empty ring 5984 times
+  17.3 cycles per object, 155.9 Mobj/s (TSC 2700 MHz)
+[exit code 0]
+
+=================== 2. ring_wrap: free-running indexes, the 2^32 wrap, RING_F_EXACT_SZ ===================
+$ ./ring_wrap -l 0 --no-pci --no-huge -m 64 --file-prefix=ch05-wrap
+== 1. 1000 x (enqueue 3, dequeue 3) on an 8-slot ring ==
+  size=8 mask=0x7 capacity=7
+  fresh:                       prod.head=0          prod.tail=0          cons.head=0          cons.tail=0         
+                               slots: prod 0, cons 0 (index & mask 7); prod.tail - cons.head = 0
+  round 0: slots used 0,1,2
+  round 1: slots used 3,4,5
+  round 2: slots used 6,7,0
+  after 1000 rounds:           prod.head=3000       prod.tail=3000       cons.head=3000       cons.tail=3000      
+                               slots: prod 0, cons 0 (index & mask 7); prod.tail - cons.head = 0
+  after enqueue 2 more:        prod.head=3002       prod.tail=3002       cons.head=3000       cons.tail=3000      
+                               slots: prod 2, cons 0 (index & mask 7); prod.tail - cons.head = 2
+  rte_ring_dump():
+ring <wrap8>@0x1040f3cc0
+  flags=3
+  size=8
+  capacity=7
+  used=2
+  avail=5
+  cons.sync_type=ST
+  cons.head=3000
+  cons.tail=3000
+  prod.sync_type=ST
+  prod.head=3002
+  prod.tail=3002
+
+== 2. crossing 2^32: indexes start at UINT32_MAX - 1 ==
+  before:                      prod.head=4294967294 prod.tail=4294967294 cons.head=4294967294 cons.tail=4294967294
+                               slots: prod 6, cons 6 (index & mask 7); prod.tail - cons.head = 0
+  enqueue_bulk(5) -> 5
+  after enqueue 5:             prod.head=3          prod.tail=3          cons.head=4294967294 cons.tail=4294967294
+                               slots: prod 3, cons 6 (index & mask 7); prod.tail - cons.head = 5
+  rte_ring_count()=5 free=2  (prod.tail < cons.head, but 3 - 4294967294 = 5 modulo 2^32)
+  dequeue_bulk(5) -> 5, values: 1 2 3 4 5  (FIFO order kept across the wrap)
+  after dequeue 5:             prod.head=3          prod.tail=3          cons.head=3          cons.tail=3         
+                               slots: prod 3, cons 3 (index & mask 7); prod.tail - cons.head = 0
+
+== 3. capacity: count vs RING_F_EXACT_SZ ==
+  name      count flags              size capacity    memsize
+  c8            8 0                     8        7        512
+  c8x           8 RING_F_EXACT_SZ      16        8        576
+RING: Requested number of elements is invalid, must be power of 2, and not exceed 2147483647
+  c1000      1000 0                 -> NULL, rte_errno=22 (Invalid argument)
+  c1000x     1000 RING_F_EXACT_SZ    1024     1000       8640
+  c1024      1024 0                  1024     1023       8640
+  c1024x     1024 RING_F_EXACT_SZ    2048     1024      16832
+  sizeof(struct rte_ring)=384 (header; the slot table follows it)
+[exit code 0]
+
+=================== 3. ring_modes_bench: SP/SC vs MP/MC vs RTS vs HTS ===================
+--- 3a. 1 producer (lcore 0) -> 1 consumer (lcore 1), two real CPUs
+$ ./ring_modes_bench -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch05-bench
+lcores (lcore@cpus): 0@0 1@1
+producers: main lcore 0 + 0 worker(s); consumer: lcore 1
+ring size 1024, 100 ms per run, median of 5 runs, TSC 2700 MHz
+
+mode   burst  prod   Mobj/s med          min          max    cyc/obj
+SP/SC      1     1         8.87         8.75         8.95      304.4
+SP/SC      8     1        45.69        41.77        47.20       59.1
+SP/SC     32     1       184.95       172.42       206.03       14.6
+MP/MC      1     1         4.26         4.13         4.30      634.2
+MP/MC      8     1        30.01        29.51        30.73       90.0
+MP/MC     32     1       115.52       114.89       116.08       23.4
+RTS        1     1         2.27         1.99         2.42     1189.1
+RTS        8     1        16.78        16.34        18.64      160.9
+RTS       32     1        71.23        67.97        75.64       37.9
+HTS        1     1         4.36         4.27         4.42      619.2
+HTS        8     1        25.20        24.95        25.31      107.1
+HTS       32     1        90.19        87.14        92.15       29.9
+[exit code 0]
+--- 3b. 2 producers (lcores 0,1) -> 1 consumer (lcore 2), three real CPUs
+$ ./ring_modes_bench -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch05-bench
+lcores (lcore@cpus): 0@0 1@1 2@2
+producers: main lcore 0 + 1 worker(s); consumer: lcore 2
+ring size 1024, 100 ms per run, median of 5 runs, TSC 2700 MHz
+
+mode   burst  prod   Mobj/s med          min          max    cyc/obj
+SP/SC      1     1         5.75         5.61         6.19      469.7
+SP/SC      8     1        31.09        31.02        31.82       86.8
+SP/SC     32     1       117.88       116.75       143.75       22.9
+MP/MC      1     2         2.34         2.31         2.34     1155.5
+MP/MC      8     2        17.73        17.61        19.12      152.3
+MP/MC     32     2        66.95        66.69        67.16       40.3
+RTS        1     2         1.99         1.94         2.00     1355.3
+RTS        8     2        15.89        15.76        15.96      169.9
+RTS       32     2        61.77        56.70        62.10       43.7
+HTS        1     2         2.40         2.36         2.43     1125.9
+HTS        8     2        17.38        17.25        17.49      155.3
+HTS       32     2        67.63        67.14        67.72       39.9
+[exit code 0]
+--- 3c. symmetric (every lcore dequeues and re-enqueues), 3 lcores on 3 CPUs
+$ ./ring_modes_bench -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch05-bench -- -s
+lcores (lcore@cpus): 0@0 1@1 2@2
+symmetric: every lcore dequeues b objects and enqueues back, ring starts half full
+ring size 1024, 100 ms per run, median of 5 runs, TSC 2700 MHz
+
+mode   burst   thr   Mobj/s med          min          max    cyc/obj
+SP/SC      1     1        65.84        65.66        65.89       41.0
+SP/SC      8     1       420.67       311.78       424.07        6.4
+SP/SC     32     1      1163.16      1161.62      1163.66        2.3
+MP/MC      1     3         2.07         2.06         2.10     1306.7
+MP/MC      8     3        15.87        15.81        15.95      170.1
+MP/MC     32     3        55.21        55.15        55.39       48.9
+RTS        1     3         1.89         1.88         1.91     1432.1
+RTS        8     3        14.32        14.30        14.38      188.5
+RTS       32     3        51.33        51.30        51.49       52.6
+HTS        1     3         1.68         1.67         2.03     1610.0
+HTS        8     3        16.57        16.45        17.66      163.0
+HTS       32     3       119.73       113.26       126.01       22.6
+[exit code 0]
+--- 3d. symmetric, OVERCOMMITTED: 4 lcores time-share CPU 1
+$ ./ring_modes_bench --lcores=(0-3)@1 --no-pci --no-huge -m 64 --file-prefix=ch05-bench -- -s
+lcores (lcore@cpus): 0@1 1@1 2@1 3@1
+symmetric: every lcore dequeues b objects and enqueues back, ring starts half full
+ring size 1024, 100 ms per run, median of 5 runs, TSC 2700 MHz
+
+mode   burst   thr   Mobj/s med          min          max    cyc/obj
+SP/SC      1     1        65.76        65.65        65.89       41.1
+SP/SC      8     1       417.34       345.00       421.35        6.5
+SP/SC     32     1      1157.37      1131.65      1161.29        2.3
+MP/MC      1     4         2.75         1.39         5.49      980.4
+MP/MC      8     4        11.22        10.74        22.39      240.7
+MP/MC     32     4        40.57        36.11       120.25       66.6
+RTS        1     4        10.35         9.57        10.70      260.8
+RTS        8     4        72.29        60.76        82.41       37.3
+RTS       32     4       286.83       172.71       315.44        9.4
+HTS        1     4        18.18        16.22        21.60      148.5
+HTS        8     4       119.60       103.50       148.95       22.6
+HTS       32     4       314.63       260.75       582.05        8.6
+[exit code 0]
+--- 3e. producer/consumer, OVERCOMMITTED: 3 producers + 1 consumer on CPU 1
+$ ./ring_modes_bench --lcores=(0-3)@1 --no-pci --no-huge -m 64 --file-prefix=ch05-bench
+lcores (lcore@cpus): 0@1 1@1 2@1 3@1
+producers: main lcore 0 + 2 worker(s); consumer: lcore 3
+ring size 1024, 100 ms per run, median of 5 runs, TSC 2700 MHz
+
+mode   burst  prod   Mobj/s med          min          max    cyc/obj
+SP/SC      1     1         0.13         0.13         0.13    21145.2
+SP/SC      8     1         0.13         0.12         0.13    21098.9
+SP/SC     32     1         0.13         0.13         0.13    21097.2
+MP/MC      1     3         0.07         0.07         0.07    39266.9
+MP/MC      8     3         0.07         0.07         0.07    39228.9
+MP/MC     32     3         0.07         0.07         0.07    39098.9
+RTS        1     3         0.07         0.06         0.07    39272.5
+RTS        8     3         0.07         0.07         0.07    39230.2
+RTS       32     3         0.07         0.06         0.07    39099.2
+HTS        1     3         0.07         0.07         0.07    39265.2
+HTS        8     3         0.07         0.07         0.07    39231.4
+HTS       32     3         0.07         0.07         0.07    38926.9
+[exit code 0]
+
+=================== 4. elem_peek: element ring, peek, zero-copy, two peeking consumers ===================
+$ ./elem_peek -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch05-peek
+== 1. element ring: esize=8, 16 slots, HTS on both sides ==
+  capacity=15 prod sync=3 cons sync=3 (3 = RTE_RING_SYNC_MT_HTS)
+RING: element size is not a multiple of 4
+  create_elem(esize=6) -> NULL, rte_errno=22 (Invalid argument)
+  enqueue_bulk_elem(4 items by value) -> 4, count=4
+
+== 2. peek: look at the head, put it back, then take it ==
+  start  -> 1: head is {flow=0 len=100}
+  finish(0): left in place, count=4
+  start  -> 1: head is {flow=0 len=100} (the same one)
+  finish(1): removed, count=3
+  drain the other 3
+
+== 3. zero-copy enqueue that wraps the end of the table ==
+  prod.head=12  (slot 12)
+  zc start: n=8  ptr1 -> slot 12, n1=4  ptr2 -> slot 0, n2=4
+  dequeued 8: 1000 1001 1002 1003 1004 1005 1006 1007  (in order across the wrap)
+
+== 4. two peeking consumers on one HTS ring (lcore 0: flow 0, lcore 1: flow 1) ==
+  enqueued 2000 items, 1000 for flow 0 and 1000 for flow 1
+  flow 0: taken=1000 in order=yes, put back 424 foreign heads
+  flow 1: taken=1000 in order=yes, put back 1125 foreign heads
+  ring count at the end: 0
+[exit code 0]
+
+=================== 5. soring_demo: staged-ordered ring keeps order across stages ===================
+$ ./soring_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch05-soring
+soring: 16 elems x 4 bytes, 2 stages, memsize=1088 bytes
+  producer enqueue_bulk                        n=8: 1 2 3 4 5 6 7 8
+  stage 0 acquire batch A                      n=4: 1 2 3 4
+  stage 0 acquire batch B                      n=4: 5 6 7 8
+  stage 0 release batch B (out of order)
+  stage 1 acquire_burst(8)                     n=0  (B waits behind A)
+  stage 0 release batch A (values x10 written back)
+  stage 1 acquire_burst(8)                     n=8: 10 20 30 40 5 6 7 8
+  count=8 free=8 before dequeue
+  consumer dequeue_burst                       n=8: 10 20 30 40 5 6 7 8
+  count=0 after dequeue
+[exit code 0]
+
+=================== 6. exercise 2: three-stage pipeline (solutions/pipeline3.c) ===================
+$ ./pipeline3 -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch05-pipe
+pipeline A(lcore 0) -> r1 -> B(lcore 1) -> r2 -> C(lcore 2)
+C received 4000000 of 4000000, out of order: 0 -> PASS
+49.6 cycles per object end to end
+[exit code 0]
+
+=================== done ===================

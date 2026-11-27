@@ -1,0 +1,427 @@
+
+=================== 0. build (make, -Wall -Wextra) ===================
+[make exit code 0]
+
+=================== 1. eal_tour: launch, roles, states, threads ===================
+$ timeout -s INT -k 5 20 ./eal_tour -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch03-tour
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch03-tour/mp_socket
+EAL: Selected IOVA mode 'VA'
+
+== 1. rte_eal_init returned 7 (arguments consumed)
+  main lcore=0  lcore count=3  TSC hz=2700000000
+
+== 2. lcore table (RTE_LCORE_FOREACH)
+  lcore  cpu  socket  role     state
+      0    0       0  RTE      (main)
+      1    1       0  RTE      WAIT
+      2    2       0  RTE      WAIT
+  main thread:                 lcore_id=0   allowed CPUs=0
+
+== 3. remote_launch + wait_lcore (return values)
+  [lcore 1 on CPU 1] running work_square
+  [lcore 2 on CPU 2] running work_square
+  rte_eal_wait_lcore(1) = 101
+  rte_eal_wait_lcore(2) = 104
+
+== 4. state machine and -EBUSY
+  before launch: lcore 1 is WAIT
+  after launch:  lcore 1 is RUNNING
+  second launch while RUNNING returns -16 (-EBUSY is -16)
+  rte_eal_wait_lcore(1) = 7
+  after wait:    lcore 1 is WAIT
+
+== 5. mp_remote_launch(CALL_MAIN) + RTE_PER_LCORE
+  [lcore 1] my TLS counter = 3
+  [lcore 2] my TLS counter = 3
+  [lcore 0] my TLS counter = 3
+  [lcore 1] my TLS counter = 6
+  [lcore 2] my TLS counter = 6
+  [lcore 0] my TLS counter = 6
+
+== 6. a non-EAL pthread and rte_thread_register()
+  pthread before register:     lcore_id=-1  allowed CPUs=0
+  pthread after register:      lcore_id=3 role=NON_EAL
+  pthread after unregister:    lcore_id=-1
+
+== 7. rte_thread_create_control()
+  control thread 'ch03-ctl':   lcore_id=-1  allowed CPUs=3
+  control thread returned 42
+
+== 8. rte_lcore_dump() and rte_eal_cleanup()
+lcore 0, socket 0, role RTE, cpuset 0
+lcore 1, socket 0, role RTE, cpuset 1
+lcore 2, socket 0, role RTE, cpuset 2
+  rte_eal_cleanup() = 0
+[exit code 0]
+
+=================== 2. a service lcore is counted but not visited by FOREACH ===================
+$ timeout -s INT -k 5 20 ./eal_tour -l 0-2 -S 2 --no-pci --no-huge -m 64 --file-prefix=ch03-svc
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch03-svc/mp_socket
+EAL: Selected IOVA mode 'VA'
+
+== 1. rte_eal_init returned 9 (arguments consumed)
+  main lcore=0  lcore count=3  TSC hz=2700000000
+
+== 2. lcore table (RTE_LCORE_FOREACH)
+  lcore  cpu  socket  role     state
+      0    0       0  RTE      (main)
+      1    1       0  RTE      WAIT
+  main thread:                 lcore_id=0   allowed CPUs=0
+
+== 8. rte_lcore_dump() and rte_eal_cleanup()
+lcore 0, socket 0, role RTE, cpuset 0
+lcore 1, socket 0, role RTE, cpuset 1
+lcore 2, socket 0, role SERVICE, cpuset 2
+  rte_eal_cleanup() = 0
+[exit code 0]
+
+=================== 3. the rte_eal_init timeline (helloworld, lib.eal:debug, delta timestamps) ===================
+$ timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch03-init --log-level=lib.eal:debug --log-timestamp=delta
+EAL: lib.eal log level changed from info to debug
+[<     0.001033>] EAL: Detected lcore 0 as core 0 on NUMA node 0
+[<     0.000019>] EAL: Detected lcore 1 as core 1 on NUMA node 0
+[<     0.000007>] EAL: Detected lcore 2 as core 2 on NUMA node 0
+[<     0.000019>] EAL: Detected lcore 3 as core 3 on NUMA node 0
+[<     0.003198>] EAL: Maximum logical cores by configuration: 128
+[<     0.000008>] EAL: Detected CPU lcores: 4
+[<     0.000014>] EAL: Detected NUMA nodes: 1
+[<     0.000010>] EAL: Cores selected by core list: 0-1
+[<     0.000004>] EAL: lcore 0 mapped to physical core 0
+[<     0.000009>] EAL: lcore 1 mapped to physical core 1
+[<     0.000055>] EAL: Control threads will use cores: 2-3
+[<     0.000008>] EAL: Checking presence of .so 'librte_eal.so.27.0'
+[<     0.000059>] EAL: Checking presence of .so 'librte_eal.so.27'
+[<     0.000020>] EAL: Checking presence of .so 'librte_eal.so'
+[<     0.000019>] EAL: Detected static linkage of DPDK
+[<     0.001391>] EAL: Ask a virtual area of 0x7000 bytes
+[<     0.000012>] EAL: Virtual area found at 0x100000000 (size = 0x7000)
+[<     0.000220>] EAL: Multi-process socket /var/run/dpdk/ch03-init/mp_socket
+[<     0.000113>] EAL: Probing VFIO support...
+[<     0.000014>] EAL: Module /sys/module/vfio not found! error 2 (No such file or directory)
+[<     0.000008>] EAL: VFIO modules not loaded, skipping VFIO support...
+[<     0.000003>] EAL: Bus pci wants IOVA as 'DC'
+[<     0.000001>] EAL: Bus vdev wants IOVA as 'DC'
+[<     0.000001>] EAL: Buses did not request a specific IOVA mode.
+[<     0.000010>] EAL: Physical addresses are unavailable, selecting IOVA as VA mode.
+[<     0.000001>] EAL: Selected IOVA mode 'VA'
+[<     0.000008>] EAL: Ask a virtual area of 0x2e000 bytes
+[<     0.000006>] EAL: Virtual area found at 0x100007000 (size = 0x2e000)
+[<     0.000116>] EAL: Setting up physically contiguous memory...
+[<     0.000010>] EAL: Setting maximum number of open files to 20000
+[<     0.000006>] EAL: Ask a virtual area of 0xc1000 bytes
+[<     0.000003>] EAL: Virtual area found at 0x100035000 (size = 0xc1000)
+[<     0.000257>] EAL: Memseg list allocated at socket 0, page size 0x4kB
+[<     0.000018>] EAL: Using memfd for anonymous memory
+[<     0.000001>] EAL: Ask a virtual area of 0x4000000 bytes
+[<     0.000002>] EAL: Virtual area found at 0x1000f6000 (size = 0x4000000)
+[<     0.000002>] EAL: VA reserved for memseg list at 0x1000f6000, size 4000000
+[<     0.000262>] EAL: Added 64M to heap on socket 0
+[<     0.100133>] EAL: TSC frequency is ~2700000 KHz
+[<     0.000203>] EAL: Allocated 64 bytes of per-lcore data with a 64-byte alignment
+[<     0.000075>] EAL: Main lcore 0 is ready (tid=7efc47429a00;cpuset=[0])
+[<     0.000224>] EAL: lcore 1 is ready (tid=7efc42dfc6c0;cpuset=[1])
+[<     0.000087>] EAL: Allocated 2112 bytes of per-lcore data with a 64-byte alignment
+hello from core 1
+hello from core 0
+[<     0.000517>] EAL: sendmsg: mp_eal
+[exit code 0]
+
+=================== 4. lcore mapping lab (prebuilt helloworld) ===================
+$ timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch03-map --log-level=lib.eal:debug
+EAL: lcore 0 mapped to physical core 0
+EAL: lcore 1 mapped to physical core 1
+EAL: lcore 2 mapped to physical core 2
+EAL: lcore 3 mapped to physical core 3
+EAL: Control threads will use cores: 0
+EAL: Main lcore 0 is ready (tid=7f95bfe22a00;cpuset=[0])
+EAL: lcore 1 is ready (tid=7f95bb7fc6c0;cpuset=[1])
+EAL: lcore 2 is ready (tid=7f95baffb6c0;cpuset=[2])
+EAL: lcore 3 is ready (tid=7f95b25ff6c0;cpuset=[3])
+hello from core 1
+hello from core 2
+hello from core 3
+hello from core 0
+[exit code 0]
+$ timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld --lcores=0,(1-3)@(1,2) --no-pci --no-huge -m 64 --file-prefix=ch03-map --log-level=lib.eal:debug
+EAL: Control threads will use cores: 3
+EAL: Main lcore 0 is ready (tid=7faf7461da00;cpuset=[0])
+EAL: lcore 1 is ready (tid=7faf6f9fc6c0;cpuset=[1-2])
+EAL: lcore 2 is ready (tid=7faf6f1fb6c0;cpuset=[1-2])
+EAL: lcore 3 is ready (tid=7faf6e9fa6c0;cpuset=[1-2])
+hello from core 1
+hello from core 2
+hello from core 3
+hello from core 0
+[exit code 0]
+$ timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -l 2-3 -R --no-pci --no-huge -m 64 --file-prefix=ch03-map --log-level=lib.eal:debug
+EAL: lcore 0 mapped to physical core 2
+EAL: lcore 1 mapped to physical core 3
+EAL: Control threads will use cores: 0-1
+EAL: Main lcore 0 is ready (tid=7ff4f368fa00;cpuset=[2])
+EAL: lcore 1 is ready (tid=7ff4ee9fc6c0;cpuset=[3])
+hello from core 1
+hello from core 0
+[exit code 0]
+$ timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -l 1-3 --main-lcore 3 --no-pci --no-huge -m 64 --file-prefix=ch03-map --log-level=lib.eal:debug
+EAL: lcore 1 mapped to physical core 1
+EAL: lcore 2 mapped to physical core 2
+EAL: lcore 3 mapped to physical core 3
+EAL: Control threads will use cores: 0
+EAL: Main lcore 3 is ready (tid=7f5471829a00;cpuset=[3])
+EAL: lcore 1 is ready (tid=7f546d1fc6c0;cpuset=[1])
+EAL: lcore 2 is ready (tid=7f546c9fb6c0;cpuset=[2])
+hello from core 1
+hello from core 2
+hello from core 3
+[exit code 0]
+$ timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld --lcores=0@0,(1,2)@(1-3) --no-pci --no-huge -m 64 --file-prefix=ch03-map --log-level=lib.eal:debug
+EAL: Control threads will use cores: 0
+EAL: Main lcore 0 is ready (tid=7f3cf361ba00;cpuset=[0])
+EAL: lcore 1 is ready (tid=7f3cee9fc6c0;cpuset=[1-3])
+EAL: lcore 2 is ready (tid=7f3cee1fb6c0;cpuset=[1-3])
+hello from core 1
+hello from core 2
+hello from core 0
+[exit code 0]
+$ timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld --lcores=(0-3)@0 --no-pci --no-huge -m 64 --file-prefix=ch03-map --log-level=lib.eal:debug
+EAL: Control threads will use cores: 1-3
+EAL: Main lcore 0 is ready (tid=7f3c93615a00;cpuset=[0])
+EAL: lcore 1 is ready (tid=7f3c8e9fc6c0;cpuset=[0])
+EAL: lcore 2 is ready (tid=7f3c8e1fb6c0;cpuset=[0])
+EAL: lcore 3 is ready (tid=7f3c8d9fa6c0;cpuset=[0])
+hello from core 1
+hello from core 2
+hello from core 3
+hello from core 0
+[exit code 0]
+
+=================== 5. reading EAL errors ===================
+$ timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -l 0-5 --no-pci --no-huge -m 64 --file-prefix=ch03-err
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: lcore 4 unavailable
+EAL: lcore 5 unavailable
+EAL: invalid coremask or core-list parameter, please check specified cores are part of 0-3
+EAL: Error parsing command line arguments.
+EAL: PANIC in main():
+Cannot init EAL
+[exit code 134]
+$ timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -l 1-2 --main-lcore 0 --no-pci --no-huge -m 64 --file-prefix=ch03-err
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Error: Main lcore is not enabled for DPDK
+EAL: Error parsing command line arguments.
+EAL: PANIC in main():
+Cannot init EAL
+[exit code 134]
+$ timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -c 0x3 --no-pci --no-huge -m 64 --file-prefix=ch03-err
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: '-c <coremask>' option is deprecated, and will be removed in a future release
+EAL: 	Use '-l <corelist>' or '--lcores=<corelist>' option instead
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch03-err/mp_socket
+EAL: Selected IOVA mode 'VA'
+hello from core 1
+hello from core 0
+[exit code 0]
+
+=================== 6. log_lab: logtypes, levels, patterns, streams ===================
+$ timeout -s INT -k 5 20 ./log_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch03-log
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch03-log/mp_socket
+EAL: Selected IOVA mode 'VA'
+logtype ids: user.ch03app=32 user.ch03app.rx=33 (dynamic ids)
+current levels: app=7 rx=5 global=8
+--- 1. as registered (or as set by --log-level)
+APP: app ERR     (level 4)
+APP: app WARNING (level 5)
+APP: app NOTICE  (level 6)
+APP: app INFO    (level 7)
+RX: rx  WARNING (level 5)
+--- 2. after rte_log_set_level_pattern("user.ch03app*", DEBUG)
+APP: app ERR     (level 4)
+APP: app WARNING (level 5)
+APP: app NOTICE  (level 6)
+APP: app INFO    (level 7)
+APP: app DEBUG   (level 8)
+RX: rx  WARNING (level 5)
+RX: rx  INFO    (level 7)
+RX: rx  DEBUG   (level 8)
+--- 3. after rte_log_set_level(rx, ERR)
+APP: app ERR     (level 4)
+APP: app WARNING (level 5)
+APP: app NOTICE  (level 6)
+APP: app INFO    (level 7)
+APP: app DEBUG   (level 8)
+--- 4. rte_log_can_log guard
+rx DEBUG is off: skipped expensive_summary()
+APP: summary=2513697526527747472
+--- 5. rte_openlog_stream(file)
+APP: back on the default stream
+file: APP: this line goes to the file, not stderr
+file: EAL: even EAL lines follow the stream
+--- 6. rte_log_list_types: our types and a few library types
+  lib.eal
+  pmd.net.null
+  user.ch03app
+  user.ch03app.rx
+[exit code 0]
+--- the same program with a command-line pattern
+$ timeout -s INT -k 5 20 ./log_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch03-log --log-level=user.ch03*:debug
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch03-log/mp_socket
+EAL: Selected IOVA mode 'VA'
+logtype ids: user.ch03app=32 user.ch03app.rx=33 (dynamic ids)
+current levels: app=8 rx=8 global=8
+--- 1. as registered (or as set by --log-level)
+APP: app ERR     (level 4)
+APP: app WARNING (level 5)
+APP: app NOTICE  (level 6)
+APP: app INFO    (level 7)
+APP: app DEBUG   (level 8)
+RX: rx  WARNING (level 5)
+RX: rx  INFO    (level 7)
+--- only the rx sub-type, and EAL quieted to warnings
+$ timeout -s INT -k 5 20 ./log_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch03-log --log-level=lib.eal:warning --log-level=user.ch03app.rx:debug
+logtype ids: user.ch03app=32 user.ch03app.rx=33 (dynamic ids)
+current levels: app=7 rx=8 global=8
+--- 1. as registered (or as set by --log-level)
+APP: app ERR     (level 4)
+APP: app WARNING (level 5)
+APP: app NOTICE  (level 6)
+APP: app INFO    (level 7)
+RX: rx  WARNING (level 5)
+RX: rx  INFO    (level 7)
+RX: rx  DEBUG   (level 8)
+--- 2. after rte_log_set_level_pattern("user.ch03app*", DEBUG)
+APP: app ERR     (level 4)
+APP: app WARNING (level 5)
+--- exercise 3: RTE_LOG_LINE rejects a newline at compile time
+/tmp/claude-0/-home-user-ai-lab/fae9d2b5-bcbe-5be9-a4f0-08ae6c821ee6/scratchpad/dpdk-install/include/rte_log.h:364:9: error: static assertion failed: "This log format string contains a \\n"
+solutions/newline_bad.c:20:9: note: in expansion of macro 'RTE_LOG_LINE'
+   20 |         RTE_LOG_LINE(INFO, APP, "oops, a trailing newline\n");   /* <- error */
+
+=================== 7. tsc_lab: TSC, clock cost, delays (the measurement recipe) ===================
+$ timeout -s INT -k 5 20 ./tsc_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch03-tsc
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch03-tsc/mp_socket
+EAL: Selected IOVA mode 'VA'
+== A. TSC frequency
+  rte_get_tsc_hz()   = 2700000000 Hz
+  rte_get_timer_hz() = 2700000000 Hz (timer source = TSC here)
+  TSC measured vs CLOCK_MONOTONIC    median  2700.00 MHz   (min  2699.98, max  2700.02, N=7)
+
+== B. cost of reading a clock (1000000 calls per repetition)
+  rte_rdtsc()                        median    12.29 ns/call   (min    12.28, max    12.31, N=7)
+  rte_rdtsc_precise()                median    24.58 ns/call   (min    24.57, max    24.99, N=7)
+  rte_get_timer_cycles()             median    12.29 ns/call   (min    12.27, max    12.46, N=7)
+  clock_gettime(CLOCK_MONOTONIC)     median    21.87 ns/call   (min    21.84, max    21.90, N=7)
+
+== C. busy delay vs sleeping delay
+  rte_delay_us_block(10000):
+      wall time                      median 10000.78 us   (min 10000.76, max 10002.64, N=5)
+      CPU time of this thread        median 10000.40 us   (min 10000.39, max 10000.73, N=5)
+  rte_delay_us_sleep(10000):
+      wall time                      median 10080.25 us   (min 10076.21, max 10081.96, N=5)
+      CPU time of this thread        median    17.74 us   (min    17.05, max    18.90, N=5)
+[exit code 0]
+
+=================== 8. thread anatomy of a running DPDK process ===================
+$ for t in /proc/<pid>/task/*; do comm; Cpus_allowed_list; done
+  TID      NAME             CPUS
+  7250     ch03-ctl         0,3
+  7243     dpdk-intr        0,3
+  7244     dpdk-mp-msg      0,3
+  7249     dpdk-telemet-v2  0,3
+  7248     dpdk-worker2     2
+  <pid>    eal_tour         1
+$ ls /var/run/dpdk/ch03-serve
+  config
+  dpdk_telemetry.v2
+  fbarray_memzone
+  fbarray_nohugemem
+  mp_socket
+$ kill -INT <pid>
+[exit code 0]
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch03-serve/mp_socket
+EAL: Selected IOVA mode 'VA'
+
+== 1. rte_eal_init returned 8 (arguments consumed)
+  main lcore=1  lcore count=2  TSC hz=2700000000
+
+== 2. lcore table (RTE_LCORE_FOREACH)
+  lcore  cpu  socket  role     state
+      1    1       0  RTE      (main)
+      2    2       0  RTE      WAIT
+  main thread:                 lcore_id=1   allowed CPUs=1
+
+== serve mode: pid 7241, polling for up to 15 s (SIGINT stops)
+  control thread 'ch03-ctl':   lcore_id=-1  allowed CPUs=0,3
+  [lcore 2] saw quit after 120073159 loops
+  all lcores stopped; cleanup=0
+$ ls /var/run/dpdk/ch03-serve   (after a clean exit)
+  config
+  fbarray_memzone
+  fbarray_nohugemem
+
+=================== 9. exercise solutions ===================
+$ timeout -s INT -k 5 20 ./reverse_wait -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch03-ex1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch03-ex1/mp_socket
+EAL: Selected IOVA mode 'VA'
+launch f_add  on lcore 1
+launch f_mul  on lcore 2
+launch f_slow on lcore 3
+wait lcore 3 -> -5
+wait lcore 2 -> 42
+wait lcore 1 -> 2
+[exit code 0]
+--- exercise 4: SIGINT stops every lcore (hugepage run, -m 64)
+$ ls /dev/hugepages | grep ch03-stop | wc -l    (while running)
+32
+[exit code 0]
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch03-stop/mp_socket
+EAL: Selected IOVA mode 'PA'
+main: allocated 4 MB at 0x103dfdf80; polling until SIGINT
+lcore 1: stopping after 161421364 iterations
+lcore 0: stopping after 160940277 iterations
+lcore 2: stopping after 161684533 iterations
+main: all lcores returned; rte_eal_cleanup() = 0
+$ ls /dev/hugepages | grep ch03-stop | wc -l    (after SIGINT + cleanup)
+0
+--- the same program killed with SIGKILL (no cleanup can run)
+[exit code 137]
+$ ls /dev/hugepages | grep ch03-stop    (leftovers; first 3 and a count)
+  ch03-stopmap_0_0
+  ch03-stopmap_0_1
+  ch03-stopmap_0_2
+  ... 32 files of 2 MB = the whole -m 64
+$ ls /var/run/dpdk/ch03-stop
+  config
+  dpdk_telemetry.v2
+  fbarray_memseg-2048k-0-0
+  fbarray_memzone
+  hugepage_info
+  mp_socket
+(run.sh removed them)

@@ -1,0 +1,412 @@
+
+$ ./mbuf_anatomy -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-anat
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07-anat/mp_socket
+EAL: Selected IOVA mode 'VA'
+== 1. struct rte_mbuf on this build ==
+sizeof(struct rte_mbuf) = 128 bytes (2 cache lines of 64)
+RTE_IOVA_IN_MBUF=1 RTE_PKTMBUF_HEADROOM=128 RTE_MBUF_DEFAULT_BUF_SIZE=2176
+  buf_addr       off   0  size  8  cache line 0
+  buf_iova       off   8  size  8  cache line 0
+  data_off       off  16  size  2  cache line 0
+  refcnt         off  18  size  2  cache line 0
+  nb_segs        off  20  size  2  cache line 0
+  port           off  22  size  2  cache line 0
+  ol_flags       off  24  size  8  cache line 0
+  packet_type    off  32  size  4  cache line 0
+  pkt_len        off  36  size  4  cache line 0
+  data_len       off  40  size  2  cache line 0
+  vlan_tci       off  42  size  2  cache line 0
+  hash           off  44  size  8  cache line 0
+  vlan_tci_outer off  52  size  2  cache line 0
+  buf_len        off  54  size  2  cache line 0
+  pool           off  56  size  8  cache line 0
+  next           off  64  size  8  cache line 1
+  tx_offload     off  72  size  8  cache line 1
+  shinfo         off  80  size  8  cache line 1
+  priv_size      off  88  size  2  cache line 1
+  timesync       off  90  size  2  cache line 1
+  dynfield1      off  92  size 36  cache line 1
+
+== 2. pool and a fresh mbuf ==
+pool elt_size=2320 (= 128 mbuf + 16 priv + 2176 data room)
+m                 = 0x103ef7040  (+0)
+rte_mbuf_to_priv  = 0x103ef70c0  (+128)
+m->buf_addr       = 0x103ef70d0  (+144)
+mtod(m)           = 0x103ef7150  (+272)  buf_addr + data_off
+end of buffer     = 0x103ef7950  (+2320)  buf_addr + buf_len
+buf_len=2176 refcnt=1 nb_segs=1 next=(nil) pool=ch07_anat
+
+== 3. append / prepend / adj / trim ==
+fresh mbuf                   data_off=128 data_len=  0 pkt_len=  0 headroom=128 tailroom=2048
+append(100)                  data_off=128 data_len=100 pkt_len=100 headroom=128 tailroom=1948
+prepend(14)                  data_off=114 data_len=114 pkt_len=114 headroom=114 tailroom=1948
+adj(14)                      data_off=128 data_len=100 pkt_len=100 headroom=128 tailroom=1948
+trim(10)                     data_off=128 data_len= 90 pkt_len= 90 headroom=128 tailroom=1958
+mtod_offset(m, char *, 89) -> 'P' (last byte)
+
+== 4. overflow is refused, not clamped ==
+prepend(200) -> NULL
+append(3000) -> NULL
+trim(500)    -> -1
+after the failed calls       data_off=128 data_len= 90 pkt_len= 90 headroom=128 tailroom=1958
+
+rte_pktmbuf_dump(stdout, m, 32):
+dump mbuf at 0x103ef7040, iova=0x103ef70d0, buf_len=2176
+  pkt_len=90, ol_flags=0, nb_segs=1, port=65535, ptype=0
+  segment at 0x103ef7040, data=0x103ef7150, len=90, off=128, refcnt=1
+  Dump data at [0x103ef7150], len=32
+00000000: 50 50 50 50 50 50 50 50 50 50 50 50 50 50 50 50 | PPPPPPPPPPPPPPPP
+00000010: 50 50 50 50 50 50 50 50 50 50 50 50 50 50 50 50 | PPPPPPPPPPPPPPPP
+rte_pktmbuf_reset(m)         data_off=128 data_len=  0 pkt_len=  0 headroom=128 tailroom=2048
+
+== 5. ol_flags, packet_type and tx_offload ==
+RX ol_flags 0x0000000000000182 = RTE_MBUF_F_RX_RSS_HASH RTE_MBUF_F_RX_L4_CKSUM_GOOD RTE_MBUF_F_RX_IP_CKSUM_GOOD RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN 
+TX ol_flags 0x00f0000000000000 = RTE_MBUF_F_TX_IP_CKSUM RTE_MBUF_F_TX_UDP_CKSUM RTE_MBUF_F_TX_IPV4 
+packet_type 0x00000211 = L2_ETHER L3_IPV4 L4_UDP 
+packet_type 0x01113211 = L2_ETHER L3_IPV4 L4_UDP TUNNEL_VXLAN INNER_L2_ETHER INNER_L3_IPV4 INNER_L4_TCP 
+  l3 nibble via mask: 0x10 (RTE_PTYPE_L3_IPV4 = 0x10)
+l2_len=14 l3_len=20 l4_len=8 -> tx_offload=0x0000000000080a0e (l2 in bits 0-6, l3 in 7-15, l4 in 16-23)
+
+pool: avail=510 in_use=1 before free
+pool: avail=511 in_use=0 after free
+
+$ ./payload_build -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-pay
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07-pay/mp_socket
+EAL: Selected IOVA mode 'VA'
+after payload : data_off=128 data_len=30
+after header  : data_off=120 data_len=38
+priv area at m+128, flow_id=42 (not in the packet bytes)
+parsed header : magic=0xD7 version=1 length=30 seq=0x01020304
+parsed payload: "Hello from the mbuf data room!"
+
+rte_pktmbuf_dump(stdout, m, 64):
+dump mbuf at 0x103ff4040, iova=0x103ff40d0, buf_len=2176
+  pkt_len=38, ol_flags=0, nb_segs=1, port=65535, ptype=0
+  segment at 0x103ff4040, data=0x103ff4148, len=38, off=120, refcnt=1
+  Dump data at [0x103ff4148], len=38
+00000000: D7 01 00 1E 01 02 03 04 48 65 6C 6C 6F 20 66 72 | ........Hello fr
+00000010: 6F 6D 20 74 68 65 20 6D 62 75 66 20 64 61 74 61 | om the mbuf data
+00000020: 20 72 6F 6F 6D 21                               |  room!
+
+rte_hexdump of the first 16 bytes (header + start of text):
+app_hdr+text at [0x103ff4148], len=16
+00000000: D7 01 00 1E 01 02 03 04 48 65 6C 6C 6F 20 66 72 | ........Hello fr
+
+$ ./chain_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-chain
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07-chain/mp_socket
+EAL: Selected IOVA mode 'VA'
+after chaining: pkt_len=100 nb_segs=3 contiguous=0
+  seg 0: 0x103ff4040 data_len= 20 pkt_len=100 nb_segs=3 next=0x103ff5040
+  seg 1: 0x103ff5040 data_len= 40 pkt_len= 40 nb_segs=1 next=0x103ff6040
+  seg 2: 0x103ff6040 data_len= 40 pkt_len= 40 nb_segs=1 next=(nil)
+  (pkt_len/nb_segs in segments 1 and 2 are stale leftovers: only the head counts)
+
+rte_pktmbuf_read(off=56,len=16) -> copied into tmp (crosses a boundary) : "aaaa2bbbbbbbbbbb"
+rte_pktmbuf_read(off=24,len=8)  -> pointer into the mbuf data (no copy) : "aaaaaaaa"
+rte_pktmbuf_read(off=95,len=10) -> NULL (pkt_len is 100)
+
+pool in_use before linearize: 3
+rte_pktmbuf_linearize() = 0
+after linearize: pkt_len=100 nb_segs=1 contiguous=1
+  seg 0: 0x103ff4040 data_len=100 pkt_len=100 nb_segs=1 next=(nil)
+pool in_use after linearize : 1 (the two payload segments went back)
+bytes 16..27 now contiguous : "HHHH1aaaaaaa"
+
+chain onto a head with nb_segs=RTE_MBUF_MAX_NB_SEGS(65535) -> -75 (-EOVERFLOW)
+
+rte_pktmbuf_dump(stdout, hdr, 0):
+dump mbuf at 0x103ff4040, iova=0x103ff40c0, buf_len=2176
+  pkt_len=100, ol_flags=0, nb_segs=1, port=65535, ptype=0
+  segment at 0x103ff4040, data=0x103ff4140, len=100, off=128, refcnt=1
+pool in_use at the end: 0
+
+$ ./clone_extbuf -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-clone
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07-clone/mp_socket
+EAL: Selected IOVA mode 'VA'
+elt_size: data=2304 hdr=320 clone=128
+
+== Part A: one payload, 3 destinations ==
+payload refcnt=1
+  after payload alloc                in_use: data=1 hdr=0 clone=0
+dest 0: clone 0x1040a9240 INDIRECT=1 buf_addr == payload's, from_indirect==payload: 1 -> payload refcnt=2
+dest 1: clone 0x1040a9300 INDIRECT=1 buf_addr == payload's, from_indirect==payload: 1 -> payload refcnt=3
+dest 2: clone 0x1040a93c0 INDIRECT=1 buf_addr == payload's, from_indirect==payload: 1 -> payload refcnt=4
+  after 3 header+clone chains        in_use: data=1 hdr=3 clone=3
+pkt 0: nb_segs=2 pkt_len=40 "DEST-0: shared payload, written once...."
+pkt 1: nb_segs=2 pkt_len=40 "DEST-1: shared payload, written once...."
+pkt 2: nb_segs=2 pkt_len=40 "DEST-2: shared payload, written once...."
+free(payload)      -> payload refcnt=3 (buffer still alive)
+  after free(payload)                in_use: data=1 hdr=3 clone=3
+free(pkt 0)        -> payload refcnt=2
+                                     in_use: data=1 hdr=2 clone=2
+free(pkt 1)        -> payload refcnt=1
+                                     in_use: data=1 hdr=1 clone=1
+free(pkt 2)        -> last reference: payload returned to data_pool
+                                     in_use: data=0 hdr=0 clone=0
+
+== Part B: external buffer with a free callback ==
+shinfo at ext+1000, usable buf_len=1000, shinfo refcnt=1
+em: EXTERNAL=1 buf_addr==ext 1 data_off=128 data_len=16 mbuf refcnt=1
+2 clones: shinfo refcnt=3, em mbuf refcnt=1 (clones of an extbuf count in shinfo, not in em)
+free(em)
+  shinfo refcnt=2
+free(c1)
+  shinfo refcnt=1
+free(c2)  (last reference)
+  >>> ext_free_cb(addr=0x1040a8cc0, opaque="my 1 KiB buffer"): freeing external buffer
+  end                                in_use: data=0 hdr=0 clone=0
+
+$ ./dynfield_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-dyn
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07-dyn/mp_socket
+EAL: Selected IOVA mode 'VA'
+== 1. before any registration ==
+Reserved fields:
+Reserved flags:
+Free space in mbuf (0 = occupied, value = free zone alignment):
+  0000: 00 00 00 00 00 00 00 00
+  0008: 00 00 00 00 00 00 00 00
+  0010: 00 00 00 00 00 00 00 00
+  0018: 00 00 00 00 00 00 00 00
+  0020: 00 00 00 00 00 00 00 00
+  0028: 00 00 00 00 00 00 00 00
+  0030: 00 00 00 00 00 00 00 00
+  0038: 00 00 00 00 00 00 00 00
+  0040: 00 00 00 00 00 00 00 00
+  0048: 00 00 00 00 00 00 00 00
+  0050: 00 00 00 00 00 00 00 00
+  0058: 00 00 00 00 04 04 04 04
+  0060: 20 20 20 20 20 20 20 20
+  0068: 20 20 20 20 20 20 20 20
+  0070: 20 20 20 20 20 20 20 20
+  0078: 20 20 20 20 20 20 20 20
+Free bit in mbuf->ol_flags (0 = occupied, 1 = free):
+  0000: 0 0 0 0 0 0 0 0
+  0008: 0 0 0 0 0 0 0 0
+  0010: 0 0 0 0 0 0 0 1
+  0018: 1 1 1 1 1 1 1 1
+  0020: 1 1 1 1 1 1 1 1
+  0028: 1 0 0 0 0 0 0 0
+  0030: 0 0 0 0 0 0 0 0
+  0038: 0 0 0 0 0 0 0 0
+
+== 2. register our own field and flag ==
+ch07_latency_tsc -> offset 96 (inside dynfield1, which starts at 92)
+ch07_sampled     -> ol_flags bit 23 (mask 0x0000000000800000)
+
+== 3. the well-known Rx timestamp (used by PMDs, ch19/ch22) ==
+rte_dynfield_timestamp -> offset 104, rte_dynflag_rx_timestamp -> mask 0x0000000001000000 (bit 24)
+tx timestamp   -> offset 104 (same field), rte_dynflag_tx_timestamp -> bit 25
+
+== 4. same name again / conflicting / lookup ==
+register same name+params again -> 96 (same offset)
+same name, size 4               -> -1, rte_errno=File exists
+lookup("ch07_latency_tsc")      -> 96 (size 8)
+lookup("no_such_field")         -> -1, rte_errno=No such file or directory
+
+== 5. use them on an mbuf ==
+sampled packet: 194338 TSC cycles since stamp (~72 us at 2700000000 Hz)
+rx timestamp field = 123456789
+after reset: sampled flag=0, field bytes still hold the old value (stale!)
+
+== 6. after registration ==
+Reserved fields:
+  name=ch07_latency_tsc offset=96 size=8 align=8 flags=0
+  name=rte_dynfield_timestamp offset=104 size=8 align=8 flags=0
+Reserved flags:
+  name=ch07_sampled bitnum=23 flags=0
+  name=rte_dynflag_rx_timestamp bitnum=24 flags=0
+  name=rte_dynflag_tx_timestamp bitnum=25 flags=0
+Free space in mbuf (0 = occupied, value = free zone alignment):
+  0000: 00 00 00 00 00 00 00 00
+  0008: 00 00 00 00 00 00 00 00
+  0010: 00 00 00 00 00 00 00 00
+  0018: 00 00 00 00 00 00 00 00
+  0020: 00 00 00 00 00 00 00 00
+  0028: 00 00 00 00 00 00 00 00
+  0030: 00 00 00 00 00 00 00 00
+  0038: 00 00 00 00 00 00 00 00
+  0040: 00 00 00 00 00 00 00 00
+  0048: 00 00 00 00 00 00 00 00
+  0050: 00 00 00 00 00 00 00 00
+  0058: 00 00 00 00 04 04 04 04
+  0060: 00 00 00 00 00 00 00 00
+  0068: 00 00 00 00 00 00 00 00
+  0070: 10 10 10 10 10 10 10 10
+  0078: 10 10 10 10 10 10 10 10
+Free bit in mbuf->ol_flags (0 = occupied, 1 = free):
+  0000: 0 0 0 0 0 0 0 0
+  0008: 0 0 0 0 0 0 0 0
+  0010: 0 0 0 0 0 0 0 0
+  0018: 0 0 1 1 1 1 1 1
+  0020: 1 1 1 1 1 1 1 1
+  0028: 1 0 0 0 0 0 0 0
+  0030: 0 0 0 0 0 0 0 0
+  0038: 0 0 0 0 0 0 0 0
+
+$ ./pool_ops -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-ops
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07-ops/mp_socket
+EAL: Selected IOVA mode 'VA'
+== 1. ops selection ==
+user (--mbuf-pool-ops-name) : (not set)
+platform                    : (not set)
+build default               : ring_mp_mc
+rte_mbuf_best_mempool_ops() : ring_mp_mc
+rte_pktmbuf_pool_create() pool uses ops "ring_mp_mc"
+
+== 2. rte_pktmbuf_pool_create_by_ops (cache_size=0) ==
+  ring_mp_mc   -> pool ops "ring_mp_mc", avail=1023, alloc+free  20.2 ns/mbuf (median of 5, min 20.1 max 21.1)
+  ring_sp_sc   -> pool ops "ring_sp_sc", avail=1023, alloc+free  19.2 ns/mbuf (median of 5, min 19.2 max 19.4)
+  stack        -> pool ops "stack", avail=1023, alloc+free   6.8 ns/mbuf (median of 5, min 6.8 max 6.8)
+  lf_stack     -> pool ops "lf_stack", avail=1023, alloc+free   9.9 ns/mbuf (median of 5, min 9.9 max 10.3)
+  bucket       -> pool ops "bucket", avail=1023, alloc+free   9.4 ns/mbuf (median of 5, min 9.2 max 9.8)
+MBUF: error setting mempool handler
+  no_such_ops  -> NULL, rte_errno=22 (Invalid argument)
+
+== 3. rte_pktmbuf_pool_create_extbuf ==
+pool elt_size=152 (mbuf struct only: data is outside), flags=0x1 PINNED_EXT_BUF=1
+mbuf a: EXTERNAL=1 buf_addr=ext+0 buf_len=2176 data_off=128
+mbuf b: EXTERNAL=1 buf_addr=ext+2176
+after free: in_use=0 (the data buffers stay pinned to their mbufs)
+
+== 4. rte_pktmbuf_prefree_seg: the TX-completion path ==
+4 transmitted segments, refcnt = 1 1 2 1, pool in_use=4
+  prefree_seg(#0) -> recyclable
+  prefree_seg(#1) -> recyclable
+  prefree_seg(#2) -> NULL (still referenced)
+  prefree_seg(#3) -> recyclable
+put_bulk(3) -> pool in_use=1, #2 refcnt now 1
+free_seg(#2) -> pool in_use=0
+
+$ ./pool_ops -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-ops --mbuf-pool-ops-name=stack
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07-ops/mp_socket
+EAL: Selected IOVA mode 'VA'
+== 1. ops selection ==
+user (--mbuf-pool-ops-name) : stack
+platform                    : (not set)
+build default               : ring_mp_mc
+rte_mbuf_best_mempool_ops() : stack
+rte_pktmbuf_pool_create() pool uses ops "stack"
+
+== 2. rte_pktmbuf_pool_create_by_ops (cache_size=0) ==
+  ring_mp_mc   -> pool ops "ring_mp_mc", avail=1023, alloc+free  22.1 ns/mbuf (median of 5, min 20.4 max 24.1)
+  ring_sp_sc   -> pool ops "ring_sp_sc", avail=1023, alloc+free  19.6 ns/mbuf (median of 5, min 19.4 max 23.7)
+  stack        -> pool ops "stack", avail=1023, alloc+free   6.8 ns/mbuf (median of 5, min 6.8 max 6.9)
+  lf_stack     -> pool ops "lf_stack", avail=1023, alloc+free   9.9 ns/mbuf (median of 5, min 9.9 max 10.3)
+  bucket       -> pool ops "bucket", avail=1023, alloc+free   9.4 ns/mbuf (median of 5, min 9.4 max 9.5)
+MBUF: error setting mempool handler
+  no_such_ops  -> NULL, rte_errno=22 (Invalid argument)
+
+== 3. rte_pktmbuf_pool_create_extbuf ==
+pool elt_size=152 (mbuf struct only: data is outside), flags=0x1 PINNED_EXT_BUF=1
+mbuf a: EXTERNAL=1 buf_addr=ext+137088 buf_len=2176 data_off=128
+mbuf b: EXTERNAL=1 buf_addr=ext+134912
+after free: in_use=0 (the data buffers stay pinned to their mbufs)
+
+== 4. rte_pktmbuf_prefree_seg: the TX-completion path ==
+4 transmitted segments, refcnt = 1 1 2 1, pool in_use=4
+  prefree_seg(#0) -> recyclable
+  prefree_seg(#1) -> recyclable
+  prefree_seg(#2) -> NULL (still referenced)
+  prefree_seg(#3) -> recyclable
+put_bulk(3) -> pool in_use=1, #2 refcnt now 1
+free_seg(#2) -> pool in_use=0
+
+$ ./debug_aids -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-dbg
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07-dbg/mp_socket
+EAL: Selected IOVA mode 'VA'
+== 1. rte_mbuf_check ==
+RTE_LIBRTE_MBUF_DEBUG is OFF (library-internal checks compiled out) in this build
+  fresh mbuf with 100 bytes            -> OK
+  data_len=2100 (overruns buf_len)     -> INVALID: data length too big in mbuf segment
+  pkt_len=140 but one 100 B segment    -> INVALID: bad pkt_len
+  nb_segs=2 but next == NULL           -> INVALID: bad nb_segs
+  refcnt=0 (already freed?)            -> INVALID: bad ref cnt
+  repaired                             -> OK
+
+== 2. a double free goes unnoticed ==
+m=0x1040f2040, in_use=5 (m + 4 other packets)
+free(m)         in_use=4 avail=59
+free(m) again   in_use=3 avail=60   <- the counters say one mbuf too many is free
+alloc -> a=0x1040f2040
+alloc -> b=0x1040f2040   SAME mbuf handed out twice: two owners, silent corruption
+
+== 3. mbuf history ==
+MBUF: mbuf history recorder is not enabled
+(rebuild DPDK with -Dc_args=-DRTE_MBUF_HISTORY_DEBUG to record it;
+ usertools/dpdk-mbuf-history-parser.py decodes the dump)
+
+$ ./vlan_prepend -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-vlan
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07-vlan/mp_socket
+EAL: Selected IOVA mode 'VA'
+before: data_off=128 len=22
+untagged at [0x1040b46c0], len=22
+00000000: 02 00 00 00 00 02 02 00 00 00 00 01 08 00 70 61 | ..............pa
+00000010: 79 6C 6F 61 64 21                               | yload!
+after : data_off=124 len=26 (VLAN 100, PCP 3 -> TCI 0x6064)
+tagged at [0x1040b46bc], len=26
+00000000: 02 00 00 00 00 02 02 00 00 00 00 01 81 00 60 64 | ..............`d
+00000010: 08 00 70 61 79 6C 6F 61 64 21                   | ..payload!
+with headroom 2: vlan_prepend -> -1
+
+$ ./clone_corrupt -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-corrupt
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07-corrupt/mp_socket
+EAL: Selected IOVA mode 'VA'
+test 1: write through a clone
+  original  "CLONE-WROTE!" <-- CHANGED
+fix 1: rte_pktmbuf_copy, then write the copy
+  original  "ORIGINAL...." (as expected)
+  copy      "COPY-WROTE!!" (as expected)
+  copy buf_addr != orig buf_addr, copy refcnt=1, orig refcnt=2
+test 2: prepend a header on two clones
+  clone A   "BBB:ORIGINAL...." <-- CHANGED
+  clone B   "BBB:ORIGINAL...." (as expected)
+verdict: test1 CORRUPTED the original, fix original intact, test2 header A was overwritten by B
+
+$ ./dyn_order -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-dyno -- b
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07-dyno/mp_socket
+EAL: Selected IOVA mode 'VA'
+order: b
+  ch07_b                 (8 B) -> offset 96
+
+$ ./dyn_order -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-dyno -- ts b
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch07-dyno/mp_socket
+EAL: Selected IOVA mode 'VA'
+order: ts b
+  rte_dynfield_timestamp (8 B) -> offset 96
+  ch07_b                 (8 B) -> offset 104

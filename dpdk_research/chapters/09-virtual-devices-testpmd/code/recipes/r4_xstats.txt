@@ -1,0 +1,12 @@
+start
+sleep 1
+clear port xstats 0
+sleep 1
+stop
+set xstats-hide-zero on
+show port xstats 0
+clear port xstats 0
+start
+sleep 1
+stop
+show port xstats 0

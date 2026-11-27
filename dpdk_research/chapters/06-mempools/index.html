@@ -1,0 +1,1479 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 rte_mempool and rte_stack | DPDK from Zero to Expert</title>
+<meta name="description" content="How DPDK allocates millions of fixed-size objects per second: mempool creation and object layout, the 26.11 per-lcore cache algorithm, sizing and stranded objects, caches for non-EAL threads, mempool handlers including a custom one, and the rte_stack library with its ABA-safe lock-free variant.">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  /* ---- chapter 6 specific ---- */
+  .seg-btns { display: inline-flex; gap: .25rem; flex-wrap: wrap; }
+  .seg-btns .btn[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--heading); }
+  .w-note { font-size: .84rem; color: var(--text-muted); margin: .5rem 0 0; }
+  .w-out { font-size: .9rem; padding: .45rem .7rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); margin-top: .5rem; }
+  .ctl-row { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; margin-bottom: .6rem; font-size: .88rem; }
+  .ctl-row label { display: inline-flex; gap: .35rem; align-items: center; }
+  .ctl-row select { font: inherit; padding: .2rem .35rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
+  .sz-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .45rem .9rem; font-size: .88rem; }
+  .sz-grid label { display: flex; flex-direction: column; gap: .2rem; color: var(--text-muted); }
+  .sz-grid input { font: .9rem var(--font-mono); padding: .3rem .4rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); width: 100%; box-sizing: border-box; }
+  .sz-sum { margin-top: .7rem; font-size: .92rem; line-height: 1.7; }
+  .sz-sum strong { color: var(--heading); }
+  .sz-warn { color: var(--pitfall); font-weight: 600; min-height: 1.2em; }
+  .mm-legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; font-size: .8rem; margin-top: .4rem; }
+  .mm-legend .sw { display: inline-block; width: .9em; height: .9em; border-radius: 3px; vertical-align: -.1em; margin-right: .3em; border: 1px solid var(--border-strong); }
+  .decision { font-size: .9rem; }
+  .decision td:first-child { white-space: nowrap; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 06 &middot; Mempools and Stacks</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../05-rings/index.html"><span class="dir">&larr; Previous</span><span class="ttl">05 &middot; rte_ring: Lock-Free Queues Between Cores</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../07-mbufs/index.html"><span class="dir">Next &rarr;</span><span class="ttl">07 &middot; rte_mbuf: The Packet Buffer</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 06</div>
+      <h1><code>rte_mempool</code> and <code>rte_stack</code>: Fixed-Size Allocation at Line Rate</h1>
+      <p class="chapter-subtitle">A 10 Gb/s port can deliver almost 15 million packets per second, and every one of them needs a buffer that is allocated and freed again. After this chapter you can create and inspect a mempool, explain exactly what its per-lcore cache does in DPDK 26.11, size a pool so it never runs dry, pick or write a mempool handler, and use <code>rte_stack</code> knowing why its lock-free variant needs a 128-bit compare-and-swap.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-intermediate">Intermediate</span></li>
+        <li><span class="badge">~100 min</span></li>
+        <li><span class="badge">Prerequisites: ch5</span></li>
+        <li><span class="tag api">rte_mempool_create</span></li>
+        <li><span class="tag api">rte_mempool_get_bulk</span></li>
+        <li><span class="tag api">rte_mempool_cache_create</span></li>
+        <li><span class="tag api">RTE_MEMPOOL_REGISTER_OPS</span></li>
+        <li><span class="tag api">rte_stack_create</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Explain why packet processing uses fixed-size pools instead of <code>malloc()</code>, and where a pool's objects can be at any moment (ring, per-lcore caches, application).</li>
+        <li>Create a pool in one call (<code>rte_mempool_create</code>) or step by step (<code>create_empty</code> + <code>set_ops_byname</code> + <code>populate_default</code>), and read its layout: header, element, trailer, pages.</li>
+        <li>Predict <code>cache-&gt;len</code> after any get or put under the 26.11 cache algorithm, and say what changed in 26.07 and 26.11.</li>
+        <li>Size a pool so caches cannot strand it, and give non-EAL threads a cache of their own.</li>
+        <li>Compare the mempool handlers built here (ring, stack, lf_stack, pile, bucket), register your own with <code>RTE_MEMPOOL_REGISTER_OPS</code>, and use <code>rte_stack</code> in its three flavours.</li>
+        <li>Step through the ABA problem and show how a {pointer, counter} compare-and-swap prevents it.</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>code/run.sh</code>: builds all eight programs with the static <code>pkg-config libdpdk</code> flags and runs them with <code>--no-pci --no-huge</code> and a unique <code>--file-prefix=ch06-*</code>.</li>
+        <li><code>rte_mempool_dump()</code>: the pool's own report (sizes, chunks, per-lcore cache counts).</li>
+        <li><code>rte_rdtsc_precise()</code> from ch3, for cycle counts. Every number below is the median of 5 runs with min and max, measured on this 4-core VM with software only. Your numbers will differ; the ratios are what matter.</li>
+        <li>One run uses 2 MB hugepages (<code>-m 64</code>) to show what the page size does to the layout.</li>
+      </ul>
+    </section>
+
+    <div class="box">
+      <div class="box-title">Skeleton x-ray: where a mempool appears in <code>examples/skeleton/basicfwd.c</code></div>
+      <p>The smallest DPDK forwarder creates exactly one mempool, before it touches any port:</p>
+<pre><code class="language-c">#define NUM_MBUFS 8191          /* 2^13 - 1: see section 2 */
+#define MBUF_CACHE_SIZE 250     /* per-lcore cache: section 5 */
+mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports,
+        MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());</code></pre>
+      <p><code>rte_pktmbuf_pool_create()</code> is a thin wrapper around the mempool API of this chapter: it builds an <code>rte_mempool</code> whose objects are packet buffers. Chapter 7 opens those buffers up; chapter 8 hands the pool to the NIC's receive queues. Here we study the pool itself, with plain objects.</p>
+    </div>
+
+    <!-- ===================================================================== -->
+    <h2 id="why"><span class="sec-num">1</span>Why fixed-size pools?</h2>
+    <p>Think about what a forwarding loop does with memory. For every packet it receives, the NIC needs an empty buffer to write into; for every packet sent, the buffer must be released after the NIC has read it. At 14.88 million packets per second (10 Gb/s with 64-byte frames, ch1) that is a budget of about 67 ns, roughly 200 cycles at 3 GHz, for the <em>whole</em> packet. An allocator call that takes 100 cycles, or takes a lock that another core holds, does not fit.</p>
+    <p>General-purpose allocators (<code>malloc</code>, the kernel's slab) are built for objects of any size and for programs that allocate rarely. Packet processing allocates the <em>same size</em>, constantly, from many cores. A <span class="key-term">mempool</span> exploits that:</p>
+    <ul>
+      <li><strong>All memory up front.</strong> The pool reserves room for <em>N</em> objects of one size when you create it, from the EAL's memory (ch4). It never grows and never returns memory to the OS. Allocation can never call into the kernel.</li>
+      <li><strong>Allocation is a pointer pop.</strong> Free objects are tracked as a list of pointers. Getting an object means taking one pointer from that list; freeing means putting it back. No searching, no splitting, no coalescing: O(1).</li>
+      <li><strong>The list is pluggable.</strong> By default the free list is the lock-free <code>rte_ring</code> of ch5. It can also be a stack, a bucket allocator or a hardware buffer manager on NICs that have one. The pool calls this the <span class="key-term">handler</span> or <span class="key-term">mempool ops</span>.</li>
+      <li><strong>Each lcore has a private cache in front of it.</strong> Most gets and puts touch only a small per-lcore array of pointers, with no atomic instructions at all. This is the single biggest performance idea in this chapter (section 5).</li>
+    </ul>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 720 300" role="img" aria-labelledby="f-where-t">
+        <title id="f-where-t">Where the 640 objects of a pool live: 384 in the backend ring, 128 in lcore 1's cache, 128 in lcore 2's cache, 0 in lcore 0's cache, measured with stranded_cache</title>
+        <text class="svg-title" x="20" y="22">Where objects live (pool ch06_strand2, n = 640, measured)</text>
+        <rect class="svg-box c2" x="20" y="40" width="680" height="250" rx="10"/>
+        <text class="svg-label bold" x="34" y="62">struct rte_mempool "ch06_strand2": 640 objects, each [header | element | trailer]</text>
+        <rect class="svg-box c5" x="230" y="210" width="260" height="56"/>
+        <text class="svg-label center bold" x="360" y="230">handler: ring "RG_MP_ch06_strand2"</text>
+        <text class="svg-label center mono" x="360" y="250">384 free pointers</text>
+        <rect class="svg-box c1" x="40" y="100" width="190" height="62"/>
+        <text class="svg-label center bold" x="135" y="120">lcore 0 cache</text>
+        <text class="svg-label center mono" x="135" y="142">len 0 / 128</text>
+        <rect class="svg-box c1" x="265" y="100" width="190" height="62"/>
+        <text class="svg-label center bold" x="360" y="120">lcore 1 cache</text>
+        <text class="svg-label center mono" x="360" y="142">len 128 / 128</text>
+        <rect class="svg-box c1" x="490" y="100" width="190" height="62"/>
+        <text class="svg-label center bold" x="585" y="120">lcore 2 cache</text>
+        <text class="svg-label center mono" x="585" y="142">len 128 / 128</text>
+        <path class="svg-arrow c5 both" d="M150,164 L280,208"/>
+        <path class="svg-arrow c5 both" d="M360,164 L360,208"/>
+        <path class="svg-arrow c5 both" d="M570,164 L440,208"/>
+        <text class="svg-label small" x="70" y="214">refill / flush</text>
+        <text class="svg-label small" x="560" y="214">in bulks of size/2</text>
+        <path class="svg-arrow c3 both" d="M135,98 L135,78"/>
+        <path class="svg-arrow c3 both" d="M360,98 L360,78"/>
+        <path class="svg-arrow c3 both" d="M585,98 L585,78"/>
+        <text class="svg-label small" x="600" y="86">app get/put: no atomics</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The three places a free object can be. The numbers are the real state printed by <code>stranded_cache</code> (section 6) after two worker lcores ran a balanced get/put loop. <code>rte_mempool_avail_count()</code> reports 640 = 384 + 128 + 128, but lcore 0 can only reach the 384 in the ring. Objects in the application's hands are the fourth place; <code>rte_mempool_in_use_count()</code> counts them.</figcaption>
+    </figure>
+
+    <!-- ===================================================================== -->
+    <h2 id="create"><span class="sec-num">2</span>Creating a pool</h2>
+    <h3 id="create-oneshot">One call: <code>rte_mempool_create()</code></h3>
+    <p>The full prototype (from <code>lib/mempool/rte_mempool.h</code>) has eleven parameters, but most programs use only the first four:</p>
+<pre><code class="language-c">struct rte_mempool *
+rte_mempool_create(const char *name, unsigned n, unsigned elt_size,
+                   unsigned cache_size, unsigned private_data_size,
+                   rte_mempool_ctor_t *mp_init, void *mp_init_arg,
+                   rte_mempool_obj_cb_t *obj_init, void *obj_init_arg,
+                   int socket_id, unsigned int flags);</code></pre>
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>Parameter</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>name</code></td><td>Unique name. <code>rte_mempool_lookup(name)</code> finds the pool again, also from a secondary process (ch16). The ring handler names its ring <code>RG_MP_&lt;name&gt;</code>, so keep names short (<code>RTE_MEMPOOL_NAMESIZE</code>).</td></tr>
+        <tr><td><code>n</code></td><td>Number of objects. The ring handler creates a ring of <code>rte_align32pow2(n + 1)</code> slots (<code>drivers/mempool/ring/rte_mempool_ring.c</code>), so <code>n = 2<sup>q</sup> &minus; 1</code> (1023, 8191, ...) wastes no ring slots.</td></tr>
+        <tr><td><code>elt_size</code></td><td>Bytes per object, as your code sees it.</td></tr>
+        <tr><td><code>cache_size</code></td><td>Size of each lcore's private cache; 0 disables caching. Must be &le; <code>n</code> (section 5).</td></tr>
+        <tr><td><code>private_data_size</code></td><td>Extra bytes stored after the pool header, for the pool's owner. The mbuf library keeps its <code>struct rte_pktmbuf_pool_private</code> there.</td></tr>
+        <tr><td><code>mp_init</code>, <code>mp_init_arg</code></td><td>Called once, for the pool, before objects are initialised: fill your private data here.</td></tr>
+        <tr><td><code>obj_init</code>, <code>obj_init_arg</code></td><td>Called once per object at creation time with <code>(mp, arg, obj, obj_idx)</code>. Use it to pre-build anything that never changes. <code>rte_pktmbuf_init()</code> is the mbuf library's obj_init.</td></tr>
+        <tr><td><code>socket_id</code></td><td>NUMA node for the memory; <code>rte_socket_id()</code> for "where I run", <code>SOCKET_ID_ANY</code> for anywhere (ch4).</td></tr>
+        <tr><td><code>flags</code></td><td><code>RTE_MEMPOOL_F_SP_PUT</code> / <code>_SC_GET</code> (single-producer/consumer ring), <code>_NO_SPREAD</code>, <code>_NO_CACHE_ALIGN</code>, <code>_NO_IOVA_CONTIG</code> (section 3). 0 = multi-producer/multi-consumer ring.</td></tr>
+      </tbody>
+    </table></div>
+    <p>On failure it returns NULL and sets <code>rte_errno</code>: <code>EINVAL</code> for bad sizes or flags, <code>ENOMEM</code> when the EAL memory is exhausted, <code>EEXIST</code> for a duplicate name.</p>
+
+    <h3 id="create-steps">Step by step: <code>create_empty</code> + <code>set_ops_byname</code> + <code>populate</code></h3>
+    <p><code>rte_mempool_create()</code> is a convenience wrapper. It performs four separate steps, which you call yourself when you need control over one of them, for example to choose a different handler:</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 170" role="img" aria-labelledby="f-steps-t">
+        <title id="f-steps-t">The four steps hidden inside rte_mempool_create</title>
+        <rect class="svg-box c2" x="10" y="40" width="160" height="70"/>
+        <text class="svg-label center bold mono" x="90" y="62">create_empty()</text>
+        <text class="svg-label center small" x="90" y="82">header, caches,</text>
+        <text class="svg-label center small" x="90" y="97">sizes; no objects</text>
+        <rect class="svg-box c5" x="190" y="40" width="160" height="70"/>
+        <text class="svg-label center bold mono" x="270" y="62">set_ops_byname()</text>
+        <text class="svg-label center small" x="270" y="82">pick the handler,</text>
+        <text class="svg-label center small" x="270" y="97">e.g. "stack"</text>
+        <rect class="svg-box c2" x="370" y="40" width="160" height="70"/>
+        <text class="svg-label center bold mono" x="450" y="62">populate_default()</text>
+        <text class="svg-label center small" x="450" y="82">handler alloc(), carve</text>
+        <text class="svg-label center small" x="450" y="97">memory, enqueue objs</text>
+        <rect class="svg-box c3" x="550" y="40" width="160" height="70"/>
+        <text class="svg-label center bold mono" x="630" y="62">obj_iter(obj_init)</text>
+        <text class="svg-label center small" x="630" y="82">run your constructor</text>
+        <text class="svg-label center small" x="630" y="97">on every object</text>
+        <path class="svg-arrow" d="M170,75 L188,75"/><path class="svg-arrow" d="M350,75 L368,75"/><path class="svg-arrow" d="M530,75 L548,75"/>
+        <rect class="svg-box ghost" x="4" y="22" width="712" height="100"/>
+        <text class="svg-label small" x="12" y="17">rte_mempool_create() = all four, with the default handler "ring_mp_mc" (or ring_sp_*/*_sc from the flags)</text>
+        <text class="svg-label small muted" x="12" y="145">alternatives to populate_default(): populate_anon() (anonymous mmap), populate_virt() / populate_iova() (your memory)</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The step-wise API. <code>handler_bakeoff.c</code> and <code>custom_ops.c</code> use it to select a handler by name.</figcaption>
+    </figure>
+
+    <h3 id="basics-code">Walkthrough: <code>mempool_basics.c</code></h3>
+    <p>The first program creates 1023 objects of 64 bytes with a cache of 32 and an <code>obj_init</code> that stamps each object with its index:</p>
+<div class="code-block">
+  <div class="code-head"><span class="file">code/mempool_basics.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="47" data-hl="53"><code class="language-c">static void
+number_obj(struct rte_mempool *mp, void *arg, void *obj, unsigned int obj_idx)
+{
+	struct my_obj *o = obj;
+	(void)mp;
+	(void)arg;
+	o-&gt;seq = obj_idx;
+	o-&gt;uses = 0;
+}</code></pre>
+</div>
+<div class="code-block">
+  <div class="code-head"><span class="file">code/mempool_basics.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="97" data-hl="99,101,104"><code class="language-c">	/* ---- 1. create ---------------------------------------------------- */
+	mp = rte_mempool_create("ch06_basic",   /* name, also used for lookup  */
+				NB_OBJ,        /* number of objects            */
+				sizeof(struct my_obj), /* element size         */
+				CACHE,         /* per-lcore cache size          */
+				0,             /* private data after the header */
+				NULL, NULL,    /* mp_init + arg (none)          */
+				number_obj, NULL, /* obj_init + arg            */
+				rte_socket_id(),
+				0);            /* flags: MP/MC ring by default  */
+	if (mp == NULL)
+		rte_exit(EXIT_FAILURE, "mempool create: %s\n", rte_strerror(rte_errno));</code></pre>
+</div>
+    <p>Then it takes one object, looks at the header in front of it, takes a bulk of 8, and finally tries to take more than the pool has. The output (EAL banner lines trimmed; the dump is shown in section 10):</p>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./mempool_basics -l 0 --no-pci --no-huge -m 64 --file-prefix=ch06-basic</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+    avail=1023 in_use=0 full=1 empty=0
+[2] got obj 0x1040b5a00 seq=15; header at 0x1040b59e8 (obj - 24), hdr-&gt;mp=this pool
+<span class="hl">    rte_mempool_from_obj(obj) == mp: yes; iova=0x1040b5a00</span>
+<span class="hl">    avail=1022 in_use=1  (1 handed out, 15 sit in this lcore's cache)</span>
+<span class="hl">[3] get_bulk(8) = 0, seq numbers: 15 14 13 12 11 10 9 8</span>
+    distance between consecutive objects in memory: 192 bytes
+    get_bulk(1019) = 0; avail now 4
+<span class="hl">    get_bulk(8) with only 4 left = -105 (No buffer space available); avail still 4</span>
+    after returning everything: avail=1023 in_use=0 full=1
+[4] memory footprint
+  pool ch06_basic elt=64 hdr=64 trailer=64 -&gt; total_obj_size=192
+           page size used for layout: 4096 bytes; 1 chunk(s), 199680 bytes
+           =&gt; 195 bytes of memory per object (1023 objects)
+  pool ch06_big elt=2304 hdr=64 trailer=0 -&gt; total_obj_size=2368
+           page size used for layout: 4096 bytes; 1 chunk(s), 2093696 bytes
+           =&gt; 4097 bytes of memory per object (511 objects)
+[5] rte_mempool_lookup("ch06_basic") found it</pre>
+</div>
+    <p class="output-caption">What to notice:</p>
+    <ul>
+      <li><strong>The first object has <code>seq=15</code>, not 0.</strong> The cache was empty, so the get refilled it with 16 objects (cache_size/2) from the ring, which hands them out in order 0..15. The cache is a stack, so the most recently added pointer (15) comes out first. The bulk of 8 continues downward: 15, 14, ..., 8 (object 15 was put back first, so it is on top again). Section 5 explains the "refill size/2" rule.</li>
+      <li><strong>avail=1022 after one get</strong>, and the program shows that 15 objects sit in lcore 0's cache. <code>rte_mempool_avail_count()</code> counts ring plus all caches.</li>
+      <li><strong>The header is 24 bytes before the object</strong> and holds a pointer back to the pool. <code>rte_mempool_from_obj(obj)</code> reads it, which is how code that only has an object (for example the mbuf library freeing a buffer) finds the pool to return it to. <code>rte_mempool_virt2iova()</code> reads the object's IO address from the same header (ch4).</li>
+      <li><strong>A bulk get is all or nothing.</strong> With 4 objects left, <code>get_bulk(8)</code> takes nothing and returns <code>-105</code>, which is <code>-ENOBUFS</code>. The header comment says <code>-ENOENT</code>, but the value is whatever the handler returns, and the ring handler returns <code>-ENOBUFS</code>. Always test for <code>&lt; 0</code>, never for a specific code.</li>
+    </ul>
+    <details><summary>Full source: <code>code/mempool_basics.c</code></summary>
+<pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Chapter 6, example 1: mempool_basics.c
+ *
+ * What it shows
+ *   1. rte_mempool_create() of 1023 x 64-byte objects. An obj_init callback
+ *      writes a sequence number into every object at creation time.
+ *   2. The object layout: header | element | trailer, and how
+ *      rte_mempool_from_obj() finds the pool from an object pointer.
+ *   3. get/put of a single object and of a bulk, the counters
+ *      rte_mempool_avail_count() / rte_mempool_in_use_count(), and the
+ *      all-or-nothing rule of a bulk get (-ENOENT, nothing taken).
+ *   4. rte_mempool_mem_iter(): how many memory chunks back the pool, and a
+ *      second, mbuf-sized (2304-byte) pool that shows how the page size (4 KB with
+ *      --no-huge, 2 MB with hugepages) changes the bytes used per object.
+ *   5. rte_mempool_lookup() and rte_mempool_dump().
+ *
+ * Run:  ./mempool_basics -l 0 --no-pci --no-huge -m 64 --file-prefix=ch06-basic
+ *       ./mempool_basics -l 0 --no-pci -m 64 --file-prefix=ch06-basic-huge
+ */
+#include &lt;stdio.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;errno.h&gt;
+
+#include &lt;rte_eal.h&gt;
+#include &lt;rte_errno.h&gt;
+#include &lt;rte_lcore.h&gt;
+#include &lt;rte_memory.h&gt;
+#include &lt;rte_mempool.h&gt;
+#include &lt;rte_debug.h&gt;
+
+#define NB_OBJ   1023      /* 2^10 - 1: the ring backend holds n+1 rounded up to 2^q */
+#define OBJ_SIZE 64
+#define CACHE    32
+
+/* Our object: 64 bytes, the first field is a sequence number. */
+struct my_obj {
+	uint32_t seq;          /* written once by obj_init */
+	uint32_t uses;         /* incremented by the application */
+	uint8_t  payload[OBJ_SIZE - 8];
+};
+
+/* obj_init: called once per object, by rte_mempool_create(), before the
+ * pool is handed to us. obj_idx runs 0..n-1 in memory order. */
+static void
+number_obj(struct rte_mempool *mp, void *arg, void *obj, unsigned int obj_idx)
+{
+	struct my_obj *o = obj;
+	(void)mp;
+	(void)arg;
+	o-&gt;seq = obj_idx;
+	o-&gt;uses = 0;
+}
+
+/* mem_iter callback: one call per memory chunk (struct rte_mempool_memhdr). */
+static void
+count_chunk(struct rte_mempool *mp, void *arg, struct rte_mempool_memhdr *m,
+	    unsigned int idx)
+{
+	size_t *total = arg;
+	(void)mp;
+	(void)idx;
+	*total += m-&gt;len;
+}
+
+/* Report how much memory a pool really uses, per object. */
+static void
+report_footprint(struct rte_mempool *mp)
+{
+	size_t total = 0, pg = 0;
+	uint32_t chunks = rte_mempool_mem_iter(mp, count_chunk, &amp;total);
+
+	rte_mempool_get_page_size(mp, &amp;pg);
+	printf("  pool %-8s elt=%u hdr=%u trailer=%u -&gt; total_obj_size=%u\n",
+	       mp-&gt;name, mp-&gt;elt_size, mp-&gt;header_size, mp-&gt;trailer_size,
+	       mp-&gt;header_size + mp-&gt;elt_size + mp-&gt;trailer_size);
+	printf("           page size used for layout: %zu bytes; %u chunk(s), %zu bytes\n",
+	       pg, chunks, total);
+	printf("           =&gt; %.0f bytes of memory per object (%u objects)\n",
+	       (double)total / mp-&gt;populated_size, mp-&gt;populated_size);
+}
+
+int
+main(int argc, char **argv)
+{
+	struct rte_mempool *mp, *big;
+	struct my_obj *one;
+	void *objs[8];
+	int ret, i;
+
+	ret = rte_eal_init(argc, argv);
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, "EAL init failed\n");
+
+	/* ---- 1. create ---------------------------------------------------- */
+	mp = rte_mempool_create("ch06_basic",   /* name, also used for lookup  */
+				NB_OBJ,        /* number of objects            */
+				sizeof(struct my_obj), /* element size         */
+				CACHE,         /* per-lcore cache size          */
+				0,             /* private data after the header */
+				NULL, NULL,    /* mp_init + arg (none)          */
+				number_obj, NULL, /* obj_init + arg            */
+				rte_socket_id(),
+				0);            /* flags: MP/MC ring by default  */
+	if (mp == NULL)
+		rte_exit(EXIT_FAILURE, "mempool create: %s\n", rte_strerror(rte_errno));
+
+	printf("[1] created '%s': size=%u cache_size=%u ops=%s\n", mp-&gt;name,
+	       mp-&gt;size, mp-&gt;cache_size, rte_mempool_get_ops(mp-&gt;ops_index)-&gt;name);
+	printf("    avail=%u in_use=%u full=%d empty=%d\n",
+	       rte_mempool_avail_count(mp), rte_mempool_in_use_count(mp),
+	       rte_mempool_full(mp), rte_mempool_empty(mp));
+
+	/* ---- 2. one object, and its layout ---------------------------------- */
+	if (rte_mempool_get(mp, (void **)&amp;one) &lt; 0)
+		rte_exit(EXIT_FAILURE, "get failed\n");
+	one-&gt;uses++;
+	{
+		struct rte_mempool_objhdr *hdr = (struct rte_mempool_objhdr *)
+			RTE_PTR_SUB(one, sizeof(*hdr));
+		printf("[2] got obj %p seq=%u; header at %p (obj - %zu), hdr-&gt;mp=%s\n",
+		       (void *)one, one-&gt;seq, (void *)hdr, sizeof(*hdr),
+		       hdr-&gt;mp == mp ? "this pool" : "?");
+		printf("    rte_mempool_from_obj(obj) == mp: %s; iova=0x%" PRIx64 "\n",
+		       rte_mempool_from_obj(one) == mp ? "yes" : "no",
+		       (uint64_t)rte_mempool_virt2iova(one));
+	}
+	printf("    avail=%u in_use=%u  (1 handed out, %u sit in this lcore's cache)\n",
+	       rte_mempool_avail_count(mp), rte_mempool_in_use_count(mp),
+	       rte_mempool_default_cache(mp, rte_lcore_id())-&gt;len);
+	rte_mempool_put(mp, one);
+
+	/* ---- 3. bulk get/put ---------------------------------------------- */
+	ret = rte_mempool_get_bulk(mp, objs, 8);
+	printf("[3] get_bulk(8) = %d, seq numbers:", ret);
+	for (i = 0; i &lt; 8; i++)
+		printf(" %u", ((struct my_obj *)objs[i])-&gt;seq);
+	printf("\n    distance between consecutive objects in memory: %ld bytes\n",
+	       (long)((char *)objs[0] - (char *)objs[1]));
+	rte_mempool_put_bulk(mp, objs, 8);
+
+	/* All-or-nothing: take everything, then ask for one more bulk. */
+	{
+		void **all = malloc(sizeof(void *) * NB_OBJ);
+		if (all == NULL)
+			rte_exit(EXIT_FAILURE, "malloc\n");
+		ret = rte_mempool_get_bulk(mp, all, NB_OBJ - 4);
+		printf("    get_bulk(%d) = %d; avail now %u\n", NB_OBJ - 4, ret,
+		       rte_mempool_avail_count(mp));
+		ret = rte_mempool_get_bulk(mp, objs, 8);
+		printf("    get_bulk(8) with only %u left = %d (%s); avail still %u\n",
+		       rte_mempool_avail_count(mp), ret, strerror(-ret),
+		       rte_mempool_avail_count(mp));
+		rte_mempool_put_bulk(mp, all, NB_OBJ - 4);
+		free(all);
+	}
+	printf("    after returning everything: avail=%u in_use=%u full=%d\n",
+	       rte_mempool_avail_count(mp), rte_mempool_in_use_count(mp),
+	       rte_mempool_full(mp));
+
+	/* ---- 4. memory footprint ------------------------------------------ */
+	printf("[4] memory footprint\n");
+	report_footprint(mp);
+	/* 2304 bytes = one default packet buffer: struct rte_mbuf (128) +
+	 * RTE_MBUF_DEFAULT_BUF_SIZE (2048 data + 128 headroom). See ch7. */
+	big = rte_mempool_create("ch06_big", 511, 2304, 0, 0, NULL, NULL,
+				 NULL, NULL, rte_socket_id(), 0);
+	if (big == NULL)
+		rte_exit(EXIT_FAILURE, "big create: %s\n", rte_strerror(rte_errno));
+	report_footprint(big);
+
+	/* ---- 5. lookup and dump ------------------------------------------- */
+	printf("[5] rte_mempool_lookup(\"ch06_basic\") %s\n",
+	       rte_mempool_lookup("ch06_basic") == mp ? "found it" : "failed");
+	rte_mempool_dump(stdout, mp);
+
+	rte_mempool_free(big);
+	rte_mempool_free(mp);
+	rte_eal_cleanup();
+	return 0;
+}</code></pre>
+</details>
+
+    <!-- ===================================================================== -->
+    <h2 id="layout"><span class="sec-num">3</span>Object layout and the memory behind a pool</h2>
+    <p>Every object in a pool is surrounded by bookkeeping that the pool adds. <code>rte_mempool_calc_obj_size()</code> in <code>lib/mempool/rte_mempool.c</code> decides the sizes:</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 190" role="img" aria-labelledby="f-obj-t">
+        <title id="f-obj-t">Layout of one mempool object: 64-byte header holding the 24-byte objhdr, the element, and a trailer used for channel spreading</title>
+        <text class="svg-title" x="20" y="22">One object of pool ch06_basic (measured: header 64, elt 64, trailer 64 = 192 bytes)</text>
+        <rect class="svg-box c7" x="60" y="60" width="200" height="56"/>
+        <text class="svg-label center bold" x="160" y="80">header (64)</text>
+        <text class="svg-label center small mono" x="160" y="100">objhdr: next, mp, iova (24 B)</text>
+        <rect class="svg-box c2" x="260" y="60" width="200" height="56"/>
+        <text class="svg-label center bold" x="360" y="80">element (elt_size 64)</text>
+        <text class="svg-label center small" x="360" y="100">your struct my_obj</text>
+        <rect class="svg-box c3" x="460" y="60" width="200" height="56"/>
+        <text class="svg-label center bold" x="560" y="80">trailer (64)</text>
+        <text class="svg-label center small" x="560" y="100">padding for channel spreading</text>
+        <path class="svg-arrow c2" d="M360,150 L360,120"/>
+        <text class="svg-label center mono small" x="360" y="166">void *obj (what get() returns)</text>
+        <path class="svg-arrow c7" d="M300,150 C 260,150 240,140 236,120"/>
+        <text class="svg-label mono small" x="60" y="166">obj - sizeof(objhdr): rte_mempool_from_obj()</text>
+        <path class="svg-line" d="M60,48 L660,48"/>
+        <text class="svg-label center small muted" x="360" y="42">total_obj_size = 192 = 3 cache lines: the stride between objects</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The pointer you get points at the element. The header sits just in front of it (padded to a cache line unless <code>RTE_MEMPOOL_F_NO_CACHE_ALIGN</code>), and the trailer pads the object to a stride that spreads object starts over memory channels.</figcaption>
+    </figure>
+    <ul>
+      <li><strong>Header.</strong> <code>struct rte_mempool_objhdr</code> holds a list link, the owning pool and the object's IOVA: 24 bytes on 64-bit, rounded up to 64 so the element starts on a cache line.</li>
+      <li><strong>Element.</strong> Your <code>elt_size</code>, rounded up to a cache line.</li>
+      <li><strong>Trailer and channel spreading.</strong> A DRAM system interleaves cache lines over several memory channels and ranks. Packet code mostly reads the <em>first</em> cache line of each buffer. If every object were 2 cache lines long and you have 4 channels, all object starts would land on channels 0 and 2 only. So, unless you pass <code>RTE_MEMPOOL_F_NO_SPREAD</code>, the pool grows the object (header + element) to a number of cache lines that has no common factor with <code>channels &times; ranks</code> (EAL options <code>-n</code> and <code>-r</code>; 4 &times; 1 is assumed when unknown). 128 bytes = 2 lines becomes 3 lines = 192 bytes: that is the 64-byte trailer above. A 2304-byte mbuf-sized element plus its header is 37 lines, already coprime with 4, so its trailer is 0. The DPDK docs note that Arm interconnects hash addresses over channels, so this padding is not applied there.</li>
+      <li><strong>No object crosses a page.</strong> The NIC needs each buffer to be contiguous in IO address space. Unless the pool has <code>RTE_MEMPOOL_F_NO_IOVA_CONTIG</code>, the default populate step places objects so that none straddles a page boundary; the leftover space at the end of each page is wasted. With 2 MB hugepages that waste is tiny. With <code>--no-huge</code>, pages are 4 KB, and a 2368-byte object leaves 1728 bytes unused in every page.</li>
+    </ul>
+    <p>Part 4 of <code>mempool_basics</code> measures this with <code>rte_mempool_mem_iter()</code>, which calls you back once per memory chunk; the program sums the chunk lengths and divides by the object count. Here are both runs side by side:</p>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./mempool_basics -l 0 --no-pci --no-huge -m 64 --file-prefix=ch06-basic</span>
+[4] memory footprint
+  pool ch06_basic elt=64 hdr=64 trailer=64 -&gt; total_obj_size=192
+           page size used for layout: 4096 bytes; 1 chunk(s), 199680 bytes
+<span class="hl">           =&gt; 195 bytes of memory per object (1023 objects)</span>
+  pool ch06_big elt=2304 hdr=64 trailer=0 -&gt; total_obj_size=2368
+           page size used for layout: 4096 bytes; 1 chunk(s), 2093696 bytes
+<span class="hl">           =&gt; 4097 bytes of memory per object (511 objects)</span>
+  pool=0x1040e5b00</pre>
+</div>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./mempool_basics -l 0 --no-pci -m 64 --file-prefix=ch06-basic-huge</span>
+[4] memory footprint
+  pool ch06_basic elt=64 hdr=64 trailer=64 -&gt; total_obj_size=192
+           page size used for layout: 2097152 bytes; 1 chunk(s), 196608 bytes
+<span class="hl">           =&gt; 192 bytes of memory per object (1023 objects)</span>
+  pool ch06_big elt=2304 hdr=64 trailer=0 -&gt; total_obj_size=2368
+           page size used for layout: 2097152 bytes; 1 chunk(s), 1212416 bytes
+<span class="hl">           =&gt; 2373 bytes of memory per object (511 objects)</span>
+  pool=0x1041efb00</pre>
+</div>
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>Pool</th><th class="num">total_obj_size</th><th class="num">bytes/object, 4 KB pages</th><th class="num">bytes/object, 2 MB pages</th></tr></thead>
+      <tbody>
+        <tr><td>1023 &times; 64 B</td><td class="num">192</td><td class="num">195</td><td class="num">192</td></tr>
+        <tr><td>511 &times; 2304 B (one default mbuf)</td><td class="num">2368</td><td class="num">4097</td><td class="num">2373</td></tr>
+      </tbody>
+    </table></div>
+    <p>An mbuf pool under <code>--no-huge</code> needs 1.7 times the memory it needs with hugepages. That is why the course's testpmd runs pass <code>--total-num-mbufs</code>, and why some shipped samples only start with a larger <code>-m</code> under <code>--no-huge</code> (ch4, ch9).</p>
+
+    <div class="widget" id="w-memmap">
+      <div class="widget-head"><span class="widget-title">Pool memory map: objects on pages</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="ctl-row">
+          <label>element size
+            <select id="mm-elt">
+              <option value="64" selected>64 B</option><option value="128">128 B</option><option value="192">192 B</option>
+              <option value="512">512 B</option><option value="1500">1500 B</option><option value="2304">2304 B (mbuf)</option><option value="3000">3000 B</option>
+            </select></label>
+          <span class="seg-btns" role="group" aria-label="page size"><button class="btn small" type="button" data-mm-page="4096">4 KB pages</button><button class="btn small" type="button" data-mm-page="2097152">2 MB pages</button></span>
+          <span class="seg-btns" role="group" aria-label="channel spreading"><button class="btn small" type="button" data-mm-spread="1">spreading on</button><button class="btn small" type="button" data-mm-spread="0">NO_SPREAD</button></span>
+        </div>
+        <svg viewBox="0 0 720 280" role="img" aria-label="Objects laid out over 16 KB of pool memory"></svg>
+        <div class="mm-legend"><span><span class="sw" style="background:var(--c7-soft)"></span>header</span><span><span class="sw" style="background:var(--c2-soft)"></span>element</span><span><span class="sw" style="background:var(--c3-soft)"></span>trailer (spreading)</span><span><span class="sw" style="background:transparent"></span>gap = wasted at the page end</span></div>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">header / elt / trailer</div><div class="stat-value"><span class="mm-hdr"></span>/<span class="mm-elt"></span>/<span class="mm-tr"></span></div></div>
+          <div class="stat"><div class="stat-label">stride</div><div class="stat-value mm-tot"></div><div class="stat-unit">bytes</div></div>
+          <div class="stat"><div class="stat-label">objects per page</div><div class="stat-value mm-pp"></div></div>
+          <div class="stat"><div class="stat-label">memory per object</div><div class="stat-value mm-bpo"></div><div class="stat-unit">bytes</div></div>
+          <div class="stat"><div class="stat-label">wasted</div><div class="stat-value mm-waste"></div></div>
+          <div class="stat"><div class="stat-label">object starts on ch 0/1/2/3</div><div class="stat-value mm-ch"></div></div>
+        </div>
+        <p class="w-note">The model applies the rules of <code>rte_mempool_calc_obj_size()</code> (4 channels &times; 1 rank, cache-aligned) and of the default populate helper (no object crosses a page). The channel count assumes simple line interleaving: channel = (address / 64) mod 4. Try 64 B with and without spreading: without it, every object starts on channel 0 or 2. Then try 2304 B on 4 KB pages: one object per page, 42% wasted, matching the measured 4097 bytes per object.</p>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <h2 id="getput"><span class="sec-num">4</span>Getting and putting objects</h2>
+    <p>The data-path API is small, and all of it is <code>static inline</code> in <code>rte_mempool.h</code>, so a get compiles into a handful of instructions in your loop:</p>
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>Call</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td><code>rte_mempool_get(mp, &amp;obj)</code></td><td>One object. Returns 0 or a negative error.</td></tr>
+        <tr><td><code>rte_mempool_get_bulk(mp, objs, n)</code></td><td><code>n</code> objects or none at all. Returns 0 or a negative error.</td></tr>
+        <tr><td><code>rte_mempool_put(mp, obj)</code>, <code>rte_mempool_put_bulk(mp, objs, n)</code></td><td>Give objects back. Returns <code>void</code>: a put cannot fail in a correctly sized pool.</td></tr>
+        <tr><td><code>rte_mempool_generic_get/put(mp, objs, n, cache)</code></td><td>The same with an explicit cache pointer: your own cache, or <code>NULL</code> to bypass caching (section 7).</td></tr>
+        <tr><td><code>rte_mempool_avail_count(mp)</code>, <code>rte_mempool_in_use_count(mp)</code></td><td>Free objects (ring + all caches) and objects handed out. Not on the fast path: they read every lcore's cache.</td></tr>
+        <tr><td><code>rte_mempool_full(mp)</code>, <code>rte_mempool_empty(mp)</code></td><td>avail == size, avail == 0.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Prefer bulk calls. A burst of 32 packets is handled with one <code>get_bulk(32)</code>, and the per-call overhead is shared by 32 objects. This matches the burst API of ch8.</p>
+    <div class="callout pitfall"><div class="callout-title">Pitfall: putting an object into the wrong pool, or twice</div><p>The pool cannot check what you give it (unless DPDK is built with <code>RTE_LIBRTE_MEMPOOL_DEBUG</code>, which adds cookies around objects). Putting the same object twice means it will later be handed to two users at once; putting an object from pool A into pool B corrupts both counts. The symptoms show up much later, as two packets that overwrite each other. Free each object exactly once, into the pool it came from: <code>rte_mempool_from_obj(obj)</code> tells you which.</p></div>
+
+    <!-- ===================================================================== -->
+    <h2 id="cache"><span class="sec-num">5</span>The per-lcore cache</h2>
+    <p>The default handler is an MP/MC ring. Each get or put on it is at least one atomic compare-and-swap on the ring head, and when several lcores share the pool, the cache line holding that head moves between cores on every operation. The last part of this section measures what that costs here: about 70 cycles per object. The fix is the same as in any CPU: keep a small private stock.</p>
+    <p>Each lcore gets a <span class="key-term">cache</span>: an array of object pointers used as a stack, plus a length. Because only that lcore ever touches it, no atomics are needed. In 26.11 the structure is:</p>
+<pre><code class="language-c">struct __rte_cache_aligned rte_mempool_cache {
+	uint32_t size;	      /* capacity, fixed at creation */
+	uint32_t len;	      /* objects in the cache now */
+	/* (per-lcore stats here if RTE_LIBRTE_MEMPOOL_STATS) */
+	alignas(RTE_CACHE_LINE_SIZE) void *objs[];   /* variable size since 26.11 */
+};</code></pre>
+    <p>The per-lcore caches live right after the pool header (and its private data); <code>rte_mempool_default_cache(mp, lcore_id)</code> indexes them with the new <code>mp-&gt;sizeof_cache_per_lcore</code> stride. It returns NULL when the pool has no cache or when the caller is not an EAL lcore.</p>
+
+    <h3 id="cache-algo">The 26.11 algorithm</h3>
+    <p>Read <code>rte_mempool_do_generic_put()</code> and <code>rte_mempool_do_generic_get()</code> in <code>lib/mempool/rte_mempool.h</code>; they are short. Here is the decision table they implement, for a cache of capacity <code>size</code> holding <code>len</code> objects:</p>
+    <div class="table-wrap"><table class="compact decision">
+      <thead><tr><th>Operation</th><th>Condition</th><th>What happens</th></tr></thead>
+      <tbody>
+        <tr><td>put(n)</td><td><code>len + n &le; size</code></td><td>Copy the pointers on top of the cache. No ring access.</td></tr>
+        <tr><td>put(n)</td><td>no room, <code>n &le; size/2</code></td><td>Enqueue the <strong>bottom</strong> <code>size/2</code> pointers (the oldest, least likely still in the CPU cache) to the ring, slide the upper part down, then push the <code>n</code>.</td></tr>
+        <tr><td>put(n)</td><td>no room, <code>n &gt; size/2</code></td><td>Bypass: enqueue the <code>n</code> straight to the ring. The cache is untouched.</td></tr>
+        <tr><td>get(n)</td><td><code>n &le; len</code></td><td>Pop <code>n</code> from the top. No ring access.</td></tr>
+        <tr><td>get(n)</td><td><code>n &gt; len</code>, remainder <code>n &minus; len &le; size/2</code></td><td>Take all <code>len</code>, refill exactly <code>size/2</code> from the ring, serve the remainder from the refill.</td></tr>
+        <tr><td>get(n)</td><td><code>n &gt; len</code>, remainder <code>&gt; size/2</code> (or the refill fails)</td><td>Take all <code>len</code>, get the remainder straight from the ring. If that fails too, the cache is restored and the call returns an error.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Two properties follow: the cache <strong>never holds more than <code>size</code></strong>, and it only ever talks to the ring in chunks of <strong><code>size/2</code></strong> (or for requests too big to be worth copying twice). An lcore that alternates gets and puts of a burst keeps its cache between 0 and <code>size</code> and hits the ring once every <code>size/2</code> objects at most.</p>
+
+    <div class="widget" id="w-trace">
+      <div class="widget-head"><span class="widget-title">Cache trace: step through the measured run</span><span class="badge">predict, then step</span></div>
+      <div class="widget-body">
+        <div class="ctl-row"><span>algorithm:</span>
+          <span class="seg-btns" role="group" aria-label="cache algorithm"><button class="btn small" type="button" data-alg="new">26.11 (measured)</button><button class="btn small" type="button" data-alg="old">previous, flushthresh (simulated)</button></span>
+        </div>
+        <svg viewBox="0 0 680 345" role="img" aria-label="Application, per-lcore cache and backend ring with object counts after each step"></svg>
+        <div class="w-out"><span class="trace-meas"></span> &middot; ring calls so far: <strong class="trace-calls">0</strong></div>
+        <p class="w-note">Each step is one line of <code>cache_explorer</code> part A below. In 26.11 mode the bars come from a model of the code and the widget checks the model against the measured numbers (the browser console would warn on a mismatch). The "previous" mode replays the same operations through a simplified model of the DPDK 23.07&ndash;26.03 algorithm: the cache could grow to <code>flushthresh</code> = 1.5 &times; size, an overflow flushed the whole cache, and a refill fetched <code>size</code> + remainder. Watch the red bar when it exceeds 256.</p>
+      </div>
+    </div>
+
+    <p>The program that produced the trace calls the normal API and prints <code>cache-&gt;len</code> (read through <code>rte_mempool_default_cache()</code>) and the ring's count after each call:</p>
+<div class="code-block">
+  <div class="code-head"><span class="file">code/cache_explorer.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="94" data-hl="97,100,103"><code class="language-c">	step_get(mp, c, 1,   "miss: refill size/2=128 from backend, hand out 1");
+	step_put(mp, c, 1,   "fits: push on top of the cache");
+	step_put(mp, c, 100, "fits: 128+100 &lt;= 256");
+	step_put(mp, c, 50,  "overflow: flush the bottom 128, keep hot 100, add 50");
+	step_get(mp, c, 150, "hit: all 150 served from the cache");
+	step_get(mp, c, 32,  "miss: refill 128, hand out 32");
+	step_get(mp, c, 200, "drain 96, remaining 104 &lt;= 128: refill 128, give 104");
+	step_get(mp, c, 200, "drain 24, remaining 176 &gt; 128: direct from backend");
+	step_put(mp, c, 200, "fits: 0+200 &lt;= 256 (even though 200 &gt; size/2)");
+	step_put(mp, c, 200, "no room and 200 &gt; size/2: bypass, straight to backend");
+	rte_mempool_cache_flush(c, mp);</code></pre>
+</div>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./cache_explorer -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch06-cache</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+[A] pool n=4095, cache size=256 (size/2=128) on lcore 0
+  start               cache.len=0    backend=4095 
+  stock 400 (cache=NULL) cache.len=0    backend=3695  | app now holds 400
+  get 1    -&gt; ret=0 cache.len=127  backend=3567  | miss: refill size/2=128 from backend, hand out 1
+  put 1    -&gt;       cache.len=128  backend=3567  | fits: push on top of the cache
+  put 100  -&gt;       cache.len=228  backend=3567  | fits: 128+100 &lt;= 256
+<span class="hl">  put 50   -&gt;       cache.len=150  backend=3695  | overflow: flush the bottom 128, keep hot 100, add 50</span>
+  get 150  -&gt; ret=0 cache.len=0    backend=3695  | hit: all 150 served from the cache
+  get 32   -&gt; ret=0 cache.len=96   backend=3567  | miss: refill 128, hand out 32
+<span class="hl">  get 200  -&gt; ret=0 cache.len=24   backend=3439  | drain 96, remaining 104 &lt;= 128: refill 128, give 104</span>
+  get 200  -&gt; ret=0 cache.len=0    backend=3263  | drain 24, remaining 176 &gt; 128: direct from backend
+  put 200  -&gt;       cache.len=200  backend=3263  | fits: 0+200 &lt;= 256 (even though 200 &gt; size/2)
+<span class="hl">  put 200  -&gt;       cache.len=200  backend=3463  | no room and 200 &gt; size/2: bypass, straight to backend</span>
+  cache_flush -&gt;      cache.len=0    backend=3663  | everything cached goes back
+  put 432  -&gt;       cache.len=0    backend=4095  | return the rest (direct: &gt; size/2 and no room)
+  in_use=0, nheld=0</pre>
+</div>
+
+    <h3 id="cache-history">What changed in 26.07 and 26.11</h3>
+    <div class="callout warning"><div class="callout-title">Version note: most blog posts describe the old cache</div>
+      <p>If you learned mempools from older material, three things are different now:</p>
+      <ul>
+        <li><strong>26.07 changed the algorithm</strong> (release_26_07.rst, "Changed mempool cache behaviour"). The cache used to have a <code>flushthresh</code> of 1.5 &times; <code>size</code>, so its <em>effective</em> size was 50% larger than requested; now it holds exactly <code>size</code> and moves <code>size/2</code> at a time. The release notes advise applications where each lcore <em>only</em> gets or <em>only</em> puts (pipelines whose Rx and Tx run on different lcores) to <strong>double</strong> their cache size, or their cache miss rate doubles. The animation below shows why.</li>
+        <li><strong>26.11 removed the size limit</strong> (release_26_11.rst, API changes). <code>cache_size</code> can be anything up to <code>n</code>; <code>RTE_MEMPOOL_CACHE_MAX_SIZE</code> (512) is kept only so that old code that passes it as a cache size still compiles.</li>
+        <li><strong>26.11 changed the structs.</strong> <code>struct rte_mempool_cache</code> lost <code>flushthresh</code> and <code>unused</code>, and <code>objs[]</code> became a flexible array; <code>struct rte_mempool</code> gained <code>sizeof_cache_per_lcore</code>. Code that did <code>sizeof(struct rte_mempool_cache)</code> or indexed <code>mp-&gt;local_cache[lcore]</code> directly must use <code>rte_mempool_default_cache()</code>.</li>
+      </ul>
+    </div>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./cache_explorer -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch06-cache</span>
+[B] cache_size limits (pool n=4095, RTE_MEMPOOL_CACHE_MAX_SIZE=512)
+  cache_size=512   ok, sizeof_cache_per_lcore=4224 bytes
+<span class="hl">  cache_size=1024  ok, sizeof_cache_per_lcore=8320 bytes</span>
+  cache_size=4095  ok, sizeof_cache_per_lcore=32896 bytes
+<span class="err">  cache_size=4096  FAILED: Invalid argument</span></pre>
+</div>
+    <p class="output-caption">A cache of 1024, twice the old maximum, is accepted; so is 4095 = <code>n</code>. One more than <code>n</code> fails with <code>EINVAL</code>. Note how fast <code>sizeof_cache_per_lcore</code> grows: 8 bytes per slot plus guard lines, times <code>RTE_MAX_LCORE</code> lcores, is reserved in every pool whether or not those lcores exist. With <code>RTE_MAX_LCORE</code> = 128 in this build, the 4095-entry cache costs 128 &times; 32896 bytes, about 4 MiB, per pool.</p>
+
+    <h3 id="cache-pipeline">Pipelines: one lcore only gets, another only puts</h3>
+    <p>In a pipeline (ch15), the Rx lcore allocates buffers and the Tx lcore frees them. The Rx lcore's cache only drains and the Tx lcore's cache only fills, so the "absorb gets and puts locally" benefit is gone; what remains is batching ring accesses. Under the 26.11 algorithm, each refill brings <code>size/2</code> objects and each flush sends <code>size/2</code>. Under the old one, a refill brought <code>size</code> (plus the request) and a flush sent the whole cache, up to 1.5 &times; <code>size</code>. Same <code>cache_size</code>, roughly twice the ring traffic now: hence the advice to double it.</p>
+    <div class="widget" id="w-pipe">
+      <div class="widget-head"><span class="widget-title">Two lcores, one pool: ring traffic</span><span class="badge">animation</span></div>
+      <div class="widget-body">
+        <div class="ctl-row">
+          <span class="seg-btns" role="group" aria-label="pattern"><button class="btn small" type="button" data-pat="pipe" aria-pressed="true">pipeline: Rx gets, Tx puts</button><button class="btn small" type="button" data-pat="rtc" aria-pressed="false">run to completion</button></span>
+          <span class="seg-btns" role="group" aria-label="algorithm"><button class="btn small" type="button" data-palg="new" aria-pressed="true">26.11</button><button class="btn small" type="button" data-palg="old" aria-pressed="false">previous</button></span>
+          <label>cache_size <input type="range" id="pipe-size" min="64" max="512" step="64" value="128"> <output id="pipe-size-o">128</output></label>
+        </div>
+        <svg viewBox="0 0 680 300" role="img" aria-label="Two per-lcore caches above a shared ring, with refills and flushes moving between them"></svg>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">objects moved</div><div class="stat-value pipe-objs">0</div></div>
+          <div class="stat"><div class="stat-label">ring calls per 1000 objects</div><div class="stat-value pipe-rate">0</div></div>
+        </div>
+        <p class="w-note">Each tick, lcore 1 gets a burst of 32 and lcore 2 puts a burst of 32 (pipeline), or each lcore gets and puts its own burst (run to completion). Purple blocks are ring calls, labelled with the objects they move. Compare the rate for 26.11 at 256 with "previous" at 128; then switch to run to completion, where both algorithms reach almost zero ring calls.</p>
+      </div>
+    </div>
+
+    <h3 id="cache-speed">How much does the cache buy?</h3>
+    <p>Part D of <code>cache_explorer</code> runs the main lcore and one worker lcore at the same time, each doing <code>get_bulk(32)</code> + <code>put_bulk(32)</code> 200,000 times on the same pool:</p>
+<div class="code-block">
+  <div class="code-head"><span class="file">code/cache_explorer.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="179" data-hl="191,192"><code class="language-c">static int
+bench_loop(void *arg)
+{
+	uint64_t *cycles = arg;
+	void *objs[BURST];
+	uint64_t t0;
+	int i;
+
+	while (!go)
+		rte_pause();
+	t0 = rte_rdtsc_precise();
+	for (i = 0; i &lt; ITERS; i++) {
+		if (rte_mempool_get_bulk(bench_mp, objs, BURST) == 0)
+			rte_mempool_put_bulk(bench_mp, objs, BURST);
+	}
+	*cycles = rte_rdtsc_precise() - t0;
+	return 0;</code></pre>
+</div>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./cache_explorer -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch06-cache</span>
+[D] 2 lcores (0 and 1) each: get_bulk(32)+put_bulk(32) x 200000, 5 runs
+  cache 0    : median   71.95 cycles per get+put of one object (min 69.01, max 79.91)
+<span class="hl">  cache 256  : median    1.12 cycles per get+put of one object (min 1.11, max 1.33)</span>
+  cache 1024 : median    1.11 cycles per get+put of one object (min 1.09, max 1.12)</pre>
+</div>
+    <p class="output-caption">With no cache, both lcores fight over the ring's head and tail cache lines: around 70 cycles per object (the spread between runs is large, which is itself typical of contention). With a cache, each lcore stays inside its own cache after the first refill: about 1.1 cycles per object, some 65 times faster. A cache of 1024 is no faster than 256 here because this loop never needs more than 32 cached objects. A bigger cache is not free: section 6 shows its cost.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="stranded"><span class="sec-num">6</span>Choosing the size: stranded objects</h2>
+    <p>A cache is private. Objects in lcore 1's cache are free, they are counted by <code>rte_mempool_avail_count()</code>, but no other lcore can take them. The API documentation says it plainly: a get "can return -ENOENT when the local cache and common pool are empty, even if cache from other lcores are full". <code>stranded_cache.c</code> makes it happen with a pool of 256 and a cache of 128 on 3 lcores. Each worker runs a loop that frees everything it allocates:</p>
+<div class="code-block">
+  <div class="code-head"><span class="file">code/stranded_cache.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="35" data-hl="51"><code class="language-c">/* A balanced worker: two bursts of 64 out, two bursts of 64 back. */
+static int
+worker_balanced(void *arg)
+{
+	void *a[64], *b[64];
+	int i;
+	(void)arg;
+
+	for (i = 0; i &lt; 1000; i++) {
+		if (rte_mempool_get_bulk(mp, a, 64) != 0)
+			continue;
+		if (rte_mempool_get_bulk(mp, b, 64) != 0) {
+			rte_mempool_put_bulk(mp, a, 64);
+			continue;
+		}
+		rte_mempool_put_bulk(mp, a, 64);
+		rte_mempool_put_bulk(mp, b, 64);
+	}
+	return 0;</code></pre>
+</div>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./stranded_cache -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch06-strand</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+[1] after workers ran a balanced get/put loop and stopped:
+<span class="err">  main lcore: get_bulk(1) = -105 FAILED although avail_count says there are free objects</span>
+<span class="err">  main lcore: get_bulk(64) = -105 FAILED although avail_count says there are free objects</span>
+[2] after each worker ran rte_mempool_cache_flush() on itself:
+  main lcore: get_bulk(256) = 0 ok
+[3] resized pool: n = in_flight 256 + 3 lcores x cache 128 = 640
+    after the same worker loop:
+  main lcore: get_bulk(256) = 0 ok
+    cache_count[1]=128
+    cache_count[2]=128
+    total_cache_count=256</pre>
+</div>
+    <p class="output-caption">After the balanced loop each worker's cache ends full: the last two puts of 64 landed in the cache. 2 &times; 128 = 256 is the whole pool. The main lcore sees 256 available and cannot get even one object. Fix 1 flushes the caches <em>on their own lcores</em> (a cache has no lock, so another thread must not touch it while its owner might run). Fix 2 sizes the pool so that full caches cannot starve anyone.</p>
+    <p>So, for a pool that feeds NIC queues, count every place an object can be at the worst moment:</p>
+    <div class="box"><div class="box-title">Sizing rule</div>
+      <p><code>n &ge; (Rx descriptors of all queues) + (Tx descriptors of all queues) + nb_lcores &times; cache_size + nb_lcores &times; burst + anything else the app holds</code></p>
+      <p>Rx descriptors are always loaded with empty buffers; Tx descriptors hold sent buffers until the driver frees them (ch8); each cache can be full; each lcore can hold a burst in its hands. Then round up to 2<sup>q</sup> &minus; 1. Exercise 1 checks the formula on a real pool with 4 lcores.</p>
+    </div>
+    <div class="widget" id="w-size">
+      <div class="widget-head"><span class="widget-title">Pool sizing calculator</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="sz-grid">
+          <label>ports <input id="sz-ports" type="number" min="1" value="2"></label>
+          <label>queues per port <input id="sz-rxq" type="number" min="1" value="2"></label>
+          <label>Rx descriptors per queue <input id="sz-rxd" type="number" min="0" value="1024"></label>
+          <label>Tx descriptors per queue <input id="sz-txd" type="number" min="0" value="1024"></label>
+          <label>lcores using the pool <input id="sz-lcores" type="number" min="1" value="4"></label>
+          <label>cache_size <input id="sz-cache" type="number" min="0" value="256"></label>
+          <label>burst <input id="sz-burst" type="number" min="1" value="32"></label>
+          <label>other objects held <input id="sz-extra" type="number" min="0" value="0"></label>
+        </div>
+        <div class="sz-sum">Rx <strong class="sz-rx"></strong> + Tx <strong class="sz-tx"></strong> + caches <strong class="sz-c"></strong> + bursts <strong class="sz-h"></strong> + other <strong class="sz-e"></strong> = <strong class="sz-n"></strong> objects &rarr; round to <strong class="sz-p"></strong><br><span class="sz-mem"></span><div class="sz-warn"></div></div>
+      </div>
+    </div>
+    <div class="callout tip"><div class="callout-title">Tip: choosing cache_size</div><p>Large enough to cover a few bursts in each direction (the default <code>MBUF_CACHE_SIZE</code> of 250 in the samples is fine for 32-packet bursts), and an even number. For pipelines, consider twice that (see above). Make the pool big enough for <code>nb_lcores &times; cache_size</code> on top of what the descriptors need, or set the cache to 0 for pools that only a control thread uses. With the <code>pile</code> handler, pick <code>cache_size/2</code> as a multiple of 32 (section 8).</p></div>
+
+    <!-- ===================================================================== -->
+    <h2 id="noneal"><span class="sec-num">7</span>Caches for non-EAL threads</h2>
+    <p>A thread you create with <code>pthread_create()</code> is not an EAL lcore: <code>rte_lcore_id()</code> returns <code>LCORE_ID_ANY</code>, <code>rte_mempool_default_cache()</code> returns NULL, and every get and put goes to the ring. If such a thread allocates often (a control thread, a thread owned by another library), give it a <span class="key-term">user-owned cache</span>:</p>
+<div class="code-block">
+  <div class="code-head"><span class="file">code/cache_explorer.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="146" data-hl="146,151,155"><code class="language-c">	uc = rte_mempool_cache_create(256, SOCKET_ID_ANY);
+	if (uc == NULL) {
+		printf("  cache_create failed\n");
+		return NULL;
+	}
+	rte_mempool_generic_get(mp, objs, BURST, uc);
+	printf("  user cache: generic_get(32) -&gt; cache.len=%u (refill 128, hand out 32)\n", uc-&gt;len);
+	rte_mempool_generic_put(mp, objs, BURST, uc);
+	printf("  user cache: generic_put(32) -&gt; cache.len=%u\n", uc-&gt;len);
+	rte_mempool_cache_flush(uc, mp);   /* MUST flush before freeing it */
+	printf("  after flush cache.len=%u, pool avail=%u\n", uc-&gt;len,
+	       rte_mempool_avail_count(mp));
+	rte_mempool_cache_free(uc);</code></pre>
+</div>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./cache_explorer -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch06-cache</span>
+<span class="hl">[C] non-EAL pthread: rte_lcore_id()=LCORE_ID_ANY, default cache=(nil)</span>
+  user cache: generic_get(32) -&gt; cache.len=96 (refill 128, hand out 32)
+  user cache: generic_put(32) -&gt; cache.len=128
+  after flush cache.len=0, pool avail=4095</pre>
+</div>
+    <p>The user cache follows exactly the same algorithm. Two rules: only one thread may use a given cache at a time (it has no lock), and you must <code>rte_mempool_cache_flush()</code> it before <code>rte_mempool_cache_free()</code>, or the objects in it are lost to the pool forever. (Registering the thread with <code>rte_thread_register()</code>, ch3, gives it an lcore id and therefore a default cache too.)</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="handlers"><span class="sec-num">8</span>Mempool handlers</h2>
+    <p>The pool does not store free objects itself. It calls a table of function pointers, <code>struct rte_mempool_ops</code>, whose most important entries are <code>alloc</code>, <code>free</code>, <code>enqueue</code>, <code>dequeue</code> and <code>get_count</code>. Handlers register into a global <code>rte_mempool_ops_table</code> (at most <code>RTE_MEMPOOL_MAX_OPS_IDX</code> = 32), and the pool stores only an <em>index</em> into that table:</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 210" role="img" aria-labelledby="f-ops-t">
+        <title id="f-ops-t">A mempool stores ops_index; the ops table maps it to handler callbacks; the handler keeps its private store in mp->pool_data</title>
+        <rect class="svg-box c2" x="20" y="40" width="190" height="120"/>
+        <text class="svg-label bold" x="34" y="62">struct rte_mempool</text>
+        <text class="svg-label mono small" x="34" y="86">name "ch06_custom"</text>
+        <text class="svg-label mono small" x="34" y="106">ops_index = 0</text>
+        <text class="svg-label mono small" x="34" y="126">pool_data -&gt;</text>
+        <text class="svg-label mono small" x="34" y="146">local_cache ...</text>
+        <rect class="svg-box c5" x="270" y="20" width="200" height="170"/>
+        <text class="svg-label bold" x="284" y="40">rte_mempool_ops_table</text>
+        <text class="svg-label mono small" x="284" y="64">[0] ch06_array</text>
+        <text class="svg-label mono small" x="284" y="84">[1] bucket</text>
+        <text class="svg-label mono small" x="284" y="104">[2] ring_mp_mc</text>
+        <text class="svg-label mono small" x="284" y="124">... ring_*, stack</text>
+        <text class="svg-label mono small" x="284" y="144">[9] lf_stack</text>
+        <text class="svg-label mono small" x="284" y="164">[10] pile</text>
+        <path class="svg-arrow c5" d="M150,101 L280,64"/>
+        <rect class="svg-box c1" x="520" y="20" width="185" height="100"/>
+        <text class="svg-label bold" x="532" y="40">ops callbacks</text>
+        <text class="svg-label mono small" x="532" y="62">alloc / free</text>
+        <text class="svg-label mono small" x="532" y="80">enqueue / dequeue</text>
+        <text class="svg-label mono small" x="532" y="98">get_count (+ optional)</text>
+        <path class="svg-arrow c5" d="M420,64 L518,64"/>
+        <rect class="svg-box c3" x="520" y="140" width="185" height="50"/>
+        <text class="svg-label center bold small" x="612" y="160">handler's private store</text>
+        <text class="svg-label center small" x="612" y="178">ring, stack, array, HW pool</text>
+        <path class="svg-arrow c3" d="M130,126 C 300,215 450,200 518,170"/>
+      </svg>
+      <figcaption><span class="fig-num"></span>Why an index and not a pointer: a secondary process (ch16) maps the same pool memory, but its function addresses differ. The index stays valid as long as every process registers the same handlers in the same order; the order here comes from link order (constructors run before <code>main()</code>), which is why <code>ring_mp_mc</code> was index 1 in <code>mempool_basics</code> and index 2 in <code>custom_ops</code>. Handlers loaded with <code>-d</code> must be loaded in the same order in every process.</figcaption>
+    </figure>
+    <p>The handlers built in this DPDK (<code>drivers/mempool/</code>):</p>
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>Name</th><th>Store</th><th>Reuse order</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>ring_mp_mc</code></td><td>MP/MC <code>rte_ring</code></td><td>FIFO</td><td>The default (<code>RTE_MBUF_DEFAULT_MEMPOOL_OPS</code>). Safe with any number of threads.</td></tr>
+        <tr><td><code>ring_sp_sc</code>, <code>ring_mp_sc</code>, <code>ring_sp_mc</code></td><td>ring with single-producer/consumer ends</td><td>FIFO</td><td>Only when you can guarantee one putter and/or one getter thread. Chosen by <code>rte_mempool_create()</code> flags <code>RTE_MEMPOOL_F_SP_PUT</code> / <code>_SC_GET</code>.</td></tr>
+        <tr><td><code>ring_mt_hts</code>, <code>ring_mt_rts</code></td><td>HTS / RTS rings (ch5)</td><td>FIFO</td><td>For threads that may be preempted (overcommitted cores, VMs).</td></tr>
+        <tr><td><code>stack</code></td><td><code>rte_stack</code>, spinlock</td><td>LIFO</td><td>Hands back the most recently freed object, which is likely still in the CPU cache.</td></tr>
+        <tr><td><code>lf_stack</code></td><td><code>rte_stack</code>, lock-free (<code>RTE_STACK_F_LF</code>)</td><td>LIFO</td><td>No lock, so a preempted thread cannot block others. x86_64 and arm64 only.</td></tr>
+        <tr><td><code>pile</code> <span class="tag">26.11</span></td><td><code>rte_stack</code> pile (<code>RTE_STACK_F_PILE</code>)</td><td>LIFO per 32-object bulk</td><td>Lock-free, optimised for bulks. Best when <code>cache_size/2</code> is a multiple of <code>RTE_STACK_PILE_BULK_SIZE</code> (32).</td></tr>
+        <tr><td><code>bucket</code></td><td>objects grouped in contiguous buckets</td><td>per bucket</td><td>Supports <code>rte_mempool_get_contig_blocks()</code> for drivers that want physically adjacent objects.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Hardware handlers (Marvell cnxk/octeontx NPA, NXP DPAA/DPAA2 buffer managers) implement the same ops on top of a NIC's buffer manager, so that the NIC allocates and frees buffers itself. For packet buffers, <code>rte_mbuf_best_mempool_ops()</code> chooses the handler: the EAL option <code>--mbuf-pool-ops-name</code> wins, then the platform's preference, then <code>RTE_MBUF_DEFAULT_MEMPOOL_OPS</code> (ch7).</p>
+
+    <h3 id="bakeoff">The bakeoff</h3>
+    <p><code>handler_bakeoff.c</code> builds the same pool over each handler with the step-wise API, with <code>cache_size = 0</code> so that every call reaches the handler:</p>
+<div class="code-block">
+  <div class="code-head"><span class="file">code/handler_bakeoff.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="56" data-hl="67,73,79"><code class="language-c">static struct rte_mempool *
+make_pool(const char *ops)
+{
+	struct rte_mempool *mp;
+	int ret;
+
+	mp = rte_mempool_create_empty("ch06_bake", POOL_N, 64,
+				      0 /* no cache: measure the handler */,
+				      0, rte_socket_id(), 0);
+	if (mp == NULL)
+		return NULL;
+	ret = rte_mempool_set_ops_byname(mp, ops, NULL);
+	if (ret != 0) {
+		printf("  %-11s set_ops_byname: %s\n", ops, strerror(-ret));
+		rte_mempool_free(mp);
+		return NULL;
+	}
+	ret = rte_mempool_populate_default(mp);
+	if (ret &lt; 0) {
+		printf("  %-11s populate: %s\n", ops, strerror(-ret));
+		rte_mempool_free(mp);
+		return NULL;
+	}
+	rte_mempool_obj_iter(mp, number_obj, NULL);
+	return mp;</code></pre>
+</div>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./handler_bakeoff -l 0 --no-pci --no-huge -m 128 --file-prefix=ch06-ops</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+pool n=2047, elt 64 B, cache 0, 1 lcore; burst 32 x 100000 iterations, 5 runs
+handler       median      min      max | singles: 1st get-&gt;reget | bulk64 reget[0..4] (got[0..4])
+ring_mp_mc      2.02     2.02     2.07 | 648,649,650-&gt;653,654,655 | 722 723 724 725 726 (658 659 660 661 662)
+<span class="hl">ring_sp_sc      1.56     1.55     1.57 | 648,649,650-&gt;653,654,655 | 722 723 724 725 726 (658 659 660 661 662)</span>
+ring_mt_hts     2.06     2.04     2.16 | 648,649,650-&gt;653,654,655 | 722 723 724 725 726 (658 659 660 661 662)
+<span class="hl">stack           2.65     2.64     3.90 | 2046,2045,2044-&gt;2042,2043,2044 | 1983 1984 1985 1986 1987 (2046 2045 2044 2043 2042)</span>
+lf_stack       10.93    10.89    11.05 | 2046,2045,2044-&gt;2042,2043,2044 | 1983 1984 1985 1986 1987 (2046 2045 2044 2043 2042)
+<span class="hl">pile            4.54     4.48     7.30 | 2014,2013,2012-&gt;2010,2011,2012 | 2014 2013 2012 2011 2010 (2046 2045 2044 2043 2042)</span>
+bucket         10.95    10.83    14.71 | 37,38,39-&gt;21,22,23     | 63 64 65 66 67 (0 1 2 3 4)
+(cycles per object for one get + one put; VM, software only)</pre>
+</div>
+    <p class="output-caption">Reading the columns:</p>
+    <ul>
+      <li><strong>Cost, one lcore, no contention.</strong> The rings and the locked stack cost 1.5&ndash;2.7 cycles per object for bursts of 32: the per-call work is shared by the burst. <code>lf_stack</code> is about four times slower than <code>stack</code>: it walks a linked list and does 128-bit compare-and-swaps where the locked stack does one lock and a <code>memcpy</code>. Lock-free means "no thread can block another", not "faster". <code>pile</code> recovers most of the gap by moving 32 pointers per list element.</li>
+      <li><strong>Singles: FIFO vs LIFO.</strong> The program takes 5 objects, frees them in order, and takes 5 again. The rings hand out <em>different</em>, older objects (653.. after 648..); the stacks hand back the ones just freed, most recent first (2042 was freed last). LIFO reuse is cache-friendly: the object you get is probably still in L1/L2.</li>
+      <li><strong>Bulks: the pile caveat.</strong> After get(64), put(64), get(64), a true stack returns the 64 in reverse (1983 first, which was <code>got[63]</code>). The pile returns the second 32-object bulk first, but <em>in its original order inside the bulk</em> (2014, 2013, ... is <code>got[32..]</code>). This is the documented 26.11 behaviour ("only LIFO at the bulk level, not at the object level"), not a bug.</li>
+    </ul>
+    <div class="callout pitfall"><div class="callout-title">Measured surprise: ring_mt_rts lost objects under contention</div>
+      <p>Exercise 2's solution runs the bakeoff with 3 lcores hammering one pool (cache 0, n = 2047). Every run with <code>ring_mt_rts</code> ended with <strong>224 objects missing</strong>; all other handlers ended with all 2047 objects back:</p>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./bakeoff_mp -l 0-2 --no-pci --no-huge -m 128 --file-prefix=ch06-opsmp</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+3 lcores hammer one pool (n=2047, cache 0), burst 32 x 50000, 5 runs
+  ring_mp_mc  median   115.56 cycles/obj (min 115.15, max 116.42)
+  ring_mt_hts median    66.47 cycles/obj (min 49.53, max 68.88)
+<span class="err">  !! ring_mt_rts: 224 objects missing</span>
+<span class="err">  !! ring_mt_rts: 224 objects missing</span>
+<span class="err">  !! ring_mt_rts: 224 objects missing</span>
+<span class="err">  !! ring_mt_rts: 224 objects missing</span>
+<span class="err">  !! ring_mt_rts: 224 objects missing</span>
+<span class="hl">  ring_mt_rts median   165.92 cycles/obj (min 160.67, max 168.96)</span>
+  stack       median   114.28 cycles/obj (min 83.63, max 118.42)
+  lf_stack    median   190.22 cycles/obj (min 181.02, max 194.04)
+  pile        median   195.93 cycles/obj (min 187.64, max 210.58)
+  bucket      median   294.47 cycles/obj (min 289.89, max 315.82)
+(per lcore, one get + one put of one object; VM, software only)</pre>
+</div>
+      <p>We traced it with a plain RTS ring (no mempool): some <code>rte_ring_enqueue_bulk()</code> calls <em>failed</em> although the objects being returned had just been dequeued from that same ring. An RTS ring advances its consumer tail only when <em>all</em> in-flight dequeues have finished (ch5), so a producer can see fewer free slots than there really are. The ring handler sizes its ring to exactly <code>n</code> objects when <code>n = 2<sup>q</sup> &minus; 1</code>, so there is no slack, and a mempool put returns <code>void</code>: the failed enqueue silently drops the objects (only a <code>RTE_LIBRTE_MEMPOOL_DEBUG</code> build logs it). We have not found this described in the DPDK docs; treat it as an observation from this build. The practical lesson stands either way: check <code>rte_mempool_avail_count()</code> at shutdown (exercise 3), and give a pool headroom when you use an RTS or HTS handler without a cache.</p>
+    </div>
+
+    <!-- ===================================================================== -->
+    <h2 id="custom"><span class="sec-num">9</span>Writing your own handler</h2>
+    <p>A handler is five functions and a struct. <code>custom_ops.c</code> implements a pointer array protected by a spinlock, the same idea as the built-in <code>stack</code>, so that every callback is visible:</p>
+<div class="code-block">
+  <div class="code-head"><span class="file">code/custom_ops.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="49" data-hl="61"><code class="language-c">static int
+array_alloc(struct rte_mempool *mp)
+{
+	struct array_store *st;
+
+	st = rte_zmalloc_socket("ch06_array_store",
+				sizeof(*st) + sizeof(void *) * mp-&gt;size,
+				RTE_CACHE_LINE_SIZE, mp-&gt;socket_id);
+	if (st == NULL)
+		return -ENOMEM;
+	rte_spinlock_init(&amp;st-&gt;lock);
+	st-&gt;size = mp-&gt;size;
+	mp-&gt;pool_data = st;     /* every other callback finds it here */
+	return 0;</code></pre>
+</div>
+<div class="code-block">
+  <div class="code-head"><span class="file">code/custom_ops.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="90" data-hl="99,115,124"><code class="language-c">array_dequeue(struct rte_mempool *mp, void **obj_table, unsigned int n)
+{
+	struct array_store *st = mp-&gt;pool_data;
+	unsigned int i;
+
+	rte_spinlock_lock(&amp;st-&gt;lock);
+	st-&gt;n_deq++;
+	if (n &gt; st-&gt;len) {                 /* all or nothing */
+		rte_spinlock_unlock(&amp;st-&gt;lock);
+		return -ENOBUFS;
+	}
+	for (i = 0; i &lt; n; i++)            /* pop from the top: LIFO */
+		obj_table[i] = st-&gt;objs[--st-&gt;len];
+	rte_spinlock_unlock(&amp;st-&gt;lock);
+	return 0;
+}
+
+static unsigned int
+array_get_count(const struct rte_mempool *mp)
+{
+	const struct array_store *st = mp-&gt;pool_data;
+	return st-&gt;len;
+}
+
+static struct rte_mempool_ops ops_ch06_array = {
+	.name = "ch06_array",
+	.alloc = array_alloc,
+	.free = array_free,
+	.enqueue = array_enqueue,
+	.dequeue = array_dequeue,
+	.get_count = array_get_count,
+	/* calc_mem_size, populate, get_info: NULL -&gt; library defaults */
+};
+
+RTE_MEMPOOL_REGISTER_OPS(ops_ch06_array);</code></pre>
+</div>
+    <ul>
+      <li><strong><code>alloc</code></strong> runs during populate, before any object exists. It creates the store and saves it in <code>mp-&gt;pool_data</code>; use <code>mp-&gt;size</code> for the capacity and <code>mp-&gt;socket_id</code> for the NUMA node.</li>
+      <li><strong><code>enqueue</code> / <code>dequeue</code></strong> must be safe for whatever threads will call them (here: a spinlock) and <code>dequeue</code> must be all-or-nothing. Return 0 or a negative errno.</li>
+      <li><strong><code>get_count</code></strong> may be approximate under concurrency; it feeds <code>rte_mempool_avail_count()</code>.</li>
+      <li>The optional <code>calc_mem_size</code>, <code>populate</code>, <code>get_info</code> and <code>dequeue_contig_blocks</code> stay NULL; the library's defaults (in <code>rte_mempool_ops_default.c</code>) apply.</li>
+      <li><strong><code>RTE_MEMPOOL_REGISTER_OPS(ops)</code></strong> expands to an <code>RTE_INIT</code> constructor that calls <code>rte_mempool_register_ops()</code> before <code>main()</code>.</li>
+    </ul>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./custom_ops -l 0 --no-pci --no-huge -m 64 --file-prefix=ch06-custom</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+[1] registered mempool handlers (rte_mempool_ops_table, 11 entries):
+<span class="hl">  0:ch06_array 1:bucket 2:ring_mp_mc 3:ring_sp_sc 4:ring_mp_sc 5:ring_sp_mc 6:ring_mt_rts 7:ring_mt_hts 8:stack 9:lf_stack 10:pile </span>
+<span class="hl">[2] pool 'ch06_custom' ops_index=0 ops=ch06_array; store holds 1023, enqueue calls=1023 (populate)</span>
+[3] put a=0x1040f1b80, put b=0x1040f1ac0, get -&gt; 0x1040f1ac0 (b: LIFO)
+[4] get_bulk(1023)=0, then get_bulk(1)=-105 (No buffer space available)
+[5] cache 0 : 10000 x (get 32 + put 32) -&gt; handler dequeue=10000 enqueue=10000 calls
+<span class="hl">    cache 64: 10000 x (get 32 + put 32) -&gt; handler dequeue=1 enqueue=0 calls</span></pre>
+</div>
+    <p class="output-caption">The new handler takes index 0 (our object file's constructor ran first). Populate called <code>enqueue</code> 1023 times, once per object. The array is LIFO. When empty, our <code>-ENOBUFS</code> reaches the caller unchanged. Line 5 shows the cache from section 5 from the handler's point of view: 10,000 bursts without a cache cost 20,000 handler calls; with a cache of 64, exactly one (the first refill).</p>
+    <details><summary>Full source: <code>code/custom_ops.c</code></summary>
+<pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * Chapter 6, example 5a: custom_ops.c
+ *
+ * Write and register your own mempool handler ("ops"): a toy LIFO made of a
+ * plain pointer array protected by a spinlock. It is the same idea as the
+ * built-in "stack" handler, written out so you can see every callback a
+ * handler must provide:
+ *
+ *   alloc     - create the private store, put it in mp-&gt;pool_data
+ *   free      - destroy it
+ *   enqueue   - accept n object pointers (called on put / cache flush)
+ *   dequeue   - hand out n object pointers, all or nothing
+ *   get_count - how many objects the store holds now
+ *
+ * RTE_MEMPOOL_REGISTER_OPS() adds it to rte_mempool_ops_table from a
+ * constructor that runs before main(). The pool stores only an INDEX into
+ * that table (mp-&gt;ops_index), so secondary processes can share the pool
+ * if they register the same handlers in the same order.
+ *
+ * The program also counts handler calls with cache 0 and with cache 64 to
+ * show how the per-lcore cache shields the handler.
+ *
+ * Run:  ./custom_ops -l 0 --no-pci --no-huge -m 64 --file-prefix=ch06-custom
+ */
+#include &lt;stdio.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;errno.h&gt;
+
+#include &lt;rte_eal.h&gt;
+#include &lt;rte_errno.h&gt;
+#include &lt;rte_lcore.h&gt;
+#include &lt;rte_malloc.h&gt;
+#include &lt;rte_spinlock.h&gt;
+#include &lt;rte_mempool.h&gt;
+#include &lt;rte_debug.h&gt;
+
+/* ---- the handler's private store --------------------------------------- */
+struct array_store {
+	rte_spinlock_t lock;
+	unsigned int len;      /* objects currently stored  */
+	unsigned int size;     /* capacity = mp-&gt;size        */
+	uint64_t n_enq, n_deq; /* calls, for the demo        */
+	void *objs[];          /* LIFO: objs[len-1] is the top */
+};
+
+static int
+array_alloc(struct rte_mempool *mp)
+{
+	struct array_store *st;
+
+	st = rte_zmalloc_socket("ch06_array_store",
+				sizeof(*st) + sizeof(void *) * mp-&gt;size,
+				RTE_CACHE_LINE_SIZE, mp-&gt;socket_id);
+	if (st == NULL)
+		return -ENOMEM;
+	rte_spinlock_init(&amp;st-&gt;lock);
+	st-&gt;size = mp-&gt;size;
+	mp-&gt;pool_data = st;     /* every other callback finds it here */
+	return 0;
+}
+
+static void
+array_free(struct rte_mempool *mp)
+{
+	rte_free(mp-&gt;pool_data);
+}
+
+static int
+array_enqueue(struct rte_mempool *mp, void * const *obj_table, unsigned int n)
+{
+	struct array_store *st = mp-&gt;pool_data;
+	int ret = 0;
+
+	rte_spinlock_lock(&amp;st-&gt;lock);
+	st-&gt;n_enq++;
+	if (st-&gt;len + n &gt; st-&gt;size) {
+		ret = -ENOBUFS;            /* cannot happen in a healthy pool */
+	} else {
+		memcpy(&amp;st-&gt;objs[st-&gt;len], obj_table, sizeof(void *) * n);
+		st-&gt;len += n;
+	}
+	rte_spinlock_unlock(&amp;st-&gt;lock);
+	return ret;
+}
+
+static int
+array_dequeue(struct rte_mempool *mp, void **obj_table, unsigned int n)
+{
+	struct array_store *st = mp-&gt;pool_data;
+	unsigned int i;
+
+	rte_spinlock_lock(&amp;st-&gt;lock);
+	st-&gt;n_deq++;
+	if (n &gt; st-&gt;len) {                 /* all or nothing */
+		rte_spinlock_unlock(&amp;st-&gt;lock);
+		return -ENOBUFS;
+	}
+	for (i = 0; i &lt; n; i++)            /* pop from the top: LIFO */
+		obj_table[i] = st-&gt;objs[--st-&gt;len];
+	rte_spinlock_unlock(&amp;st-&gt;lock);
+	return 0;
+}
+
+static unsigned int
+array_get_count(const struct rte_mempool *mp)
+{
+	const struct array_store *st = mp-&gt;pool_data;
+	return st-&gt;len;
+}
+
+static struct rte_mempool_ops ops_ch06_array = {
+	.name = "ch06_array",
+	.alloc = array_alloc,
+	.free = array_free,
+	.enqueue = array_enqueue,
+	.dequeue = array_dequeue,
+	.get_count = array_get_count,
+	/* calc_mem_size, populate, get_info: NULL -&gt; library defaults */
+};
+
+RTE_MEMPOOL_REGISTER_OPS(ops_ch06_array);
+
+/* ---- using it ------------------------------------------------------------ */
+static struct rte_mempool *
+make_pool(const char *name, unsigned int cache)
+{
+	struct rte_mempool *mp;
+	int ret;
+
+	mp = rte_mempool_create_empty(name, 1023, 64, cache, 0, rte_socket_id(), 0);
+	if (mp == NULL)
+		rte_exit(EXIT_FAILURE, "create_empty: %s\n", rte_strerror(rte_errno));
+	ret = rte_mempool_set_ops_byname(mp, "ch06_array", NULL);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE, "set_ops_byname: %s\n", strerror(-ret));
+	ret = rte_mempool_populate_default(mp);    /* calls alloc, then enqueue */
+	if (ret &lt; 0)
+		rte_exit(EXIT_FAILURE, "populate: %s\n", strerror(-ret));
+	return mp;
+}
+
+static void
+workload(struct rte_mempool *mp)
+{
+	void *objs[32];
+	int i;
+
+	for (i = 0; i &lt; 10000; i++) {
+		rte_mempool_get_bulk(mp, objs, 32);
+		rte_mempool_put_bulk(mp, objs, 32);
+	}
+}
+
+int
+main(int argc, char **argv)
+{
+	struct rte_mempool *mp;
+	struct array_store *st;
+	unsigned int i;
+	void *a, *b, *big[1024];
+	int ret;
+
+	if (rte_eal_init(argc, argv) &lt; 0)
+		rte_exit(EXIT_FAILURE, "EAL init failed\n");
+
+	printf("[1] registered mempool handlers (rte_mempool_ops_table, %u entries):\n  ",
+	       rte_mempool_ops_table.num_ops);
+	for (i = 0; i &lt; rte_mempool_ops_table.num_ops; i++)
+		printf("%u:%s ", i, rte_mempool_ops_table.ops[i].name);
+	printf("\n");
+
+	mp = make_pool("ch06_custom", 0);
+	st = mp-&gt;pool_data;
+	printf("[2] pool '%s' ops_index=%d ops=%s; store holds %u, enqueue calls=%" PRIu64
+	       " (populate)\n", mp-&gt;name, mp-&gt;ops_index,
+	       rte_mempool_get_ops(mp-&gt;ops_index)-&gt;name, st-&gt;len, st-&gt;n_enq);
+
+	/* LIFO check: free a then b; the next get returns b (the hottest). */
+	rte_mempool_get(mp, &amp;a);
+	rte_mempool_get(mp, &amp;b);
+	rte_mempool_put(mp, a);
+	rte_mempool_put(mp, b);
+	{
+		void *c;
+		rte_mempool_get(mp, &amp;c);
+		printf("[3] put a=%p, put b=%p, get -&gt; %p (%s)\n", a, b, c,
+		       c == b ? "b: LIFO" : "a: FIFO");
+		rte_mempool_put(mp, c);
+	}
+
+	/* Exhaustion: our dequeue returns -ENOBUFS, the API passes it through. */
+	ret = rte_mempool_get_bulk(mp, big, 1023);
+	printf("[4] get_bulk(1023)=%d, then get_bulk(1)=", ret);
+	ret = rte_mempool_get_bulk(mp, &amp;a, 1);
+	printf("%d (%s)\n", ret, strerror(-ret));
+	rte_mempool_put_bulk(mp, big, 1023);
+
+	/* Handler calls with and without a cache. */
+	st-&gt;n_enq = st-&gt;n_deq = 0;
+	workload(mp);
+	printf("[5] cache 0 : 10000 x (get 32 + put 32) -&gt; handler dequeue=%" PRIu64
+	       " enqueue=%" PRIu64 " calls\n", st-&gt;n_deq, st-&gt;n_enq);
+	rte_mempool_free(mp);
+
+	mp = make_pool("ch06_custom2", 64);
+	st = mp-&gt;pool_data;
+	st-&gt;n_enq = st-&gt;n_deq = 0;
+	workload(mp);
+	printf("    cache 64: 10000 x (get 32 + put 32) -&gt; handler dequeue=%" PRIu64
+	       " enqueue=%" PRIu64 " calls\n", st-&gt;n_deq, st-&gt;n_enq);
+	rte_mempool_free(mp);
+
+	rte_eal_cleanup();
+	return 0;
+}</code></pre>
+</details>
+
+    <!-- ===================================================================== -->
+    <h2 id="inspect"><span class="sec-num">10</span>Inspecting pools</h2>
+    <div class="table-wrap"><table class="compact">
+      <thead><tr><th>Call</th><th>Use</th></tr></thead>
+      <tbody>
+        <tr><td><code>rte_mempool_dump(f, mp)</code></td><td>Everything about one pool; below.</td></tr>
+        <tr><td><code>rte_mempool_list_dump(f)</code>, <code>rte_mempool_walk(fn, arg)</code></td><td>Dump or visit every pool in the process.</td></tr>
+        <tr><td><code>rte_mempool_lookup(name)</code></td><td>Find a pool by name.</td></tr>
+        <tr><td><code>rte_mempool_obj_iter(mp, fn, arg)</code></td><td>Call <code>fn(mp, arg, obj, idx)</code> for every object, free or not: constructors, leak checks (exercise 3).</td></tr>
+        <tr><td><code>rte_mempool_mem_iter(mp, fn, arg)</code></td><td>Call <code>fn</code> for every memory chunk (<code>struct rte_mempool_memhdr</code>: address, IOVA, length), e.g. to DMA-map them.</td></tr>
+        <tr><td><code>rte_mempool_audit(mp)</code></td><td>Consistency checks (cookies only with <code>RTE_LIBRTE_MEMPOOL_DEBUG</code>).</td></tr>
+        <tr><td>telemetry <code>/mempool/list</code>, <code>/mempool/info,&lt;name&gt;</code></td><td>The same data from outside the process with <code>dpdk-telemetry.py</code> (ch13).</td></tr>
+      </tbody>
+    </table></div>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./stranded_cache -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch06-strand</span>
+  avail_count=256 in_use=0 | cache[0]=0 cache[1]=128 cache[2]=128 | in backend=0
+<span class="err">  main lcore: get_bulk(1) = -105 FAILED although avail_count says there are free objects</span>
+<span class="err">  main lcore: get_bulk(64) = -105 FAILED although avail_count says there are free objects</span>
+  avail_count=256 in_use=0 | cache[0]=0 cache[1]=0 cache[2]=0 | in backend=256
+  main lcore: get_bulk(256) = 0 ok
+    after the same worker loop:
+  avail_count=640 in_use=0 | cache[0]=0 cache[1]=128 cache[2]=128 | in backend=384
+  main lcore: get_bulk(256) = 0 ok
+mempool &lt;ch06_strand2&gt;@0x1040cfe00
+  flags=10
+  socket_id=0
+  pool=0x1040cdb00
+  iova=0x1040cfe00
+  nb_mem_chunks=1
+  size=640
+  populated_size=640
+  header_size=64
+  elt_size=64
+  trailer_size=64
+  total_obj_size=192
+  private_data_size=0
+  ops_index=1
+  ops_name: &lt;ring_mp_mc&gt;
+  memory chunk at 0x1040af180, addr=0x1040af240, iova=0x1040af240, len=124992
+  avg bytes/object=195.300000
+  internal cache infos (hide zero value items):
+    cache_size=128
+<span class="hl">    cache_count[1]=128</span>
+<span class="hl">    cache_count[2]=128</span>
+<span class="hl">    total_cache_count=256</span>
+<span class="hl">  common_pool_count=384</span>
+  no statistics available</pre>
+</div>
+    <p class="output-caption">The dump of <code>stranded_cache</code>'s second pool. <code>flags=10</code> is <code>RTE_MEMPOOL_F_POOL_CREATED</code>. <code>cache_count[1]=128</code> and <code>cache_count[2]=128</code> show the objects held by each lcore's cache, and <code>common_pool_count=384</code> what is in the ring: the numbers in Figure 1. "no statistics available" means DPDK was built without <code>RTE_LIBRTE_MEMPOOL_STATS</code> (the default); with it, the dump also prints per-lcore get/put counters and cache miss rates.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="stack"><span class="sec-num">11</span><code>rte_stack</code>: LIFO of pointers, three ways</h2>
+    <p>The <code>stack</code>, <code>lf_stack</code> and <code>pile</code> handlers are thin wrappers (<code>drivers/mempool/stack/rte_mempool_stack.c</code>) over the <span class="key-term">rte_stack</span> library, which you can also use directly whenever you want a bounded LIFO of pointers shared by several threads: free lists of your own objects, work stealing, recycling buffers warm.</p>
+<pre><code class="language-c">struct rte_stack *rte_stack_create(const char *name, unsigned int count,
+                                   int socket_id, uint32_t flags);
+unsigned int rte_stack_push(struct rte_stack *s, void * const *obj_table, unsigned int n); /* 0 or n */
+unsigned int rte_stack_pop(struct rte_stack *s, void **obj_table, unsigned int n);         /* 0 or n */
+unsigned int rte_stack_count(struct rte_stack *s);
+unsigned int rte_stack_free_count(struct rte_stack *s);
+void rte_stack_free(struct rte_stack *s);
+struct rte_stack *rte_stack_lookup(const char *name);</code></pre>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 230" role="img" aria-labelledby="f-stk-t">
+        <title id="f-stk-t">The three rte_stack layouts: standard array with spinlock, lock-free linked list with a 16-byte head of top pointer and counter, and pile with bulk and solo lists</title>
+        <text class="svg-label bold" x="20" y="22">standard (flags 0)</text>
+        <rect class="svg-box c7" x="20" y="34" width="70" height="30"/><text class="svg-label center small mono" x="55" y="49">lock</text>
+        <rect class="svg-box c7" x="20" y="70" width="70" height="30"/><text class="svg-label center small mono" x="55" y="85">len=3</text>
+        <rect class="svg-slot full" x="100" y="34" width="36" height="30"/><rect class="svg-slot full" x="136" y="34" width="36" height="30"/><rect class="svg-slot full" x="172" y="34" width="36" height="30"/><rect class="svg-slot" x="208" y="34" width="36" height="30"/>
+        <text class="svg-label small" x="100" y="80">objs[]: push = copy on top</text>
+        <text class="svg-label small muted" x="100" y="96">under the spinlock</text>
+
+        <text class="svg-label bold" x="270" y="22">lock-free (RTE_STACK_F_LF)</text>
+        <rect class="svg-box c5" x="270" y="34" width="120" height="40"/><text class="svg-label center small mono" x="330" y="50">{top, cnt}</text><text class="svg-label center small" x="330" y="66">16 B, 128-bit CAS</text>
+        <rect class="svg-box c2" x="410" y="38" width="56" height="32"/><text class="svg-label center small mono" x="438" y="55">A</text>
+        <rect class="svg-box c2" x="486" y="38" width="56" height="32"/><text class="svg-label center small mono" x="514" y="55">B</text>
+        <rect class="svg-box c2" x="562" y="38" width="56" height="32"/><text class="svg-label center small mono" x="590" y="55">C</text>
+        <path class="svg-arrow c5" d="M390,54 L408,54"/><path class="svg-arrow c2" d="M466,54 L484,54"/><path class="svg-arrow c2" d="M542,54 L560,54"/>
+        <text class="svg-label small" x="270" y="96">elements {data, next} come from a preallocated</text>
+        <text class="svg-label small" x="270" y="112">free list (itself a lock-free LIFO): no malloc</text>
+
+        <text class="svg-label bold" x="20" y="146">pile (RTE_STACK_F_PILE, experimental, 26.11)</text>
+        <rect class="svg-box c5" x="20" y="158" width="110" height="30"/><text class="svg-label center small mono" x="75" y="174">bulk list</text>
+        <rect class="svg-box c3" x="150" y="156" width="150" height="34"/><text class="svg-label center small" x="225" y="174">32 pointers</text>
+        <rect class="svg-box c3" x="320" y="156" width="150" height="34"/><text class="svg-label center small" x="395" y="174">32 pointers</text>
+        <path class="svg-arrow c5" d="M130,173 L148,173"/><path class="svg-arrow c3" d="M300,173 L318,173"/>
+        <rect class="svg-box c5" x="20" y="196" width="110" height="30"/><text class="svg-label center small mono" x="75" y="212">solo list</text>
+        <rect class="svg-box c2" x="150" y="196" width="50" height="28"/><text class="svg-label center small mono" x="175" y="211">x</text>
+        <rect class="svg-box c2" x="220" y="196" width="50" height="28"/><text class="svg-label center small mono" x="245" y="211">y</text>
+        <path class="svg-arrow c5" d="M130,211 L148,211"/><path class="svg-arrow c2" d="M200,211 L218,211"/>
+        <text class="svg-label small" x="490" y="170">push(n): n/32 bulk elements +</text>
+        <text class="svg-label small" x="490" y="186">n%32 solo elements, each list</text>
+        <text class="svg-label small" x="490" y="202">a lock-free LIFO like the one above</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>Inside the three stack types (<code>lib/stack/rte_stack.h</code>). The lock-free variants are only built on x86_64 and arm64, which have a 16-byte compare-and-swap; elsewhere <code>rte_stack_create()</code> fails with <code>ENOTSUP</code>.</figcaption>
+    </figure>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./stack_demo -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch06-stack</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+[1] push 1..64 in ONE call, then pop 64; and push 1,2,3 one by one, pop 3
+  std  pushed 64 popped 64: out[0..3]=64 63 62 61  out[31..33]=33 32 31 | singles -&gt; 3 2 1
+  lf   pushed 64 popped 64: out[0..3]=64 63 62 61  out[31..33]=33 32 31 | singles -&gt; 3 2 1
+<span class="hl">  pile pushed 64 popped 64: out[0..3]=33 34 35 36  out[31..33]=64 1 2 | singles -&gt; 3 2 1</span>
+[2] capacity 64: push 64 singles, then try one 64-object bulk
+  std  singles pushed=64 count=64 free_count=0 | bulk push(64) -&gt; 0, count=64
+  lf   singles pushed=64 count=64 free_count=0 | bulk push(64) -&gt; 0, count=64
+<span class="hl">  pile singles pushed=64 count=64 free_count=0 | bulk push(64) -&gt; 64, count=64</span></pre>
+</div>
+    <p class="output-caption">Part 1: <code>std</code> and <code>lf</code> are strict LIFO: pushing 1..64 in one call and popping gives 64, 63, ... The <code>pile</code> gives 33, 34, ...: it popped the second bulk (33..64) first, keeping the order inside it. Single pushes are LIFO for all three. Part 2 is the other documented pile caveat, "not strictly bounded by its size": a pile created for 64 objects has 64 solo elements <em>and</em> 2 bulk elements, so after 64 single pushes it still accepts a bulk of 64. Its <code>count</code> is capped at the capacity and keeps saying 64, although it now holds 128.</p>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./stack_demo -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch06-stack</span>
+[3] each lcore pops then pushes a burst, 100000 iterations, 5 runs
+  1 lcore  burst 1  std  median   69.44 cycles/obj (min 68.68, max 70.76)
+  1 lcore  burst 1  lf   median  129.26 cycles/obj (min 128.35, max 138.39)
+  1 lcore  burst 1  pile median  129.94 cycles/obj (min 129.35, max 130.68)
+<span class="hl">  1 lcore  burst 32 std  median    3.23 cycles/obj (min 3.21, max 3.25)</span>
+<span class="hl">  1 lcore  burst 32 lf   median   13.27 cycles/obj (min 13.17, max 13.74)</span>
+<span class="hl">  1 lcore  burst 32 pile median    4.33 cycles/obj (min 4.32, max 4.62)</span>
+  2 lcores burst 1  std  median  948.95 cycles/obj (min 744.75, max 1664.67)
+  2 lcores burst 1  lf   median 2485.38 cycles/obj (min 1294.14, max 3403.38)
+  2 lcores burst 1  pile median 2301.61 cycles/obj (min 1880.59, max 3225.04)
+  2 lcores burst 32 std  median   27.32 cycles/obj (min 26.24, max 40.63)
+  2 lcores burst 32 lf   median   86.63 cycles/obj (min 77.85, max 87.61)
+  2 lcores burst 32 pile median   59.35 cycles/obj (min 28.29, max 63.92)</pre>
+</div>
+    <p class="output-caption">One lcore alone: the locked stack is cheapest, lock-free costs about twice as much per single object, and bursts amortise everything. Two lcores sharing one stack: every operation pulls the head's cache line from the other core, and costs explode to thousands of cycles per single object on this VM (with a wide min&ndash;max spread: cross-core latency in a VM is noisy). Even under contention the spinlock version stays in the same range as the lock-free ones. The case for the lock-free variants is preemption: if a thread holding the spinlock is descheduled, every other thread spins until it runs again; a lock-free stack keeps working. On isolated, pinned lcores (the normal DPDK setup) that rarely happens, which is why <code>ring_mp_mc</code>, not a lock-free stack, is the default.</p>
+
+    <h3 id="aba">The ABA problem, step by step</h3>
+    <p>A lock-free pop reads the head, reads <code>head-&gt;next</code>, and then uses compare-and-swap (CAS) to replace the head with <code>next</code>, but only if the head is still what it read. CAS checks <em>equality</em>, not history. If, between the read and the CAS, other threads pop the element, reuse it and push it back, the head is "the same" pointer again and the CAS succeeds with a stale <code>next</code>. This is the <span class="key-term">ABA problem</span>: the value went A &rarr; B &rarr; A and the CAS cannot tell. It is a real risk in a pool, where recycling the same few objects is the whole point.</p>
+    <div class="widget" id="w-aba">
+      <div class="widget-head"><span class="widget-title">Lock-free stack pop: ABA with and without a counter</span><span class="badge">predict, then step</span></div>
+      <div class="widget-body">
+        <div class="ctl-row"><span>CAS compares:</span>
+          <span class="seg-btns" role="group" aria-label="CAS mode"><button class="btn small" type="button" data-aba-mode="ptr">pointer only (64-bit)</button><button class="btn small" type="button" data-aba-mode="cnt">{pointer, counter} (128-bit)</button></span>
+        </div>
+        <svg viewBox="0 0 680 330" role="img" aria-label="Stack head, list, three threads and the elements they hold"></svg>
+        <p class="w-note">Run it once per mode. The step sequence is the one in <code>doc/guides/prog_guide/stack_lib.rst</code>, "Preventing the ABA problem". Chapter 14 reuses this widget and adds the memory-ordering side of the 128-bit CAS.</p>
+      </div>
+    </div>
+    <p>DPDK's fix, in <code>lib/stack/rte_stack_lf_c11.h</code>: the head is <code>struct rte_stack_lf_head { struct rte_stack_lf_elem *top; uint64_t cnt; }</code>, 16-byte aligned, and every push and pop replaces <em>both</em> fields with one <code>rte_atomic128_cmp_exchange()</code> (the x86 <code>cmpxchg16b</code> instruction), incrementing <code>cnt</code> each time. A recycled pointer comes back with a different counter, so the stale CAS fails and the thread retries with fresh values. A 64-bit counter cannot wrap around during the few nanoseconds a thread is between its read and its CAS.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong><code>get</code> fails but <code>avail_count</code> says objects are free</strong>: they are stranded in other lcores' caches. Size the pool with <code>nb_lcores &times; cache_size</code> on top (section 6), or flush caches on their owning lcores when they stop.</li>
+      <li><strong>Pool creation fails with <code>EINVAL</code></strong>: <code>cache_size &gt; n</code>, an unknown flag, or a zero size. With <code>ENOMEM</code> under <code>--no-huge</code>: remember an mbuf-sized object costs a whole 4 KB page there (section 3).</li>
+      <li><strong>Checking for <code>-ENOENT</code></strong>: the error code comes from the handler; the ring returns <code>-ENOBUFS</code>. Test <code>ret &lt; 0</code>.</li>
+      <li><strong>Calling <code>rte_mempool_cache_flush()</code> on another lcore's cache</strong> while it runs: caches have no lock. Flush on the owner.</li>
+      <li><strong>Freeing a user cache without flushing it</strong>: its objects are gone for good.</li>
+      <li><strong>Non-EAL threads hammering a pool</strong> without a cache: every call is a ring CAS (section 7).</li>
+      <li><strong>Using <code>ring_sp_sc</code> (or <code>RTE_MEMPOOL_F_SP_PUT</code>/<code>_SC_GET</code>) with several threads</strong>: no error, just silent corruption of the ring. That is why the exercise 2 solution leaves it out.</li>
+      <li><strong>Old code that touches <code>cache-&gt;flushthresh</code>, <code>cache-&gt;objs[RTE_MEMPOOL_CACHE_MAX_SIZE]</code> or <code>mp-&gt;local_cache[i]</code></strong>: these do not compile or are wrong in 26.11; use <code>rte_mempool_default_cache()</code> and <code>cache-&gt;size</code>.</li>
+      <li><strong>Pipelines carried over from before 26.07</strong>: double the cache size, or the Rx and Tx lcores hit the ring twice as often (section 5).</li>
+      <li><strong>Mixing handler registration order between processes</strong>: the pool stores an index into the ops table; secondary processes must register the same handlers in the same order (ch16).</li>
+      <li><strong>Treating pile like a strict stack</strong>: objects within a 32-object bulk keep their order, and the count is capped at the capacity although it may hold more.</li>
+    </ul>
+
+    <!-- ===================================================================== -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="1" data-explain="Under 26.11 the cache never exceeds size (64). 60 + 10 &gt; 64 and 10 &le; 32, so the bottom 32 are flushed and the 10 are pushed: 60 &minus; 32 + 10 = 38.">
+        <div class="q-text">A cache with <code>size = 64</code> holds 60 objects. The lcore puts 10. What is <code>cache-&gt;len</code> afterwards (26.11)?</div>
+        <div class="q-opts"><button class="q-opt">70</button><button class="q-opt">38</button><button class="q-opt">10</button><button class="q-opt">60, the 10 bypass the cache</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="The remainder 40 &gt; size/2 = 32, so after draining the cache the 40 come straight from the ring and the cache stays empty.">
+        <div class="q-text">Same cache (<code>size = 64</code>), now empty. The lcore gets 40. Where do the 40 objects come from?</div>
+        <div class="q-opts"><button class="q-opt">A refill of 32, then 8 more from the ring</button><button class="q-opt">A refill of 64; 24 stay in the cache</button><button class="q-opt">Straight from the ring; the cache stays empty</button></div>
+      </div>
+      <div class="q" data-answer="0" data-explain="1024 + 1024 descriptors + 3 &times; 256 cached + 3 &times; 32 in hand = 2912; 4095 is the next 2^q &minus; 1.">
+        <div class="q-text">One port, one queue, 1024 Rx and 1024 Tx descriptors, 3 lcores with <code>cache_size = 256</code> and bursts of 32. What is the minimum safe pool size, rounded up to 2<sup>q</sup> &minus; 1?</div>
+        <div class="q-opts"><button class="q-opt">4095 (needs 2912)</button><button class="q-opt">2047 (needs 2048)</button><button class="q-opt">8191 (needs 4864)</button></div>
+      </div>
+      <div class="q" data-answer="1" data-explain="rte_lcore_id() is LCORE_ID_ANY in a plain pthread, so rte_mempool_default_cache() returns NULL and every call goes to the handler, unless you pass a cache from rte_mempool_cache_create().">
+        <div class="q-text">A plain <code>pthread</code> (not an EAL lcore) calls <code>rte_mempool_get_bulk()</code>. Which cache does it use?</div>
+        <div class="q-opts"><button class="q-opt">The main lcore's cache</button><button class="q-opt">None: every call goes to the handler</button><button class="q-opt">A cache created automatically for the thread</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="The CAS on {top, cnt} fails whenever any push or pop happened in between, because each one increments cnt, even if top is the same pointer again.">
+        <div class="q-text">Why does DPDK's lock-free stack keep a counter next to the top pointer?</div>
+        <div class="q-opts"><button class="q-opt">To know the stack depth without walking the list</button><button class="q-opt">To limit the number of retries</button><button class="q-opt">So a CAS fails if the head was popped and pushed back in between (ABA)</button></div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span> Pool sizing for ports</div>
+      <p>Compute the minimum pool size for 2 ports &times; 2 queues &times; 1024 descriptors (Rx and Tx), 4 lcores with cache 256, and bursts of 32. Then verify it: create a pool of exactly that size, hold the descriptor and burst objects, and fill every lcore's cache. What happens with one object less?</p>
+      <details><summary>Hint</summary><p>Hold the "in rings" and "in hand" objects with <code>rte_mempool_generic_get(mp, objs, n, NULL)</code> so they bypass the caches. A cache ends full after get(128), get(128), put(128), put(128) on its own lcore.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/pool_sizing.c</code>, run with <code>-l 0-3</code>:</p>
+<div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./pool_sizing -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch06-size</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+Rx+Tx rings 8192 + 4 lcores x cache 256 + 4 lcores x burst 32 = 9344 objects
+<span class="hl">n=9344  caches: 256 256 256 256 | full caches 4/4 -&gt; worst case fits</span>
+<span class="err">n=9343  caches: 256 256 256 128 | full caches 3/4 -&gt; TOO SMALL: some lcore would fail a get</span>
+round up to 2^q - 1 for a ring-backed pool: 16383</pre>
+</div>
+      </details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span> Multi-producer bakeoff</div>
+      <p>Change <code>handler_bakeoff.c</code> so that all lcores in <code>-l</code> hit the same pool at once (cache 0). Which handler wins with 3 lcores, which loses most compared with the single-lcore run, and why? Which handler must you leave out?</p>
+      <details><summary>Hint</summary><p>Launch the loop on the workers with <code>rte_eal_mp_remote_launch(fn, NULL, SKIP_MAIN)</code>, run it on the main lcore too, and start everyone together with a <code>volatile</code> flag. Think about how many cache lines each handler's operation writes, and who else writes them.</p></details>
+      <details><summary>Solution</summary><p><code>code/solutions/bakeoff_mp.c</code>; its output is in the "measured surprise" box in section 8. In our run HTS beat the default ring (it lets one thread at a time move the head, so threads stop colliding), the locked stack beat both lock-free stacks, bucket was slowest, and the default ring lost the most relative to its single-lcore cost (about 55 times slower). <code>ring_sp_sc</code> is left out because it is only correct with one producer and one consumer thread. The RTS ring lost objects (see section 8).</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag medium">medium</span> Nothing left behind</div>
+      <p>At shutdown, use <code>rte_mempool_obj_iter()</code> to verify that every object is back in the pool. Mark each object "free" when you put it and "used" when you get it (keep the mark inside the object), and let the iterator count objects marked "used". Make <code>stranded_cache</code> leak one object on purpose and check that your checker finds exactly that one.</p>
+      <details><summary>Hint</summary><p><code>rte_mempool_obj_iter()</code> visits <em>all</em> objects, free or not, so it sees the marks. Compare its count with <code>rte_mempool_in_use_count()</code>. Remember that objects in caches are free.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4 <span class="tag stretch">stretch</span> A cache for a pthread</div>
+      <p>Start two non-EAL pthreads that each do get_bulk(32)/put_bulk(32) on one pool, first with <code>cache = NULL</code>, then each with its own <code>rte_mempool_cache_create(256, ...)</code>. Measure cycles per object (median of 5, with min and max) and compare with the EAL-lcore numbers of <code>cache_explorer</code> part D.</p>
+    </div>
+
+    <!-- ===================================================================== -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li>A mempool is N fixed-size objects allocated once; get and put are pointer moves. Each object is [header | element | trailer]; the trailer spreads object starts over memory channels, and no object crosses a page, which makes <code>--no-huge</code> pools of mbufs 1.7 times bigger.</li>
+        <li><code>rte_mempool_create()</code> = <code>create_empty</code> + <code>set_ops_byname</code> + <code>populate_default</code> + <code>obj_iter</code>. Use the step-wise form to pick a handler.</li>
+        <li>Bulk gets are all or nothing; test <code>ret &lt; 0</code> (the ring returns <code>-ENOBUFS</code>).</li>
+        <li>The per-lcore cache (26.07 algorithm, 26.11 API) never exceeds <code>size</code>, refills and flushes <code>size/2</code>, and lets big requests bypass it. It took the shared-pool cost from about 70 to about 1.1 cycles per object here. <code>cache_size</code> is limited only by <code>n</code> since 26.11; pipelines should double it.</li>
+        <li>Cached objects are stranded from other lcores: <code>n &ge; descriptors + lcores &times; cache + lcores &times; burst</code>. Non-EAL threads need <code>rte_mempool_cache_create()</code> + <code>generic_get/put</code>, and a flush before freeing the cache.</li>
+        <li>Handlers: rings (FIFO), stack / lf_stack / pile (LIFO, pile per 32-object bulk), bucket, hardware pools. The pool stores an ops <em>index</em>; you add your own with <code>RTE_MEMPOOL_REGISTER_OPS</code>.</li>
+        <li><code>rte_stack</code> offers a locked, a lock-free and a pile LIFO. Lock-free buys preemption tolerance, not speed, and it needs a {pointer, counter} 128-bit CAS to defeat ABA.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Programmer's Guide, Mempool Library <span class="src-path">doc/guides/prog_guide/mempool_lib.rst</span></li>
+        <li>Programmer's Guide, Stack Library (lock-free stack, ABA, pile) <span class="src-path">doc/guides/prog_guide/stack_lib.rst</span></li>
+        <li>Mempool driver guides <span class="src-path">doc/guides/mempool/</span></li>
+        <li>The API and the inline cache algorithm <span class="src-path">lib/mempool/rte_mempool.h</span></li>
+        <li>Creation, layout (<code>rte_mempool_calc_obj_size</code>, <code>arch_mem_object_align</code>), dump, telemetry <span class="src-path">lib/mempool/rte_mempool.c</span></li>
+        <li>Ops table and registration <span class="src-path">lib/mempool/rte_mempool_ops.c</span>, <span class="src-path">lib/mempool/rte_mempool_ops_default.c</span></li>
+        <li>Handlers <span class="src-path">drivers/mempool/ring/rte_mempool_ring.c</span>, <span class="src-path">drivers/mempool/stack/rte_mempool_stack.c</span>, <span class="src-path">drivers/mempool/bucket/rte_mempool_bucket.c</span></li>
+        <li>Stack library <span class="src-path">lib/stack/rte_stack.h</span>, <span class="src-path">lib/stack/rte_stack_lf_c11.h</span>, <span class="src-path">lib/stack/rte_stack_pile.h</span></li>
+        <li>Release notes: cache algorithm <span class="src-path">doc/guides/rel_notes/release_26_07.rst</span>; cache limit, struct changes, pile <span class="src-path">doc/guides/rel_notes/release_26_11.rst</span></li>
+        <li>RTS ring internals (for the measured surprise) <span class="src-path">lib/ring/rte_ring_rts_elem_pvt.h</span></li>
+        <li>Build-time options <span class="src-path">config/rte_config.h</span> (<code>RTE_MEMPOOL_CACHE_MAX_SIZE</code>, <code>RTE_STACK_PILE_BULK_SIZE</code>)</li>
+        <li>The pool in the smallest forwarder <span class="src-path">examples/skeleton/basicfwd.c</span></li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../05-rings/index.html"><span class="dir">&larr; Previous</span><span class="ttl">05 &middot; rte_ring: Lock-Free Queues Between Cores</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../07-mbufs/index.html"><span class="dir">Next &rarr;</span><span class="ttl">07 &middot; rte_mbuf: The Packet Buffer</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script src="aba_widget.js"></script>
+<script src="chapter06.js"></script>
+</body>
+</html>

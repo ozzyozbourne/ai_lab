@@ -1,0 +1,8 @@
+show config rxtx
+port stop all
+port config all rxq 2
+port config all txq 2
+port config all rxd 512
+port start all
+show config rxtx
+show port 0 rxq 1 desc 0 status

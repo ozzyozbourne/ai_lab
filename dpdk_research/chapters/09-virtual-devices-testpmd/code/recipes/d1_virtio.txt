@@ -1,0 +1,9 @@
+show port info 0
+show rxq info 0 0
+show txq info 0 0
+show port 0 rxq 0 desc 0 status
+set fwd io
+set record-burst-stats on
+start tx_first
+sleep 5
+stop

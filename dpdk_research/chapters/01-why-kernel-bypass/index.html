@@ -561,7 +561,7 @@ int main(int argc, char **argv)
     <div class="widget" id="w-ivp">
       <div class="widget-head"><span class="widget-title">Interrupt vs polling: CPU timeline</span><span class="badge">interactive</span></div>
       <div class="widget-body">
-        <div class="scroll-x"><svg viewBox="0 0 680 230" role="img" aria-label="Strip chart of CPU busy time for polling and interrupt mode"></svg></div>
+        <div class="scroll-x"><svg viewBox="0 0 680 244" role="img" aria-label="Strip chart of CPU busy time for polling and interrupt mode"></svg></div>
         <div class="stat-row">
           <div class="stat"><div class="stat-label">poll: CPU</div><div class="stat-value"><span id="i-pcpu">-</span><span class="stat-unit">%</span></div></div>
           <div class="stat"><div class="stat-label">intr: CPU</div><div class="stat-value"><span id="i-icpu">-</span><span class="stat-unit">%</span></div></div>
@@ -1348,7 +1348,8 @@ CourseJS.ready(function () {
       for (var i = 0; i < NB; i++) l.bars.push(S.rect(svg, 10 + i * 6.6, l.y + 70, 5.6, 0, 'svg-fill-' + l.cls, { rx: 0 }));
       l.marks = S.group(svg);
     });
-    S.text(svg, 10, 222, 'time → (100 ms window). Orange ticks = packet arrivals; bar height = share of each 1 ms the core is busy', 'svg-label small muted');
+    S.text(svg, 10, 222, 'time → (100 ms window). Orange ticks = packet arrivals.', 'svg-label small muted');
+    S.text(svg, 10, 238, 'Bar height = share of each 1 ms the core is busy.', 'svg-label small muted');
     var rateEl = document.getElementById('i-rate');
     function rate(v) { return v <= 0.001 ? 0 : Math.pow(10, v + 1); }   /* slider 0..3 -> 0, 10^1..10^4 */
     function val(v, mode, key) {                                         /* linear in slider units = log rate */

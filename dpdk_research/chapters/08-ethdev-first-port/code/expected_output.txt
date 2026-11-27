@@ -1,0 +1,508 @@
+
+$ ./port_explorer -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-ports --vdev=net_null0 --vdev=net_ring0 --vdev=net_tap0,iface=ch08tap0
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch08-ports/mp_socket
+EAL: Selected IOVA mode 'VA'
+rte_eth_dev_count_avail() = 3
+
+=== port 0: "net_null0" (get_port_by_name -> 0, valid=1, socket=0) ===
+  driver           net_null
+  queues           max_rx=1024 max_tx=1024
+  rx_desc_lim      min=0 max=65535 align=1   tx_desc_lim min=0 max=65535 align=1
+  preferred        rx ring=0 burst=0   tx ring=0 burst=0  (0 = no preference)
+  mtu              min=46 max=65535   max_rx_pktlen=4294967295  min_rx_bufsize=0
+  rx_offload_capa  0x0000000000000000 (none)
+  tx_offload_capa  0x000000000000c000 MT_LOCKFREE MULTI_SEGS
+  rss              reta_size=128 key=40 B flow_type_rss_offloads=0x2003ffffc
+ETHDEV: lcore 0 called rx_pkt_burst for not ready port 0
+0: ./port_explorer (rte_dump_stack+0x42) [55ec167a76a2]
+1: ./port_explorer (55ec1646d000+0x95d80) [55ec16502d80]
+2: ./port_explorer (55ec1646d000+0xada5d) [55ec1651aa5d]
+3: ./port_explorer (main+0x15f) [55ec1651345f]
+4: /lib/x86_64-linux-gnu/libc.so.6 (7f54ad000000+0x2a1ca) [7f54ad02a1ca]
+5: /lib/x86_64-linux-gnu/libc.so.6 (__libc_start_main+0x8b) [7f54ad02a28b]
+6: ./port_explorer (_start+0x25) [55ec1651a6b5]
+  rx_burst before configure        -> 0, rte_errno=95 (Operation not supported)
+  rte_eth_dev_configure(1,1)         -> 0
+  rte_eth_dev_adjust_nb_rx_tx_desc   -> 0
+  descriptors asked 1024 -> using rx=1024 tx=1024
+  rte_eth_rx_queue_setup(q0, 1024)   -> 0
+  rte_eth_tx_queue_setup(q0, 1024)   -> 0
+  rte_eth_dev_start                  -> 0
+ETHDEV: Port 0 must be stopped to allow configuration
+  rte_eth_dev_configure while started -> -16 (Device or resource busy)
+  link             Link up at 10 Gbps FDX Fixed None
+  mac              06:50:92:EF:81:6A
+  rte_eth_promiscuous_enable         -> 0
+  tx_burst(8) accepted 8; 4 x rx_burst(32) returned 128 in total
+  stats            ipackets=128 opackets=8 ibytes=8192 obytes=480 imissed=0 ierrors=0 oerrors=0 rx_nombuf=0
+  xstats           12 counters; per-queue ones: rx_q0_packets=128 rx_q0_bytes=8192 tx_q0_packets=8 tx_q0_bytes=480
+  rte_eth_dev_stop                   -> 0
+ETHDEV: lcore 0 called rx_pkt_burst for not ready port 0
+0: ./port_explorer (rte_dump_stack+0x42) [55ec167a76a2]
+1: ./port_explorer (55ec1646d000+0x95d80) [55ec16502d80]
+2: ./port_explorer (55ec1646d000+0xae085) [55ec1651b085]
+3: ./port_explorer (main+0x15f) [55ec1651345f]
+4: /lib/x86_64-linux-gnu/libc.so.6 (7f54ad000000+0x2a1ca) [7f54ad02a1ca]
+5: /lib/x86_64-linux-gnu/libc.so.6 (__libc_start_main+0x8b) [7f54ad02a28b]
+6: ./port_explorer (_start+0x25) [55ec1651a6b5]
+  rx_burst after stop              -> 0, rte_errno=95 (Operation not supported)
+ETHDEV: Deferred start requested, but driver does not support Rx queue start
+  rx_queue_setup(q0, deferred_start) -> -95 (Operation not supported)
+  rte_eth_dev_close                  -> 0
+
+=== port 1: "net_ring0" (get_port_by_name -> 1, valid=1, socket=0) ===
+  driver           net_ring
+  queues           max_rx=16 max_tx=16
+  rx_desc_lim      min=0 max=65535 align=1   tx_desc_lim min=0 max=65535 align=1
+  preferred        rx ring=0 burst=0   tx ring=0 burst=0  (0 = no preference)
+  mtu              min=46 max=65535   max_rx_pktlen=4294967295  min_rx_bufsize=0
+  rx_offload_capa  0x0000000000002000 SCATTER
+  tx_offload_capa  0x0000000000008000 MULTI_SEGS
+  rss              reta_size=0 key=0 B flow_type_rss_offloads=0x0
+ETHDEV: lcore 0 called rx_pkt_burst for not ready port 1
+0: ./port_explorer (rte_dump_stack+0x42) [55ec167a76a2]
+1: ./port_explorer (55ec1646d000+0x95d80) [55ec16502d80]
+2: ./port_explorer (55ec1646d000+0xada5d) [55ec1651aa5d]
+3: ./port_explorer (main+0x15f) [55ec1651345f]
+4: /lib/x86_64-linux-gnu/libc.so.6 (7f54ad000000+0x2a1ca) [7f54ad02a1ca]
+5: /lib/x86_64-linux-gnu/libc.so.6 (__libc_start_main+0x8b) [7f54ad02a28b]
+6: ./port_explorer (_start+0x25) [55ec1651a6b5]
+  rx_burst before configure        -> 0, rte_errno=95 (Operation not supported)
+  rte_eth_dev_configure(1,1)         -> 0
+  rte_eth_dev_adjust_nb_rx_tx_desc   -> 0
+  descriptors asked 1024 -> using rx=1024 tx=1024
+  rte_eth_rx_queue_setup(q0, 1024)   -> 0
+  rte_eth_tx_queue_setup(q0, 1024)   -> 0
+  rte_eth_dev_start                  -> 0
+ETHDEV: Port 1 must be stopped to allow configuration
+  rte_eth_dev_configure while started -> -16 (Device or resource busy)
+  link             Link up at 10 Gbps FDX Fixed None
+  mac              00:00:00:00:00:00
+  rte_eth_promiscuous_enable         -> 0
+  tx_burst(8) accepted 8; 4 x rx_burst(32) returned 8 in total
+  stats            ipackets=8 opackets=8 ibytes=0 obytes=0 imissed=0 ierrors=0 oerrors=0 rx_nombuf=0
+  xstats           12 counters; per-queue ones: rx_q0_packets=8 rx_q0_bytes=0 tx_q0_packets=8 tx_q0_bytes=0
+  rte_eth_dev_stop                   -> 0
+ETHDEV: lcore 0 called rx_pkt_burst for not ready port 1
+0: ./port_explorer (rte_dump_stack+0x42) [55ec167a76a2]
+1: ./port_explorer (55ec1646d000+0x95d80) [55ec16502d80]
+2: ./port_explorer (55ec1646d000+0xae085) [55ec1651b085]
+3: ./port_explorer (main+0x15f) [55ec1651345f]
+4: /lib/x86_64-linux-gnu/libc.so.6 (7f54ad000000+0x2a1ca) [7f54ad02a1ca]
+5: /lib/x86_64-linux-gnu/libc.so.6 (__libc_start_main+0x8b) [7f54ad02a28b]
+6: ./port_explorer (_start+0x25) [55ec1651a6b5]
+  rx_burst after stop              -> 0, rte_errno=95 (Operation not supported)
+ETHDEV: Deferred start requested, but driver does not support Rx queue start
+  rx_queue_setup(q0, deferred_start) -> -95 (Operation not supported)
+  rte_eth_dev_close                  -> 0
+
+=== port 2: "net_tap0" (get_port_by_name -> 2, valid=1, socket=0) ===
+  driver           net_tap
+  queues           max_rx=64 max_tx=64
+  rx_desc_lim      min=0 max=65535 align=1   tx_desc_lim min=0 max=65535 align=1
+  preferred        rx ring=0 burst=0   tx ring=0 burst=0  (0 = no preference)
+  mtu              min=46 max=65535   max_rx_pktlen=16128  min_rx_bufsize=0
+  rx_offload_capa  0x000000000000200e IPV4_CKSUM UDP_CKSUM TCP_CKSUM SCATTER
+  tx_offload_capa  0x000000000000802e IPV4_CKSUM UDP_CKSUM TCP_CKSUM TCP_TSO MULTI_SEGS
+  rss              reta_size=0 key=40 B flow_type_rss_offloads=0x3afbc
+ETHDEV: lcore 0 called rx_pkt_burst for not ready port 2
+0: ./port_explorer (rte_dump_stack+0x42) [55ec167a76a2]
+1: ./port_explorer (55ec1646d000+0x95d80) [55ec16502d80]
+2: ./port_explorer (55ec1646d000+0xada5d) [55ec1651aa5d]
+3: ./port_explorer (main+0x15f) [55ec1651345f]
+4: /lib/x86_64-linux-gnu/libc.so.6 (7f54ad000000+0x2a1ca) [7f54ad02a1ca]
+5: /lib/x86_64-linux-gnu/libc.so.6 (__libc_start_main+0x8b) [7f54ad02a28b]
+6: ./port_explorer (_start+0x25) [55ec1651a6b5]
+  rx_burst before configure        -> 0, rte_errno=95 (Operation not supported)
+  rte_eth_dev_configure(1,1)         -> 0
+  rte_eth_dev_adjust_nb_rx_tx_desc   -> 0
+  descriptors asked 1024 -> using rx=1024 tx=1024
+  rte_eth_rx_queue_setup(q0, 1024)   -> 0
+  rte_eth_tx_queue_setup(q0, 1024)   -> 0
+  rte_eth_dev_start                  -> 0
+ETHDEV: Port 2 must be stopped to allow configuration
+  rte_eth_dev_configure while started -> -16 (Device or resource busy)
+  link             Link up at 10 Gbps FDX Fixed None
+  mac              FE:4A:B1:A0:11:A8
+  rte_eth_promiscuous_enable         -> 0
+  tx_burst(8) accepted 8; 4 x rx_burst(32) returned 0 in total
+  stats            ipackets=0 opackets=8 ibytes=0 obytes=480 imissed=0 ierrors=0 oerrors=0 rx_nombuf=0
+  xstats           12 counters; per-queue ones: rx_q0_packets=0 rx_q0_bytes=0 tx_q0_packets=8 tx_q0_bytes=480
+  rte_eth_dev_stop                   -> 0
+ETHDEV: lcore 0 called rx_pkt_burst for not ready port 2
+0: ./port_explorer (rte_dump_stack+0x42) [55ec167a76a2]
+1: ./port_explorer (55ec1646d000+0x95d80) [55ec16502d80]
+2: ./port_explorer (55ec1646d000+0xae085) [55ec1651b085]
+3: ./port_explorer (main+0x15f) [55ec1651345f]
+4: /lib/x86_64-linux-gnu/libc.so.6 (7f54ad000000+0x2a1ca) [7f54ad02a1ca]
+5: /lib/x86_64-linux-gnu/libc.so.6 (__libc_start_main+0x8b) [7f54ad02a28b]
+6: ./port_explorer (_start+0x25) [55ec1651a6b5]
+  rx_burst after stop              -> 0, rte_errno=95 (Operation not supported)
+  rx_queue_setup(q0, deferred_start) -> 0
+  rte_eth_dev_start                  -> 0
+ETHDEV: Queue 0 of device with port_id=2 already started
+  rte_eth_dev_rx_queue_start(q0)     -> 0
+  rte_eth_dev_rx_queue_stop(q0)      -> 0
+  rte_eth_dev_stop                   -> 0
+  rte_eth_dev_close                  -> 0
+
+after close: rte_eth_dev_count_avail() = 0, mbufs in pool 4095/4095
+
+$ ./lifecycle_rules -l 0 --no-pci --no-huge -m 64 --file-prefix=ch08-rules --vdev=net_null0 --log-level=lib.ethdev:info
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch08-rules/mp_socket
+EAL: Selected IOVA mode 'VA'
+port 0 driver net_null
+state: probed, not configured
+ETHDEV: Device with port_id=0 is not configured.
+  rte_eth_dev_start                        ->  -22 Invalid argument
+  rte_eth_dev_configure(1 rxq, 1 txq)      ->    0 
+state: configured, queues NOT set up
+ETHDEV: Invalid Rx queue_id=1
+  rte_eth_rx_queue_setup(q1)  [only 1 rxq] ->  -22 Invalid argument
+  rte_eth_dev_start  [no queues!]          ->    0 
+  rte_eth_dev_stop                         ->    0 
+  rte_eth_rx_queue_setup(q0)               ->    0 
+  rte_eth_tx_queue_setup(q0)               ->    0 
+  rte_eth_dev_start                        ->    0 
+state: started
+ETHDEV: Device with port_id=0 already started
+  rte_eth_dev_start  [again]               ->    0 
+ETHDEV: Port 0 must be stopped to allow configuration
+  rte_eth_dev_configure                    ->  -16 Device or resource busy
+  rte_eth_rx_queue_setup(q0)               ->  -16 Device or resource busy
+ETHDEV: Cannot close started device (port 0)
+  rte_eth_dev_close  [while started]       ->  -22 Invalid argument
+  rte_eth_dev_stop                         ->    0 
+state: stopped
+ETHDEV: Device with port_id=0 already stopped
+  rte_eth_dev_stop  [again]                ->    0 
+  rte_eth_dev_configure(1, 1)              ->    0 
+  rte_eth_rx_queue_setup(q0)               ->    0 
+  rte_eth_dev_close                        ->    0 
+state: closed (port id released)
+  rte_eth_dev_is_valid_port                ->    0 
+ETHDEV: Invalid port_id=0
+  rte_eth_dev_configure                    ->  -19 No such device
+
+$ ./lifecycle_rules -l 0 --no-pci --no-huge -m 64 --file-prefix=ch08-rules --vdev=net_null0 --log-level=lib.ethdev:info -- --early-setup
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch08-rules/mp_socket
+EAL: Selected IOVA mode 'VA'
+port 0 driver net_null
+state: probed, not configured
+ETHDEV: Device with port_id=0 is not configured.
+  rte_eth_dev_start                        ->  -22 Invalid argument
+  (calling rte_eth_rx_queue_setup before configure...)
+[exit status 139]
+
+$ ./lifecycle_rules -l 0 --no-pci --no-huge -m 64 --file-prefix=ch08-rules --vdev=net_tap0,iface=ch08tap1 --log-level=lib.ethdev:info -- --early-setup
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch08-rules/mp_socket
+EAL: Selected IOVA mode 'VA'
+port 0 driver net_tap
+state: probed, not configured
+ETHDEV: Device with port_id=0 is not configured.
+  rte_eth_dev_start                        ->  -22 Invalid argument
+  (calling rte_eth_rx_queue_setup before configure...)
+ETHDEV: Invalid Rx queue_id=0
+  rte_eth_rx_queue_setup(q0)               ->  -22 Invalid argument
+  rte_eth_dev_configure(1 rxq, 1 txq)      ->    0 
+state: configured, queues NOT set up
+ETHDEV: Invalid Rx queue_id=1
+  rte_eth_rx_queue_setup(q1)  [only 1 rxq] ->  -22 Invalid argument
+  rte_eth_dev_start  [no queues!]          ->    0 
+  rte_eth_dev_stop                         ->    0 
+  rte_eth_rx_queue_setup(q0)               ->    0 
+  rte_eth_tx_queue_setup(q0)               ->    0 
+  rte_eth_dev_start                        ->    0 
+state: started
+ETHDEV: Device with port_id=0 already started
+  rte_eth_dev_start  [again]               ->    0 
+ETHDEV: Port 0 must be stopped to allow configuration
+  rte_eth_dev_configure                    ->  -16 Device or resource busy
+  rte_eth_rx_queue_setup(q0)               ->  -16 Device or resource busy
+ETHDEV: Cannot close started device (port 0)
+  rte_eth_dev_close  [while started]       ->  -22 Invalid argument
+  rte_eth_dev_stop                         ->    0 
+state: stopped
+ETHDEV: Device with port_id=0 already stopped
+  rte_eth_dev_stop  [again]                ->    0 
+  rte_eth_dev_configure(1, 1)              ->    0 
+  rte_eth_rx_queue_setup(q0)               ->    0 
+  rte_eth_dev_close                        ->    0 
+state: closed (port id released)
+  rte_eth_dev_is_valid_port                ->    0 
+ETHDEV: Invalid port_id=0
+  rte_eth_dev_configure                    ->  -19 No such device
+
+$ ./my_skeleton -l 1 --no-pci --no-huge -m 128 --file-prefix=ch08-skel --vdev=net_null0 --vdev=net_null1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch08-skel/mp_socket
+EAL: Selected IOVA mode 'VA'
+mbuf pool: need 4602 -> creating 8191 mbufs (2 ports)
+Port 0 (net_null): MAC 36:B7:12:4C:1C:16, 1024 rxd, 1024 txd
+Port 1 (net_null): MAC BE:F8:67:72:CA:2E, 1024 rxd, 1024 txd
+
+lcore 1 forwarding (burst 32, direct tx_burst). Ctrl+C to quit.
+[  1.0s] port 0: rx    42.84 Mpps  tx    42.84 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=42836992 opackets=42836992 rx_nombuf=0
+[  1.0s] port 1: rx    42.84 Mpps  tx    42.84 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=42836992 opackets=42836992 rx_nombuf=0
+[  2.0s] port 0: rx    42.95 Mpps  tx    42.95 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=85782848 opackets=85782848 rx_nombuf=0
+[  2.0s] port 1: rx    42.95 Mpps  tx    42.95 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=85782848 opackets=85782848 rx_nombuf=0
+[  3.0s] port 0: rx    42.72 Mpps  tx    42.72 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=128507552 opackets=128507552 rx_nombuf=0
+[  3.0s] port 1: rx    42.72 Mpps  tx    42.72 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=128507552 opackets=128507552 rx_nombuf=0
+[  4.0s] port 0: rx    43.06 Mpps  tx    43.06 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=171570176 opackets=171570176 rx_nombuf=0
+[  4.0s] port 1: rx    43.06 Mpps  tx    43.06 Mpps  drop 0  pkts/tx_burst  32.0 | PMD ipackets=171570176 opackets=171570176 rx_nombuf=0
+
+Signal 2 received, stopping...
+port 0: app rx=208894464 tx=208894464 dropped=0 tx_burst calls=6527952
+port 1: app rx=208894464 tx=208894464 dropped=0 tx_burst calls=6527952
+mbufs back in pool: 8191 of 8191 (no leak)
+[stopped by SIGINT from timeout after 5s]
+
+$ ./my_skeleton -l 1 --no-pci --no-huge -m 128 --file-prefix=ch08-skel --vdev=net_null0 --vdev=net_null1 -- --burst 4
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch08-skel/mp_socket
+EAL: Selected IOVA mode 'VA'
+mbuf pool: need 4602 -> creating 8191 mbufs (2 ports)
+Port 0 (net_null): MAC 8A:62:BD:65:78:55, 1024 rxd, 1024 txd
+Port 1 (net_null): MAC 0E:FF:64:9D:65:21, 1024 rxd, 1024 txd
+
+lcore 1 forwarding (burst 4, direct tx_burst). Ctrl+C to quit.
+[  1.0s] port 0: rx    38.12 Mpps  tx    38.12 Mpps  drop 0  pkts/tx_burst   4.0 | PMD ipackets=38121608 opackets=38121608 rx_nombuf=0
+[  1.0s] port 1: rx    38.12 Mpps  tx    38.12 Mpps  drop 0  pkts/tx_burst   4.0 | PMD ipackets=38121608 opackets=38121608 rx_nombuf=0
+[  2.0s] port 0: rx    37.59 Mpps  tx    37.59 Mpps  drop 0  pkts/tx_burst   4.0 | PMD ipackets=75715232 opackets=75715232 rx_nombuf=0
+[  2.0s] port 1: rx    37.59 Mpps  tx    37.59 Mpps  drop 0  pkts/tx_burst   4.0 | PMD ipackets=75715232 opackets=75715232 rx_nombuf=0
+[  3.0s] port 0: rx    37.04 Mpps  tx    37.04 Mpps  drop 0  pkts/tx_burst   4.0 | PMD ipackets=112754464 opackets=112754464 rx_nombuf=0
+[  3.0s] port 1: rx    37.04 Mpps  tx    37.04 Mpps  drop 0  pkts/tx_burst   4.0 | PMD ipackets=112754464 opackets=112754464 rx_nombuf=0
+
+Signal 2 received, stopping...
+port 0: app rx=145609444 tx=145609444 dropped=0 tx_burst calls=36402361
+
+Signal 2 received, stopping...
+port 1: app rx=145609444 tx=145609444 dropped=0 tx_burst calls=36402361
+mbufs back in pool: 8191 of 8191 (no leak)
+[stopped by SIGINT from timeout after 4s]
+
+$ ./my_skeleton -l 1 --no-pci --no-huge -m 128 --file-prefix=ch08-skel --vdev=net_null0 --vdev=net_null1 -- --burst 4 --tx-buffer
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch08-skel/mp_socket
+EAL: Selected IOVA mode 'VA'
+mbuf pool: need 4666 -> creating 8191 mbufs (2 ports)
+Port 0 (net_null): MAC 02:5C:B6:91:D4:A4, 1024 rxd, 1024 txd
+Port 1 (net_null): MAC D6:4E:A8:96:B8:34, 1024 rxd, 1024 txd
+
+lcore 1 forwarding (burst 4, tx buffer). Ctrl+C to quit.
+[  1.0s] port 0: rx    29.57 Mpps  tx    29.57 Mpps  drop 0  pkts/tx_burst  31.9 | PMD ipackets=29568360 opackets=29568352 rx_nombuf=0
+[  1.0s] port 1: rx    29.57 Mpps  tx    29.57 Mpps  drop 0  pkts/tx_burst  31.9 | PMD ipackets=29568360 opackets=29568352 rx_nombuf=0
+[  2.0s] port 0: rx    29.05 Mpps  tx    29.05 Mpps  drop 0  pkts/tx_burst  31.9 | PMD ipackets=58621752 opackets=58621740 rx_nombuf=0
+[  2.0s] port 1: rx    29.05 Mpps  tx    29.05 Mpps  drop 0  pkts/tx_burst  31.9 | PMD ipackets=58621752 opackets=58621740 rx_nombuf=0
+[  3.0s] port 0: rx    29.69 Mpps  tx    29.69 Mpps  drop 0  pkts/tx_burst  31.9 | PMD ipackets=88312188 opackets=88312188 rx_nombuf=0
+[  3.0s] port 1: rx    29.69 Mpps  tx    29.69 Mpps  drop 0  pkts/tx_burst  31.9 | PMD ipackets=88312188 opackets=88312188 rx_nombuf=0
+
+Signal 2 received, stopping...
+
+Signal 2 received, stopping...
+port 0: app rx=114316056 tx=114316056 dropped=0 tx_burst calls=3584799
+port 1: app rx=114316056 tx=114316056 dropped=0 tx_burst calls=3584799
+mbufs back in pool: 8191 of 8191 (no leak)
+[stopped by SIGINT from timeout after 4s]
+
+$ ./burst_sweep -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-sweep --vdev=net_null0
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch08-sweep/mp_socket
+EAL: Selected IOVA mode 'VA'
+TSC 2.700 GHz, 2097152 packets per run, 5 runs per burst size, port 0 (net_null)
+ burst  cyc/pkt med        min        max   Mpps (med)
+     1        49.61      49.14      66.58         54.4
+     2        33.88      33.81      34.58         79.7
+     4        21.36      21.22      21.94        126.4
+     8        17.84      17.34      18.16        151.4
+    16        23.94      23.92      23.95        112.8
+    32        25.24      25.21      25.30        107.0
+    64        28.86      28.74      29.36         93.6
+   128        29.60      29.57      29.80         91.2
+fit: cycles/pkt = 23.6 / burst + 22.9   (fixed cost per rx+tx call pair ~24 cycles, per-packet cost ~22.9 cycles)
+CSV burst,cyc_med
+CSV 1,49.61
+CSV 2,33.88
+CSV 4,21.36
+CSV 8,17.84
+CSV 16,23.94
+CSV 32,25.24
+CSV 64,28.86
+CSV 128,29.60
+
+$ ./ring_cable -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-cable
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch08-cable/mp_socket
+EAL: Selected IOVA mode 'VA'
+ports: A=0 (cableA)  B=1 (cableB), cable capacity 63 packets
+
+Part 1: 3 bursts of 32 numbered packets A -> B
+  burst 0: tx_burst accepted 32/32, B rx_burst got 32 (seq 0..31)
+  burst 1: tx_burst accepted 32/32, B rx_burst got 32 (seq 32..63)
+  burst 2: tx_burst accepted 32/32, B rx_burst got 32 (seq 64..95)
+  received 96, out-of-order 0
+
+Part 2: send 100 packets without reading the other end
+  before:                      pool avail=511 in-use=  0   cable A2B holds 0
+  tx_burst(100) accepted 63; pkts[63..99] are still OURS
+  after tx, before free:       pool avail=411 in-use=100   cable A2B holds 63
+  after freeing the tail:      pool avail=448 in-use= 63   cable A2B holds 63
+  B drained 63 packets
+  after draining B:            pool avail=511 in-use=  0   cable A2B holds 0
+
+end: pool avail=511 of 511 (no leak)
+
+$ ./ring_cable -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-cable -- --leak
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch08-cable/mp_socket
+EAL: Selected IOVA mode 'VA'
+ports: A=0 (cableA)  B=1 (cableB), cable capacity 63 packets
+
+Part 1: 3 bursts of 32 numbered packets A -> B
+  burst 0: tx_burst accepted 32/32, B rx_burst got 32 (seq 0..31)
+  burst 1: tx_burst accepted 32/32, B rx_burst got 32 (seq 32..63)
+  burst 2: tx_burst accepted 32/32, B rx_burst got 32 (seq 64..95)
+  received 96, out-of-order 0
+
+Part 2: send 100 packets without reading the other end
+  before:                      pool avail=511 in-use=  0   cable A2B holds 0
+  tx_burst(100) accepted 63; pkts[63..99] are still OURS
+  after tx, before free:       pool avail=411 in-use=100   cable A2B holds 63
+  after freeing the tail:      pool avail=448 in-use= 63   cable A2B holds 63
+  B drained 63 packets
+  after draining B:            pool avail=511 in-use=  0   cable A2B holds 0
+
+Part 3 (--leak): same as part 2 but never free the unsent tail
+  round  1: sent 63, leaked 37   pool avail=474 in-use= 37
+  round  2: sent 63, leaked 37   pool avail=437 in-use= 74
+  round  3: sent 63, leaked 37   pool avail=400 in-use=111
+  round  4: sent 63, leaked 37   pool avail=363 in-use=148
+  round  5: sent 63, leaked 37   pool avail=326 in-use=185
+  round  6: sent 63, leaked 37   pool avail=289 in-use=222
+  round  7: sent 63, leaked 37   pool avail=252 in-use=259
+  round  8: sent 63, leaked 37   pool avail=215 in-use=296
+  round  9: sent 63, leaked 37   pool avail=178 in-use=333
+  round 10: sent 63, leaked 37   pool avail=141 in-use=370
+  round 11: sent 63, leaked 37   pool avail=104 in-use=407
+  round 12: sent 63, leaked 37   pool avail= 67 in-use=444
+  round 13: rte_pktmbuf_alloc_bulk(100) FAILED - pool exhausted
+
+end: pool avail=67 of 511 (LEAK)
+
+$ ./my_skeleton ... --file-prefix=ch08-tel &   # background, 5 s
+$ echo /ethdev/stats,0 | dpdk-telemetry.py -f ch08-tel
+{"/ethdev/stats": {"ipackets": 96894944, "opackets": 96894944, "ibytes": 6201276416, "obytes": 6201276416, "imissed": 0, "ierrors": 0, "oerrors": 0, "rx_nombuf": 0}}
+
+$ ./port_explorer -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-dbg --vdev=net_null0 --log-level=lib.ethdev:debug --log-level=pmd.net.null:debug | grep -E 'ETH_NULL|ETHDEV'
+ETH_NULL: rte_pmd_null_probe(): Initializing pmd_null for net_null0
+ETH_NULL: rte_pmd_null_probe(): Configure pmd_null: packet size is 64, packet copy is disabled
+ETH_NULL: eth_dev_null_create(): Creating null ethdev on numa socket 0
+ETHDEV: lcore 0 called rx_pkt_burst for not ready port 0
+ETHDEV: Port 0 must be stopped to allow configuration
+ETHDEV: lcore 0 called rx_pkt_burst for not ready port 0
+ETHDEV: Deferred start requested, but driver does not support Rx queue start
+ETH_NULL: eth_dev_close(): Closing null ethdev on NUMA socket 0
+
+$ $E/dpdk-skeleton -l 1 --no-pci --no-huge -m 128 --file-prefix=ch08-sk --vdev=net_null0 --vdev=net_null1
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch08-sk/mp_socket
+EAL: Selected IOVA mode 'VA'
+Port 0 MAC: 62 f2 e5 0d 29 7a
+Port 1 MAC: 26 a2 f8 10 9d 64
+
+Core 1 forwarding packets. [Ctrl+C to quit]
+[stopped by SIGINT from timeout after 6s]
+
+$ ./skeleton_pairs -l 1 --no-pci --no-huge -m 128 --file-prefix=ch08-pairs --vdev=net_null0 --vdev=net_null1 --vdev=net_null2 --vdev=net_null3 --vdev=net_null4 -- --exclude 2
+EAL: Detected CPU lcores: 4
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/ch08-pairs/mp_socket
+EAL: Selected IOVA mode 'VA'
+closing port 2 to leave a gap in the port ids
+pair: port 0 <-> port 1   (p^1 would have given 0 <-> 1)
+pair: port 3 <-> port 4   (p^1 would have given 3 <-> 2)
+port 0: rx 23126624  tx 23126624  (peer 1)
+port 1: rx 23126624  tx 23126624  (peer 0)
+port 3: rx 23126624  tx 23126624  (peer 4)
+port 4: rx 23126624  tx 23126624  (peer 3)
+pool avail after close: 8191 of 8191
+
+$ ./init_errors.sh
+=== E1: no ports ===================================================
+$ dpdk-testpmd -l 0,1 --no-pci --no-huge -m 256 --file-prefix=ch08-ie-nop -- --total-num-mbufs=4096 --stats-period 1
+testpmd: No probed ethernet devices
+io packet forwarding - ports=0 - cores=0 - streams=0 - NUMA support enabled, MP allocation mode: native
+  nb forwarding cores=1 - nb forwarding ports=0
+$ ./my_skeleton -l 1 --no-pci --no-huge -m 128 --file-prefix=ch08-ie-nop
+EAL: Error - exiting with code: 1
+need an even number of ports (>= 2), found 0
+
+=== E2: the mbuf pool does not fit in memory =======================
+$ dpdk-testpmd -l 0,1 --no-pci --no-huge -m 256 --file-prefix=ch08-ie-tp --vdev=net_null0 -- --stats-period 1
+testpmd: create a new mbuf pool <mb_pool_0>: n=155456, size=2176, socket=0
+EAL: Error - exiting with code: 1
+Creation of mbuf pool for socket 0 failed: Cannot allocate memory
+$ dpdk-testpmd ... same, plus --total-num-mbufs=8192
+testpmd: create a new mbuf pool <mb_pool_0>: n=8192, size=2176, socket=0
+Port 0: 1E:35:2B:75:0A:FD
+$ ./my_skeleton -l 1 --no-pci --no-huge -m 16 --file-prefix=ch08-ie-pool --vdev=net_null0 --vdev=net_null1
+mbuf pool: need 4602 -> creating 8191 mbufs (2 ports)
+EAL: Error - exiting with code: 1
+cannot create mbuf pool: Cannot allocate memory
+
+=== E3: nb_desc outside dev_info.rx_desc_lim =======================
+# net_null advertises no limits (min 0, max 65535, align 1): nb_desc=1 is accepted
+$ ./port_explorer -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-ie-null --vdev=net_null0 -- --nb-desc 1 --no-adjust
+  rx_desc_lim      min=0 max=65535 align=1   tx_desc_lim min=0 max=65535 align=1
+  rte_eth_rx_queue_setup(q0, 1)      -> 0
+  rte_eth_tx_queue_setup(q0, 1)      -> 0
+  rx_queue_setup(q0, deferred_start) -> -95 (Operation not supported)
+# virtio_user needs a vhost-user backend: start testpmd with net_vhost0 in the background
+$ ./port_explorer -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-ie-desc --vdev=virtio_user0,path=$WORK/ch08vh.sock,queues=1 -- --nb-desc 1 --no-adjust
+  driver           net_virtio_user
+  rx_desc_lim      min=32 max=32768 align=1   tx_desc_lim min=32 max=32768 align=1
+ETHDEV: Invalid value for nb_rx_desc(=1), should be: <= 32768, >= 32, and a product of 1
+  rte_eth_rx_queue_setup(q0, 1)      -> -22 (Invalid argument)
+# the same with rte_eth_dev_adjust_nb_rx_tx_desc(): 1 is clamped to nb_min
+$ ./port_explorer ... --file-prefix=ch08-ie-desc2 ... -- --nb-desc 1
+  descriptors asked 1 -> using rx=32 tx=32
+  rte_eth_rx_queue_setup(q0, 32)     -> 0
+  rte_eth_tx_queue_setup(q0, 32)     -> 0
+  rte_eth_dev_start                  -> 0
+  rx_queue_setup(q0, deferred_start) -> -95 (Operation not supported)
+
+=== E4 + E5: configure while started, deferred start unsupported ====
+$ ./port_explorer -l 0 --no-pci --no-huge -m 128 --file-prefix=ch08-ie-null --vdev=net_null0
+ETHDEV: Port 0 must be stopped to allow configuration
+  rte_eth_dev_configure while started -> -16 (Device or resource busy)
+ETHDEV: Deferred start requested, but driver does not support Rx queue start
+  rx_queue_setup(q0, deferred_start) -> -95 (Operation not supported)
+
+init_errors.sh done

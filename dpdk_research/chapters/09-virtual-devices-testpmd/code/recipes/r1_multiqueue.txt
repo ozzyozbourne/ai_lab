@@ -1,0 +1,4 @@
+show config fwd
+start
+sleep 2
+stop

@@ -1,0 +1,8 @@
+show port info 0
+set txpkts 2000,2000,2000,2000,1000
+show config txpkts
+set fwd txonly
+start
+sleep 1
+stop
+show port stats 0

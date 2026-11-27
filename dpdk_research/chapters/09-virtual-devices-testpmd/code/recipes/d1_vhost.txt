@@ -1,0 +1,8 @@
+sleep 5
+show port 0 rxq 0 desc used count
+set fwd io
+start
+sleep 2
+show port 0 rxq 0 desc used count
+stop
+show rxq info 0 0

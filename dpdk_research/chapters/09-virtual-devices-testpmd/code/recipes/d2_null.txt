@@ -1,0 +1,22 @@
+show port 0 rx_offload capabilities
+port attach net_pcap2,rx_pcap=@WORK@/three.pcap
+port start 2
+show port info 2
+set portlist 2
+set fwd rxonly
+set verbose 1
+start
+sleep 1
+stop
+set verbose 0
+port stop 2
+port detach 2
+set portlist 0,1
+set fwd io
+clear port xstats all
+start
+sleep 1
+stop
+show fwd stats all
+set xstats-hide-zero on
+show port xstats 0

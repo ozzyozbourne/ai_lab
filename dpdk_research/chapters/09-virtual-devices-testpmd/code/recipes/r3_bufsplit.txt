@@ -1,0 +1,5 @@
+show port 0 rx_offload capabilities
+port stop 0
+port config 0 rx_offload buffer_split on
+set rxpkts 64,0
+port start 0

@@ -1,0 +1,1910 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 The EAL | DPDK from Zero to Expert</title>
+<meta name="description" content="What rte_eal_init does step by step, lcores versus CPUs and the --lcores syntax, launching work on worker lcores, EAL and control threads, DPDK logging, TSC time, signals, clean shutdown, and how to measure on a shared machine.">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  /* Chapter 3 widgets. Colours come only from course.css variables. */
+  .wide-svg { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .wide-svg > svg { min-width: 560px; display: block; }
+  .ch3-input { font-family: var(--font-mono); font-size: .9rem; padding: .35rem .5rem; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text); min-width: 0; flex: 1 1 260px; }
+  .ch3-select { font-size: .85rem; padding: .25rem .4rem; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text); }
+  .ch3-presets { display: flex; flex-wrap: wrap; gap: .35rem; padding: .5rem 1rem 0; }
+  .ch3-presets .btn { font-family: var(--font-mono); font-size: .78rem; }
+  .ch3-log { margin: .6rem 1rem 0; font-family: var(--font-mono); font-size: .78rem; line-height: 1.45; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: .5rem .7rem; max-height: 13.5em; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text-muted); }
+  .ch3-log .cur { color: var(--text); font-weight: 600; }
+  .ch3-log .new { color: var(--accent); }
+  .ch3-msgs { margin: .5rem 1rem .2rem; font-size: .85rem; }
+  .ch3-msgs li { margin: .15rem 0; }
+  .ch3-msgs .bad { color: var(--c4); font-weight: 600; }
+  .ch3-msgs .warn { color: var(--c3); font-weight: 600; }
+  .ch3-msgs .good { color: var(--c2); font-weight: 600; }
+  .svg-ok { fill: var(--c2); }
+  .svg-no { fill: var(--c4); }
+  .svg-box.flash { stroke: var(--c4); stroke-width: 3; }
+  .svg-box.cur { stroke-width: 3; }
+  .svg-box.dim { opacity: .35; }
+  .measure-box ol { margin: .3rem 0 .2rem 1.2rem; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 03 &middot; The EAL</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../02-build-and-first-app/index.html"><span class="dir">&larr; Previous</span><span class="ttl">02 &middot; Building DPDK and Your First Application</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../04-memory-hugepages/index.html"><span class="dir">Next &rarr;</span><span class="ttl">04 &middot; Memory: Hugepages, Memzones, rte_malloc and IOVA</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 03</div>
+      <h1>The EAL: Lcores, Launching Work, Threads, Logging and Time</h1>
+      <p class="chapter-subtitle">Every DPDK program starts with <code>rte_eal_init()</code>. After this chapter you will know what that call sets up, how to choose which CPUs your code runs on, how to run a function on another core and collect its result, which threads your process really has, how to log the DPDK way, how to read the clock in a few nanoseconds, and how to stop cleanly.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-beginner">Beginner</span></li>
+        <li><span class="badge">~75 min</span></li>
+        <li><span class="badge">Prerequisites: ch2</span></li>
+        <li><span class="tag api">rte_eal_init</span></li>
+        <li><span class="tag api">rte_eal_remote_launch</span></li>
+        <li><span class="tag api">RTE_LOG_LINE</span></li>
+        <li><span class="tag api">rte_rdtsc</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Name the phases of <code>rte_eal_init()</code> and match each phase to the log lines, files and threads it creates.</li>
+        <li>Explain the difference between an <em>lcore</em> and a CPU, and predict the mapping produced by <code>-l</code>, <code>--lcores</code> with <code>@</code> and groups, <code>--main-lcore</code> and <code>-R</code>. Know that <code>-c</code> and <code>-s</code> are deprecated.</li>
+        <li>Launch functions on worker lcores with <code>rte_eal_remote_launch()</code>, collect their return values with <code>rte_eal_wait_lcore()</code>, and explain the WAIT/RUNNING state machine and <code>-EBUSY</code>.</li>
+        <li>Tell EAL threads, control threads and registered non-EAL threads apart, and list them in <code>/proc</code>.</li>
+        <li>Register your own logtype with <code>RTE_LOG_REGISTER_SUFFIX</code>, log with <code>RTE_LOG_LINE</code>, and control it with <code>--log-level</code> patterns.</li>
+        <li>Read time with <code>rte_rdtsc()</code>, know what <code>rte_rdtsc_precise()</code> adds, pick between busy and sleeping delays, and apply the course recipe for measuring on a shared machine.</li>
+        <li>Stop a multi-core program cleanly on SIGINT and recognise the files a crashed program leaves behind.</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>code/eal_tour</code>, <code>code/log_lab</code>, <code>code/tsc_lab</code>: the three chapter programs (<code>make</code> builds them).</li>
+        <li><code>$DPDK_SRC/build/examples/dpdk-helloworld</code>: the prebuilt sample, used for the init timeline and the lcore mapping lab.</li>
+        <li><code>/proc/&lt;pid&gt;/task/*/comm</code> and <code>Cpus_allowed_list</code>: to see every thread of a running DPDK process and the CPUs it may use.</li>
+        <li><code>code/run.sh</code>: builds and runs everything with <code>--no-pci --no-huge -m 64</code> and a unique <code>--file-prefix=ch03-*</code> (about 12 seconds).</li>
+      </ul>
+    </section>
+
+    <div class="box">
+      <div class="box-title">Skeleton x-ray: the EAL in <code>examples/skeleton/basicfwd.c</code></div>
+      <p>In ch2 you ran the skeleton forwarder. Here are the only lines of it that talk to the EAL. By the end of this chapter you will know what each one does, and why the last one is never reached.</p>
+<pre data-nocopy><code class="language-c">180	int ret = rte_eal_init(argc, argv);         /* section 2: the whole init sequence   */
+185	argc -= ret;  argv += ret;                    /* section 3: EAL options end at "--"   */
+197	... rte_pktmbuf_pool_create(..., rte_socket_id());  /* section 5: NUMA socket of this lcore */
+210	if (rte_lcore_count() &gt; 1)                    /* section 5: how many lcores are enabled */
+		printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
+214	lcore_main();                                 /* section 6: it never launches workers  */
+134	    printf("Core %u forwarding ...", rte_lcore_id());   /* section 5            */
+218	rte_eal_cleanup();                            /* section 10: unreachable: lcore_main() loops forever */</code></pre>
+    </div>
+
+    <!-- ===================================================== 1 -->
+    <h2 id="what-is-eal"><span class="sec-num">1</span>What the EAL is</h2>
+    <p>The <span class="key-term">Environment Abstraction Layer (EAL)</span> is the part of DPDK that sits between your program and the operating system. Every other library (rings, mempools, ethdev, crypto) uses the EAL instead of calling Linux directly. That is how the same DPDK code runs on Linux, FreeBSD and Windows, on x86, Arm and POWER.</p>
+    <p>The EAL gives you seven services. You will meet all of them in this course; this chapter covers the first, fifth, sixth and seventh in depth, and the rest at the level you need to read the start-up log.</p>
+    <ol>
+      <li><strong>Cores.</strong> It discovers the CPUs and NUMA nodes, creates one thread per <em>lcore</em> you asked for, pins each thread to its CPUs and lets you launch functions on them.</li>
+      <li><strong>Memory.</strong> It reserves large, pinned, DMA-able memory (hugepages) and runs a heap on it. That is ch4.</li>
+      <li><strong>Devices.</strong> It scans <em>buses</em> (PCI, vdev, ...) and probes drivers for the devices it finds. Devargs and virtual devices are ch9.</li>
+      <li><strong>Interrupts and alarms.</strong> A background thread waits on file descriptors (link-state changes, timers) with <code>epoll</code>. Alarms and timers are ch11.</li>
+      <li><strong>Time.</strong> It measures the CPU's time stamp counter (TSC) once, so you can read time cheaply afterwards.</li>
+      <li><strong>Multi-process.</strong> A shared configuration file and a UNIX socket let a second process attach to the first. That is ch16.</li>
+      <li><strong>Logging.</strong> Since DPDK 23.11 this lives in its own library, <code>lib/log</code>, but the EAL sets it up from your command line.</li>
+    </ol>
+
+    <figure class="diagram">
+      <div class="wide-svg">
+      <svg viewBox="0 0 660 330" role="img" aria-labelledby="f-cake-t">
+        <title id="f-cake-t">EAL layer cake: application, DPDK libraries, the seven EAL services, and the Linux facility each one uses</title>
+        <rect class="svg-box c7" x="10" y="10" width="640" height="40"/>
+        <text class="svg-label center bold" x="330" y="30">Your application: main(), rte_eal_init(), lcore functions</text>
+        <rect class="svg-box c5" x="10" y="60" width="640" height="40"/>
+        <text class="svg-label center" x="330" y="80">DPDK libraries: ring, mempool, mbuf, ethdev, cryptodev, ... and the PMDs (drivers)</text>
+        <rect class="svg-box dashed" x="10" y="110" width="640" height="102" style="fill:none"/>
+        <text class="svg-label small muted" x="18" y="124">EAL (lib/eal) + lib/log</text>
+        <g id="cake-eal"></g>
+        <g id="cake-os"></g>
+        <rect class="svg-box c4" x="10" y="284" width="640" height="36"/>
+        <text class="svg-label center" x="330" y="302">Hardware: CPU cores and their TSC, RAM, NICs, accelerators</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>Each EAL service (blue) wraps one Linux facility (teal). Your code calls only the top two layers; the EAL is the only part that knows it is running on Linux. The source for each service is under <code>lib/eal/common/</code> (portable part) and <code>lib/eal/linux/</code> (Linux part).</figcaption>
+    </figure>
+
+    <!-- ===================================================== 2 -->
+    <h2 id="init"><span class="sec-num">2</span>What <code>rte_eal_init()</code> does, step by step</h2>
+    <p><code>int rte_eal_init(int argc, char **argv)</code> (declared in <code>lib/eal/include/rte_eal.h</code>, implemented for Linux in <code>lib/eal/linux/eal.c</code>) does all the set-up in one call. It returns the number of command-line arguments it consumed, or <code>-1</code> with <code>rte_errno</code> set. You can call it only once per process: a second call fails with <code>EALREADY</code>.</p>
+    <p>The best way to see the phases is to ask EAL to log at debug level with a time delta on each line. We ran the prebuilt hello world sample like this:</p>
+<pre><code class="language-bash">$DPDK_SRC/build/examples/dpdk-helloworld -l 0-1 --no-pci --no-huge -m 64 \
+    --file-prefix=ch03-init --log-level=lib.eal:debug --log-timestamp=delta</code></pre>
+    <p>Step through the widget below. Each step lights up one phase, shows the <em>real</em> log lines that phase printed on the course machine, and adds what the phase created: files in the <span class="key-term">runtime directory</span> <code>/var/run/dpdk/&lt;file-prefix&gt;/</code>, threads, sockets and memory.</p>
+
+    <div class="widget" id="w-init">
+      <div class="widget-head"><span class="widget-title">rte_eal_init() step-through (real log of dpdk-helloworld -l 0-1)</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="wide-svg"><svg viewBox="0 0 640 300" role="img" aria-label="Init phases on the left, created files, threads and memory on the right"></svg></div>
+        <div class="ch3-log" id="init-log" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <p>The whole log, as captured (lines that say <code>[&lt; 0.100145&gt;]</code> took that many seconds since the previous line):</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">section 3: init timeline</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -l 0-1 --no-pci --no-huge -m 64 --file-prefix=ch03-init --log-level=lib.eal:debug --log-timestamp=delta</span>
+<span class="dim">EAL: lib.eal log level changed from info to debug</span>
+<span class="dim">[&lt;     0.001033&gt;] EAL: Detected lcore 0 as core 0 on NUMA node 0</span>
+<span class="dim">[&lt;     0.000019&gt;] EAL: Detected lcore 1 as core 1 on NUMA node 0</span>
+<span class="dim">[&lt;     0.000007&gt;] EAL: Detected lcore 2 as core 2 on NUMA node 0</span>
+<span class="dim">[&lt;     0.000019&gt;] EAL: Detected lcore 3 as core 3 on NUMA node 0</span>
+<span class="dim">[&lt;     0.003198&gt;] EAL: Maximum logical cores by configuration: 128</span>
+<span class="dim">[&lt;     0.000008&gt;] EAL: Detected CPU lcores: 4</span>
+<span class="dim">[&lt;     0.000014&gt;] EAL: Detected NUMA nodes: 1</span>
+<span class="dim">[&lt;     0.000010&gt;] EAL: Cores selected by core list: 0-1</span>
+<span class="dim">[&lt;     0.000004&gt;] EAL: lcore 0 mapped to physical core 0</span>
+<span class="dim">[&lt;     0.000009&gt;] EAL: lcore 1 mapped to physical core 1</span>
+<span class="hl">[&lt;     0.000055&gt;] EAL: Control threads will use cores: 2-3</span>
+<span class="dim">[&lt;     0.000008&gt;] EAL: Checking presence of .so 'librte_eal.so.27.0'</span>
+<span class="dim">[&lt;     0.000059&gt;] EAL: Checking presence of .so 'librte_eal.so.27'</span>
+<span class="dim">[&lt;     0.000020&gt;] EAL: Checking presence of .so 'librte_eal.so'</span>
+<span class="dim">[&lt;     0.000019&gt;] EAL: Detected static linkage of DPDK</span>
+<span class="dim">[&lt;     0.001391&gt;] EAL: Ask a virtual area of 0x7000 bytes</span>
+<span class="dim">[&lt;     0.000012&gt;] EAL: Virtual area found at 0x100000000 (size = 0x7000)</span>
+<span class="hl">[&lt;     0.000220&gt;] EAL: Multi-process socket /var/run/dpdk/ch03-init/mp_socket</span>
+<span class="dim">[&lt;     0.000113&gt;] EAL: Probing VFIO support...</span>
+<span class="dim">[&lt;     0.000014&gt;] EAL: Module /sys/module/vfio not found! error 2 (No such file or directory)</span>
+<span class="dim">[&lt;     0.000008&gt;] EAL: VFIO modules not loaded, skipping VFIO support...</span>
+<span class="dim">[&lt;     0.000003&gt;] EAL: Bus pci wants IOVA as 'DC'</span>
+<span class="dim">[&lt;     0.000001&gt;] EAL: Bus vdev wants IOVA as 'DC'</span>
+<span class="hl">[&lt;     0.000001&gt;] EAL: Buses did not request a specific IOVA mode.</span>
+<span class="err">[&lt;     0.000010&gt;] EAL: Physical addresses are unavailable, selecting IOVA as VA mode.</span>
+<span class="hl">[&lt;     0.000001&gt;] EAL: Selected IOVA mode 'VA'</span>
+<span class="dim">[&lt;     0.000008&gt;] EAL: Ask a virtual area of 0x2e000 bytes</span>
+<span class="dim">[&lt;     0.000006&gt;] EAL: Virtual area found at 0x100007000 (size = 0x2e000)</span>
+<span class="dim">[&lt;     0.000116&gt;] EAL: Setting up physically contiguous memory...</span>
+<span class="dim">[&lt;     0.000010&gt;] EAL: Setting maximum number of open files to 20000</span>
+<span class="dim">[&lt;     0.000006&gt;] EAL: Ask a virtual area of 0xc1000 bytes</span>
+<span class="dim">[&lt;     0.000003&gt;] EAL: Virtual area found at 0x100035000 (size = 0xc1000)</span>
+<span class="dim">[&lt;     0.000257&gt;] EAL: Memseg list allocated at socket 0, page size 0x4kB</span>
+<span class="dim">[&lt;     0.000018&gt;] EAL: Using memfd for anonymous memory</span>
+<span class="dim">[&lt;     0.000001&gt;] EAL: Ask a virtual area of 0x4000000 bytes</span>
+<span class="dim">[&lt;     0.000002&gt;] EAL: Virtual area found at 0x1000f6000 (size = 0x4000000)</span>
+<span class="dim">[&lt;     0.000002&gt;] EAL: VA reserved for memseg list at 0x1000f6000, size 4000000</span>
+<span class="hl">[&lt;     0.000262&gt;] EAL: Added 64M to heap on socket 0</span>
+<span class="hl">[&lt;     0.100133&gt;] EAL: TSC frequency is ~2700000 KHz</span>
+<span class="dim">[&lt;     0.000203&gt;] EAL: Allocated 64 bytes of per-lcore data with a 64-byte alignment</span>
+<span class="hl">[&lt;     0.000075&gt;] EAL: Main lcore 0 is ready (tid=7efc47429a00;cpuset=[0])</span>
+<span class="hl">[&lt;     0.000224&gt;] EAL: lcore 1 is ready (tid=7efc42dfc6c0;cpuset=[1])</span>
+<span class="dim">[&lt;     0.000087&gt;] EAL: Allocated 2112 bytes of per-lcore data with a 64-byte alignment</span>
+hello from core 1
+hello from core 0
+<span class="dim">[&lt;     0.000517&gt;] EAL: sendmsg: mp_eal</span>
+<span class="ok">[exit code 0]</span></pre>
+</div>
+    <p class="output-caption">What to notice: almost everything takes microseconds, except the 0.1 s before <code>TSC frequency is ~2700000 KHz</code>. On this VM the CPU does not report its TSC frequency in a way EAL trusts, so <code>get_tsc_freq()</code> in <code>lib/eal/linux/eal_timer.c</code> sleeps 100 ms and compares the TSC with <code>CLOCK_MONOTONIC_RAW</code>. Two lines report per-lcore data: the 64 bytes are the random-number state (<code>lib/eal/common/rte_random.c</code>), the 2112 bytes belong to the service-core library (<code>rte_service.c</code>). <code>hello from core 1</code> printed before <code>core 0</code> because helloworld launches the workers first and then runs the function on the main lcore.</p>
+
+    <div class="callout note"><div class="callout-title">Note: the order is designed</div>
+      <p>Logging is set up first so that every later phase can report errors. The multi-process socket is created <em>before</em> the bus scan so a secondary process can ask the primary which virtual devices exist. Virtual devices are probed <em>last</em> so that composite drivers (bonding, failsafe) can refer to physical ports that are already probed. The full order with function names is in <code>rte_eal_init()</code> in <code>lib/eal/linux/eal.c</code>.</p>
+    </div>
+
+    <h3 id="init-fail">When <code>rte_eal_init()</code> fails</h3>
+    <p>Most samples call <code>rte_panic()</code> or <code>rte_exit()</code> when init fails, which is why you see <code>PANIC in main()</code> and exit code 134 (SIGABRT) below. Read the line <em>above</em> <code>Error parsing command line arguments</code>: that is the real reason. The startup-error catalogue starts in ch4 and is consolidated in ch13.</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">section 5: EAL errors</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -l 0-5 --no-pci --no-huge -m 64 --file-prefix=ch03-err</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="err">EAL: lcore 4 unavailable</span>
+<span class="err">EAL: lcore 5 unavailable</span>
+<span class="err">EAL: invalid coremask or core-list parameter, please check specified cores are part of 0-3</span>
+<span class="err">EAL: Error parsing command line arguments.</span>
+<span class="err">EAL: PANIC in main():</span>
+Cannot init EAL
+<span class="err">[exit code 134]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -l 1-2 --main-lcore 0 --no-pci --no-huge -m 64 --file-prefix=ch03-err</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="err">EAL: Error: Main lcore is not enabled for DPDK</span>
+<span class="err">EAL: Error parsing command line arguments.</span>
+<span class="err">EAL: PANIC in main():</span>
+Cannot init EAL
+<span class="err">[exit code 134]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -c 0x3 --no-pci --no-huge -m 64 --file-prefix=ch03-err</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="hl">EAL: '-c &lt;coremask&gt;' option is deprecated, and will be removed in a future release</span>
+<span class="dim">EAL: 	Use '-l &lt;corelist&gt;' or '--lcores=&lt;corelist&gt;' option instead</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch03-err/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+hello from core 1
+hello from core 0
+<span class="ok">[exit code 0]</span></pre>
+</div>
+    <p class="output-caption">Three runs: <code>-l 0-5</code> asks for CPUs this 4-CPU machine does not have; <code>--main-lcore 0</code> names an lcore that is not in <code>-l 1-2</code>; <code>-c 0x3</code> still works but prints a deprecation warning (EAL ignores the stack-dump lines, which run.sh filters out).</p>
+
+    <!-- ===================================================== 3 -->
+    <h2 id="options"><span class="sec-num">3</span>The EAL command line</h2>
+    <p>EAL options come first on the command line. <code>rte_eal_init()</code> stops at <code>--</code>, returns how many arguments it used, and you shift <code>argc</code>/<code>argv</code> by that number to reach your own options (ch2). In 26.11 the options are defined in one table, <code>lib/eal/common/eal_option_list.h</code>, and parsed with the <code>rte_argparse</code> library. The options fall into groups:</p>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Group</th><th>Options you will use in this course</th><th>Where</th></tr></thead>
+        <tbody>
+          <tr><td>Lcores</td><td><code>-l/--lcores</code>, <code>--main-lcore</code>, <code>-S/--service-corelist</code>, <code>-R/--remap-lcore-ids</code>. Deprecated: <code>-c</code> (coremask), <code>-s</code> (service coremask).</td><td>this chapter</td></tr>
+          <tr><td>Devices</td><td><code>-a/--allow</code>, <code>-b/--block</code>, <code>--vdev</code>, <code>--no-pci</code>, <code>-d</code> (load a driver .so)</td><td>ch9</td></tr>
+          <tr><td>Memory</td><td><code>-m</code>, <code>--numa-mem</code>, <code>--no-huge</code>, <code>--in-memory</code>, <code>--huge-dir</code>, <code>--iova-mode</code></td><td>ch4</td></tr>
+          <tr><td>Multi-process</td><td><code>--proc-type</code>, <code>--file-prefix</code></td><td>ch16</td></tr>
+          <tr><td>Logging</td><td><code>--log-level</code>, <code>--log-timestamp</code>, <code>--log-color</code>, <code>--syslog</code></td><td>section 8</td></tr>
+          <tr><td>Debug and other</td><td><code>-v</code>, <code>-h</code>, <code>--no-telemetry</code>, <code>--trace</code>, <code>--force-max-simd-bitwidth</code></td><td>ch13, ch22</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout tip"><div class="callout-title">Tip: the sandbox flags</div>
+      <p>On the shared course machine every run uses <code>--no-pci</code> (never touch the one real NIC), <code>--no-huge -m 64</code> (64 MB of ordinary memory instead of shared hugepages) and a unique <code>--file-prefix=ch03-&lt;name&gt;</code>, so that two DPDK processes never share a runtime directory by accident. <code>--in-memory</code> is the alternative: it creates no runtime files at all, but then no second process can attach.</p>
+    </div>
+    <div class="callout warning"><div class="callout-title">Deprecated in 26.11: <code>-c</code> and <code>-s</code></div>
+      <p><code>-c 0x3</code> (a hexadecimal mask of CPUs) and <code>-s 0x4</code> (service cores as a mask) still work but print <code>'-c &lt;coremask&gt;' option is deprecated</code>, as the run above shows. Old tutorials use them everywhere. Use <code>-l 0-1</code> and <code>-S 2</code>. A service lcore must also appear in <code>-l</code>.</p>
+    </div>
+
+    <!-- ===================================================== 4 -->
+    <h2 id="lcores"><span class="sec-num">4</span>Lcores are not CPUs</h2>
+    <p>An <span class="key-term">lcore</span> (logical core) is a DPDK thread identity: a small number from 0 to <code>RTE_MAX_LCORE - 1</code> (128 in this build). Each lcore is one EAL thread with a <em>cpuset</em>, the set of CPUs it is allowed to run on. A <span class="key-term">CPU</span> is what Linux calls a CPU: a hardware thread numbered in <code>/proc/cpuinfo</code>. Most of the time lcore N runs on CPU N, and that is why the two words get mixed up. They do not have to match:</p>
+    <ul>
+      <li><code>-l 0-3</code>: lcores 0, 1, 2, 3, each pinned to the CPU with the same number. Lists and ranges mix: <code>-l 0,2-3</code>.</li>
+      <li><code>--lcores='0,(1-3)@(1,2)'</code>: lcore 0 on CPU 0; lcores 1, 2 and 3 all share the cpuset {1, 2}. Four threads, two CPUs: the kernel time-slices them. The <code>@</code> separates lcore ids (left) from CPUs (right); parentheses make groups. In 26.11 <code>-l</code> accepts the same syntax.</li>
+      <li><code>--lcores='(0,6)'</code>: a group without <code>@</code> means "these lcores, each on all these CPUs".</li>
+      <li><code>-l 2-3 -R</code>: <em>remap</em> lcore ids so they start at 0: lcore 0 runs on CPU 2 and lcore 1 on CPU 3. Useful when your code has arrays indexed by lcore id.</li>
+      <li><code>--main-lcore 3</code>: by default the lowest lcore id is the <span class="key-term">main lcore</span>, the one that runs <code>main()</code>. This option picks another one. It must be one of the enabled lcores.</li>
+    </ul>
+    <p>The EAL also starts <span class="key-term">control threads</span> (interrupt handling, multi-process messages, telemetry). They are not lcores. They run on the CPUs that the process was allowed to use at start-up <em>minus</em> every CPU in any lcore's cpuset. If that leaves nothing, they share the main lcore's CPU (<code>compute_ctrl_threads_cpuset()</code> in <code>lib/eal/common/eal_common_options.c</code>). The debug line <code>Control threads will use cores: ...</code> tells you which.</p>
+
+    <p>Type any <code>-l</code>/<code>--lcores</code> option string into the mapper. It parses the string with the rules above for this 4-CPU machine, draws which CPUs each lcore may run on, marks the main lcore, shows where control threads go, flags CPUs that have more than one thread pinned to them, and prints the lines EAL would log. Then compare with the real runs underneath.</p>
+
+    <div class="widget" id="w-map">
+      <div class="widget-head"><span class="widget-title">lcore &harr; CPU mapper (4 CPUs: 0-3)</span><span class="badge">interactive</span></div>
+      <div class="controls">
+        <label for="map-in" class="visually-hidden">EAL lcore options</label>
+        <input class="ch3-input" id="map-in" type="text" value="--lcores='0,(1-3)@(1,2)'" spellcheck="false" autocomplete="off">
+        <button class="btn small primary" type="button" id="map-go">Map it</button>
+      </div>
+      <div class="ch3-presets" id="map-presets"></div>
+      <div class="widget-body">
+        <div class="wide-svg"><svg viewBox="0 0 640 260" role="img" aria-label="Lcore boxes on top with arrows to the CPU boxes below"></svg></div>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">lcores (EAL threads)</div><div class="stat-value" id="map-n">0</div></div>
+          <div class="stat"><div class="stat-label">main lcore</div><div class="stat-value" id="map-main">-</div></div>
+          <div class="stat"><div class="stat-label">control threads on CPUs</div><div class="stat-value" id="map-ctl">-</div></div>
+          <div class="stat"><div class="stat-label">oversubscribed CPUs</div><div class="stat-value" id="map-over">-</div></div>
+        </div>
+        <ul class="ch3-msgs" id="map-msgs"></ul>
+        <div class="ch3-log" id="map-log"></div>
+      </div>
+    </div>
+
+    <p>The same mappings, run for real with <code>dpdk-helloworld --log-level=lib.eal:debug</code> (filtered to the lines that show the mapping):</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">section 4: mapping lab</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch03-map --log-level=lib.eal:debug</span>
+<span class="dim">EAL: lcore 0 mapped to physical core 0</span>
+<span class="dim">EAL: lcore 1 mapped to physical core 1</span>
+<span class="hl">EAL: lcore 2 mapped to physical core 2</span>
+<span class="hl">EAL: lcore 3 mapped to physical core 3</span>
+<span class="hl">EAL: Control threads will use cores: 0</span>
+<span class="hl">EAL: Main lcore 0 is ready (tid=7f95bfe22a00;cpuset=[0])</span>
+<span class="dim">EAL: lcore 1 is ready (tid=7f95bb7fc6c0;cpuset=[1])</span>
+<span class="dim">EAL: lcore 2 is ready (tid=7f95baffb6c0;cpuset=[2])</span>
+<span class="dim">EAL: lcore 3 is ready (tid=7f95b25ff6c0;cpuset=[3])</span>
+hello from core 1
+hello from core 2
+hello from core 3
+hello from core 0
+<span class="ok">[exit code 0]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld --lcores=0,(1-3)@(1,2) --no-pci --no-huge -m 64 --file-prefix=ch03-map --log-level=lib.eal:debug</span>
+<span class="dim">EAL: Control threads will use cores: 3</span>
+<span class="hl">EAL: Main lcore 0 is ready (tid=7faf7461da00;cpuset=[0])</span>
+<span class="hl">EAL: lcore 1 is ready (tid=7faf6f9fc6c0;cpuset=[1-2])</span>
+<span class="hl">EAL: lcore 2 is ready (tid=7faf6f1fb6c0;cpuset=[1-2])</span>
+<span class="hl">EAL: lcore 3 is ready (tid=7faf6e9fa6c0;cpuset=[1-2])</span>
+hello from core 1
+hello from core 2
+hello from core 3
+hello from core 0
+<span class="ok">[exit code 0]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -l 2-3 -R --no-pci --no-huge -m 64 --file-prefix=ch03-map --log-level=lib.eal:debug</span>
+<span class="hl">EAL: lcore 0 mapped to physical core 2</span>
+<span class="hl">EAL: lcore 1 mapped to physical core 3</span>
+<span class="dim">EAL: Control threads will use cores: 0-1</span>
+<span class="dim">EAL: Main lcore 0 is ready (tid=7ff4f368fa00;cpuset=[2])</span>
+<span class="dim">EAL: lcore 1 is ready (tid=7ff4ee9fc6c0;cpuset=[3])</span>
+hello from core 1
+hello from core 0
+<span class="ok">[exit code 0]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld -l 1-3 --main-lcore 3 --no-pci --no-huge -m 64 --file-prefix=ch03-map --log-level=lib.eal:debug</span>
+<span class="dim">EAL: lcore 1 mapped to physical core 1</span>
+<span class="hl">EAL: lcore 2 mapped to physical core 2</span>
+<span class="hl">EAL: lcore 3 mapped to physical core 3</span>
+<span class="hl">EAL: Control threads will use cores: 0</span>
+<span class="dim">EAL: Main lcore 3 is ready (tid=7f5471829a00;cpuset=[3])</span>
+<span class="dim">EAL: lcore 1 is ready (tid=7f546d1fc6c0;cpuset=[1])</span>
+<span class="dim">EAL: lcore 2 is ready (tid=7f546c9fb6c0;cpuset=[2])</span>
+hello from core 1
+hello from core 2
+hello from core 3
+<span class="ok">[exit code 0]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld --lcores=0@0,(1,2)@(1-3) --no-pci --no-huge -m 64 --file-prefix=ch03-map --log-level=lib.eal:debug</span>
+<span class="hl">EAL: Control threads will use cores: 0</span>
+<span class="hl">EAL: Main lcore 0 is ready (tid=7f3cf361ba00;cpuset=[0])</span>
+<span class="hl">EAL: lcore 1 is ready (tid=7f3cee9fc6c0;cpuset=[1-3])</span>
+<span class="hl">EAL: lcore 2 is ready (tid=7f3cee1fb6c0;cpuset=[1-3])</span>
+hello from core 1
+hello from core 2
+hello from core 0
+<span class="ok">[exit code 0]</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 $DPDK_SRC/build/examples/dpdk-helloworld --lcores=(0-3)@0 --no-pci --no-huge -m 64 --file-prefix=ch03-map --log-level=lib.eal:debug</span>
+<span class="dim">EAL: Control threads will use cores: 1-3</span>
+<span class="hl">EAL: Main lcore 0 is ready (tid=7f3c93615a00;cpuset=[0])</span>
+<span class="hl">EAL: lcore 1 is ready (tid=7f3c8e9fc6c0;cpuset=[0])</span>
+<span class="hl">EAL: lcore 2 is ready (tid=7f3c8e1fb6c0;cpuset=[0])</span>
+<span class="hl">EAL: lcore 3 is ready (tid=7f3c8d9fa6c0;cpuset=[0])</span>
+hello from core 1
+hello from core 2
+hello from core 3
+hello from core 0
+<span class="ok">[exit code 0]</span></pre>
+</div>
+    <p class="output-caption">Check each one against the mapper. With <code>-l 0-3</code> every CPU has an lcore, so control threads fall back to CPU 0, the main lcore's CPU. With <code>-l 2-3 -R</code> the lcore ids are 0 and 1 although the CPUs are 2 and 3. <code>--lcores=(0-3)@0</code> puts four EAL threads on one CPU: it runs, but every lcore steals time from the others. That is the oversubscription you must avoid when you measure (section 9).</p>
+
+    <!-- ===================================================== 5 -->
+    <h2 id="roles"><span class="sec-num">5</span>Asking about lcores: roles and the query API</h2>
+    <p>Every lcore id has a <span class="key-term">role</span> (<code>enum rte_lcore_role_t</code> in <code>lib/eal/include/rte_lcore.h</code>):</p>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Role</th><th>Meaning</th><th>Created by</th></tr></thead>
+        <tbody>
+          <tr><td><code>RTE_LCORE_ROLE_RTE</code></td><td>a normal EAL lcore: you can launch functions on it</td><td><code>-l</code></td></tr>
+          <tr><td><code>RTE_LCORE_ROLE_SERVICE</code></td><td>runs service callbacks (software schedulers, adapters); ch11</td><td><code>-S</code></td></tr>
+          <tr><td><code>RTE_LCORE_ROLE_NON_EAL</code></td><td>a thread you created yourself and registered</td><td><code>rte_thread_register()</code></td></tr>
+          <tr><td><code>RTE_LCORE_ROLE_OFF</code></td><td>unused id</td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The functions you will use all the time:</p>
+    <ul>
+      <li><code>rte_lcore_id()</code>: the lcore id of the calling thread, or <code>LCORE_ID_ANY</code> (<code>UINT32_MAX</code>, prints as -1) in a thread that is not an lcore. It reads a thread-local variable, so it is very cheap.</li>
+      <li><code>rte_get_main_lcore()</code>, <code>rte_lcore_count()</code>, <code>rte_lcore_is_enabled(id)</code>, <code>rte_eal_lcore_role(id)</code>.</li>
+      <li><code>rte_lcore_to_cpu_id(id)</code> and <code>rte_lcore_to_socket_id(id)</code>: the first CPU of the lcore's cpuset and its NUMA socket. <code>rte_socket_id()</code> is the socket of the calling lcore (the skeleton passes it to the mempool so memory is local to the core).</li>
+      <li><code>RTE_LCORE_FOREACH(i)</code> visits every enabled lcore; <code>RTE_LCORE_FOREACH_WORKER(i)</code> skips the main one. Both visit only role RTE.</li>
+      <li><code>rte_lcore_dump(FILE *)</code> prints one line per active lcore with its role and cpuset.</li>
+    </ul>
+    <p>Our first program, <code>eal_tour.c</code>, prints this information right after init:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/eal_tour.c (lines 205-216)</span><span class="lang">C</span></div>
+<pre data-lines data-start="205" data-hl="209,211,212,213"><code class="language-c">	printf("\n== 1. rte_eal_init returned %d (arguments consumed)\n", ret);
+	printf("  main lcore=%u  lcore count=%u  TSC hz=%" PRIu64 "\n",
+	       rte_get_main_lcore(), rte_lcore_count(), rte_get_tsc_hz());
+
+	printf("\n== 2. lcore table (RTE_LCORE_FOREACH)\n");
+	printf("  lcore  cpu  socket  role     state\n");
+	RTE_LCORE_FOREACH(id)
+		printf("  %5u  %3d  %6u  %-7s  %s\n", id, rte_lcore_to_cpu_id(id),
+		       rte_lcore_to_socket_id(id), role_name(rte_eal_lcore_role(id)),
+		       id == rte_get_main_lcore() ? "(main)" :
+		       state_name(rte_eal_get_lcore_state(id)));
+	print_my_cpus("main thread:");</code></pre>
+</div>
+
+    <div class="callout pitfall"><div class="callout-title">Pitfall: service lcores are counted but not visited</div>
+      <p>With <code>-l 0-2 -S 2</code>, <code>rte_lcore_count()</code> returns 3, but <code>RTE_LCORE_FOREACH</code> visits only lcores 0 and 1, because lcore 2 has role SERVICE. Code that sizes an array with <code>rte_lcore_count()</code> and then assumes every counted lcore is a worker is wrong.</p>
+    </div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">section 2: -S 2</span></div>
+<pre>  lcore  cpu  socket  role     state
+      1    1       0  RTE      (main)
+      2    2       0  RTE      WAIT
+  main thread:                 lcore_id=1   allowed CPUs=1
+
+== serve mode: pid 7241, polling for up to 15 s (SIGINT stops)
+  control thread 'ch03-ctl':   lcore_id=-1  allowed CPUs=0,3
+  [lcore 2] saw quit after 120073159 loops
+  all lcores stopped; cleanup=0
+<span class="prompt">$ </span><span class="cmd">ls /var/run/dpdk/ch03-serve   (after a clean exit)</span>
+  config
+  fbarray_memzone
+  fbarray_nohugemem</pre>
+</div>
+
+    <!-- ===================================================== 6 -->
+    <h2 id="launch"><span class="sec-num">6</span>Launching work on lcores</h2>
+    <p>After init, every worker lcore thread exists but does nothing: it is asleep, blocked in <code>read()</code> on a pipe. To give it work you call (from <code>lib/eal/include/rte_launch.h</code>):</p>
+<pre data-nocopy><code class="language-c">typedef int (lcore_function_t)(void *);
+
+int rte_eal_remote_launch(lcore_function_t *f, void *arg, unsigned worker_id);
+int rte_eal_wait_lcore(unsigned worker_id);                /* returns f's return value */
+int rte_eal_mp_remote_launch(lcore_function_t *f, void *arg,
+                             enum rte_rmt_call_main_t call_main);   /* SKIP_MAIN or CALL_MAIN */
+void rte_eal_mp_wait_lcore(void);
+enum rte_lcore_state_t rte_eal_get_lcore_state(unsigned int worker_id);  /* WAIT or RUNNING */</code></pre>
+    <p>Each worker has a small state machine with two states. <code>FINISHED</code>, which you will see in older tutorials, was removed: a worker goes straight from RUNNING back to WAIT when its function returns, and keeps the return value until you collect it.</p>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 640 170" role="img" aria-labelledby="f-sm-t">
+        <title id="f-sm-t">Worker state machine: WAIT to RUNNING on remote_launch, RUNNING to WAIT when the function returns</title>
+        <rect class="svg-box c2" x="70" y="55" width="150" height="60" rx="30"/>
+        <text class="svg-label center bold" x="145" y="78">WAIT</text>
+        <text class="svg-label center small" x="145" y="97">asleep in read()</text>
+        <rect class="svg-box c3" x="420" y="55" width="150" height="60" rx="30"/>
+        <text class="svg-label center bold" x="495" y="78">RUNNING</text>
+        <text class="svg-label center small" x="495" y="97">executing f(arg)</text>
+        <path class="svg-arrow c1" d="M200,58 C260,10 380,10 440,58"/>
+        <text class="svg-label center small" x="320" y="18">rte_eal_remote_launch(f, arg, id)</text>
+        <path class="svg-arrow c3" d="M440,112 C380,160 260,160 200,112"/>
+        <text class="svg-label center small" x="320" y="160">f returns: ret saved, state = WAIT</text>
+        <path class="svg-arrow c4" d="M570,85 C620,85 620,40 575,68"/>
+        <text class="svg-label small" x="636" y="40" style="text-anchor:end">launch again: -EBUSY</text>
+        <text class="svg-label small muted" x="10" y="140">wait_lcore: spins until</text>
+        <text class="svg-label small muted" x="10" y="154">WAIT, returns ret</text>
+      </svg>
+      <figcaption><span class="fig-num"></span>The two states of a worker lcore (<code>enum rte_lcore_state_t</code>). Only the main lcore should launch work. Launching on a RUNNING worker does not queue anything: it returns <code>-EBUSY</code>.</figcaption>
+    </figure>
+
+    <p>How does the handoff work inside? <code>rte_eal_remote_launch()</code> in <code>lib/eal/common/eal_common_launch.c</code> and the worker loop <code>eal_thread_loop()</code> in <code>lib/eal/common/eal_common_thread.c</code> use a shared per-lcore record (<code>lcore_config[id]</code>) with atomic release/acquire stores, plus two pipes per worker: one to wake the worker and one for its acknowledgement. Step through it, and predict the two interesting moments:</p>
+
+    <div class="widget" id="w-launch">
+      <div class="widget-head"><span class="widget-title">remote_launch swimlanes: main lcore, shared lcore_config[1], worker lcore 1</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="wide-svg"><svg viewBox="0 0 640 270" role="img" aria-label="Three lanes: main lcore at the top, the shared lcore_config record in the middle with two pipes, worker lcore at the bottom"></svg></div>
+      </div>
+    </div>
+
+    <p>Now the real code. <code>work_square</code> returns a value that depends on the lcore; <code>work_wait_for_go</code> spins until main sets a flag, so main can catch the worker in the RUNNING state:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/eal_tour.c (lines 95-113)</span><span class="lang">C</span></div>
+<pre data-lines data-start="95" data-hl="102,110,112"><code class="language-c">/* 3. Returns a value main can collect with rte_eal_wait_lcore(). */
+static int
+work_square(void *arg)
+{
+	unsigned int id = rte_lcore_id();
+	(void)arg;
+	printf("  [lcore %u on CPU %d] running work_square\n", id, sched_getcpu());
+	return 100 + (int)(id * id);
+}
+
+/* 4. Spins until main says "go", so main can observe RUNNING. */
+static int
+work_wait_for_go(void *arg)
+{
+	(void)arg;
+	while (!rte_atomic_load_explicit(&amp;go, rte_memory_order_acquire))
+		rte_pause();
+	return 7;
+}</code></pre>
+</div>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/eal_tour.c (lines 239-263)</span><span class="lang">C</span></div>
+<pre data-lines data-start="239" data-hl="239,241,246,252,253,255,256,259,260,262"><code class="language-c">	printf("\n== 3. remote_launch + wait_lcore (return values)\n");
+	RTE_LCORE_FOREACH_WORKER(id) {
+		ret = rte_eal_remote_launch(work_square, NULL, id);
+		if (ret != 0)
+			printf("  launch on %u failed: %d\n", id, ret);
+	}
+	RTE_LCORE_FOREACH_WORKER(id)
+		printf("  rte_eal_wait_lcore(%u) = %d\n", id, rte_eal_wait_lcore(id));
+
+	printf("\n== 4. state machine and -EBUSY\n");
+	id = rte_get_next_lcore(-1, 1, 0);          /* first worker */
+	if (id &lt; RTE_MAX_LCORE) {
+		printf("  before launch: lcore %u is %s\n", id,
+		       state_name(rte_eal_get_lcore_state(id)));
+		rte_eal_remote_launch(work_wait_for_go, NULL, id);
+		printf("  after launch:  lcore %u is %s\n", id,
+		       state_name(rte_eal_get_lcore_state(id)));
+		ret = rte_eal_remote_launch(work_square, NULL, id);
+		printf("  second launch while RUNNING returns %d (-EBUSY is %d)\n",
+		       ret, -EBUSY);
+		rte_atomic_store_explicit(&amp;go, 1, rte_memory_order_release);
+		printf("  rte_eal_wait_lcore(%u) = %d\n", id, rte_eal_wait_lcore(id));
+		printf("  after wait:    lcore %u is %s\n", id,
+		       state_name(rte_eal_get_lcore_state(id)));
+	}</code></pre>
+</div>
+    <p>And what it printed:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt (section 1)</span></div>
+<pre>  main lcore=1  lcore count=2  TSC hz=2700000000</pre>
+</div>
+    <p class="output-caption">Sections 3 and 4: lcore 1 returned 100 + 1&sup2; = 101 and lcore 2 returned 104. Right after <code>rte_eal_remote_launch()</code> returns, the worker is already RUNNING (it set the state before acknowledging), so the second launch got <code>-16</code>, which is <code>-EBUSY</code>. Section 5 uses <code>rte_eal_mp_remote_launch(..., CALL_MAIN)</code>: all workers start, then the main lcore runs the same function itself, which is why <code>[lcore 0]</code> prints last. Each thread's <code>RTE_PER_LCORE(calls)</code> counter is its own copy: 3 after the first round, 6 after the second.</p>
+
+    <div class="callout note"><div class="callout-title">Per-lcore data, briefly</div>
+      <p><code>RTE_DEFINE_PER_LCORE(type, name)</code> (<code>rte_per_lcore.h</code>) is just C thread-local storage (<code>__thread</code>), and <code>RTE_PER_LCORE(name)</code> reads it. Each thread, lcore or not, has its own copy, and no other thread can read it. DPDK also has <em>lcore variables</em> (<code>RTE_LCORE_VAR_*</code>), which other lcores can read and which avoid false sharing; they are taught in ch14 together with atomics.</p>
+    </div>
+
+    <!-- ===================================================== 7 -->
+    <h2 id="threads"><span class="sec-num">7</span>The threads of a DPDK process</h2>
+    <p>A running DPDK process has three kinds of threads:</p>
+    <ul>
+      <li><strong>EAL threads</strong> (lcores): the main thread (it runs <code>main()</code> and is the main lcore) and one <code>dpdk-worker&lt;N&gt;</code> per worker lcore, each pinned to its cpuset.</li>
+      <li><strong>Control threads</strong>: created by EAL or by you with <code>rte_thread_create_control()</code>. They are not lcores (<code>rte_lcore_id()</code> is -1) and run on the control-thread CPUs. EAL's own are <code>dpdk-intr</code> (interrupts and alarms), <code>dpdk-mp-msg</code> (multi-process messages) and <code>dpdk-telemet-v2</code> (the telemetry socket, ch13).</li>
+      <li><strong>Non-EAL threads</strong>: plain <code>pthread_create()</code> threads. They have no lcore id, so DPDK functions that need one (per-lcore mempool caches, <code>rte_timer_manage()</code>) do not work well in them. <code>rte_thread_register()</code> gives such a thread a free lcore id with role NON_EAL; <code>rte_thread_unregister()</code> gives it back. Registered threads do not work with multi-process.</li>
+    </ul>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/eal_tour.c (lines 144-171)</span><span class="lang">C</span></div>
+<pre data-lines data-start="144" data-hl="149,150,151,156,166"><code class="language-c">/* 6. A plain pthread: no lcore id until it registers. */
+static void *
+plain_thread(void *arg)
+{
+	(void)arg;
+	print_my_cpus("pthread before register:");
+	if (rte_thread_register() != 0) {
+		printf("  rte_thread_register failed: %s\n", rte_strerror(rte_errno));
+		return NULL;
+	}
+	printf("  pthread after register:      lcore_id=%u role=%s\n",
+	       rte_lcore_id(), role_name(rte_eal_lcore_role(rte_lcore_id())));
+	rte_thread_unregister();
+	printf("  pthread after unregister:    lcore_id=%d\n", (int)rte_lcore_id());
+	return NULL;
+}
+
+/* 7. A control thread: rte_thread_func returns uint32_t. */
+static uint32_t
+control_thread(void *arg)
+{
+	int serve = *(int *)arg;
+	print_my_cpus("control thread 'ch03-ctl':");
+	/* In serve mode it stays alive so it shows up in /proc. */
+	while (serve &amp;&amp; !rte_atomic_load_explicit(&amp;quit, rte_memory_order_relaxed))
+		usleep(10 * 1000);
+	return 42;
+}</code></pre>
+</div>
+    <p>The program's sections 6 and 7 (above) printed: the pthread had lcore id -1, got id 3 after registering (the first free id after 0-2) with role NON_EAL, and -1 again after unregistering. It inherited the main thread's affinity (CPU 0), because a new pthread copies its creator's affinity. The control thread was placed on CPU 3, the only CPU not used by <code>-l 0-2</code>.</p>
+
+    <h3 id="anatomy">Thread anatomy in <code>/proc</code></h3>
+    <p><code>eal_tour</code> has a serve mode that keeps its lcores busy-polling. <code>run.sh</code> starts it with <code>-l 1-2</code>, waits 1.5 s, lists every thread of the process with its name and allowed CPUs, then sends SIGINT:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">section 8: /proc thread list</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">for t in /proc/&lt;pid&gt;/task/*; do comm; Cpus_allowed_list; done</span>
+  TID      NAME             CPUS
+<span class="hl">  7250     ch03-ctl         0,3</span>
+<span class="hl">  7243     dpdk-intr        0,3</span>
+<span class="hl">  7244     dpdk-mp-msg      0,3</span>
+<span class="hl">  7249     dpdk-telemet-v2  0,3</span>
+<span class="hl">  7248     dpdk-worker2     2</span>
+<span class="hl">  &lt;pid&gt;    eal_tour         1</span>
+<span class="prompt">$ </span><span class="cmd">ls /var/run/dpdk/ch03-serve</span>
+  config
+  dpdk_telemetry.v2
+  fbarray_memzone
+  fbarray_nohugemem
+  mp_socket
+<span class="prompt">$ </span><span class="cmd">kill -INT &lt;pid&gt;</span>
+<span class="ok">[exit code 0]</span></pre>
+</div>
+    <figure class="diagram">
+      <div class="wide-svg">
+      <svg viewBox="0 0 640 250" role="img" aria-labelledby="f-anat-t">
+        <title id="f-anat-t">Threads of eal_tour -l 1-2 and the CPUs they may run on</title>
+        <text class="svg-label small muted" x="10" y="18">threads (from /proc/&lt;pid&gt;/task/*/comm)</text>
+        <rect class="svg-box c1" x="10" y="28" width="180" height="34"/><text class="svg-label center small bold" x="100" y="45">eal_tour (main, lcore 1)</text>
+        <rect class="svg-box c1" x="10" y="72" width="180" height="34"/><text class="svg-label center small bold" x="100" y="89">dpdk-worker2 (lcore 2)</text>
+        <rect class="svg-box c6" x="10" y="116" width="180" height="22"/><text class="svg-label center small" x="100" y="127">dpdk-intr</text>
+        <rect class="svg-box c6" x="10" y="142" width="180" height="22"/><text class="svg-label center small" x="100" y="153">dpdk-mp-msg</text>
+        <rect class="svg-box c6" x="10" y="168" width="180" height="22"/><text class="svg-label center small" x="100" y="179">dpdk-telemet-v2</text>
+        <rect class="svg-box c6 dashed" x="10" y="194" width="180" height="22"/><text class="svg-label center small" x="100" y="205">ch03-ctl (ours)</text>
+        <text class="svg-label small muted" x="470" y="18">CPUs</text>
+        <rect class="svg-box c7" x="470" y="28" width="150" height="38"/><text class="svg-label center" x="545" y="47">CPU 0</text>
+        <rect class="svg-box c7" x="470" y="76" width="150" height="38"/><text class="svg-label center" x="545" y="95">CPU 1</text>
+        <rect class="svg-box c7" x="470" y="124" width="150" height="38"/><text class="svg-label center" x="545" y="143">CPU 2</text>
+        <rect class="svg-box c7" x="470" y="172" width="150" height="38"/><text class="svg-label center" x="545" y="191">CPU 3</text>
+        <path class="svg-arrow c1" d="M190,45 C320,45 340,95 466,95"/>
+        <path class="svg-arrow c1" d="M190,89 C320,89 340,143 466,143"/>
+        <path class="svg-line" d="M190,127 L215,166 M190,153 L215,166 M190,179 L215,166 M190,205 L215,166" style="stroke:var(--c6)"/>
+        <path class="svg-arrow c6 dashed" d="M215,166 C330,166 340,50 466,47"/>
+        <path class="svg-arrow c6 dashed" d="M215,166 C330,166 340,191 466,191"/>
+        <text class="svg-label small" x="10" y="238">control threads may run on CPUs 0 and 3: all CPUs minus the lcore CPUs 1 and 2</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>The measured thread list as a picture. The two EAL threads are pinned to one CPU each; all four control threads share CPUs 0 and 3. If you gave <code>-l 0-3</code>, the control threads would have to share the main lcore's CPU 0 and could delay it (and be delayed by it).</figcaption>
+    </figure>
+    <p>The runtime directory held <code>config</code> (the shared configuration that a secondary process maps), <code>mp_socket</code> (multi-process), <code>dpdk_telemetry.v2</code> (telemetry), and <code>fbarray_*</code> files (memory bookkeeping, ch4). After the clean exit the two sockets were gone, but <code>config</code> and the <code>fbarray</code> files stayed. That is normal; the next primary with the same prefix reuses them.</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">section 8: serve mode output</span></div>
+<pre><span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch03-serve/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span></pre>
+</div>
+
+    <!-- ===================================================== 8 -->
+    <h2 id="logging"><span class="sec-num">8</span>Logging the DPDK way</h2>
+    <p>DPDK logging (<code>lib/log/rte_log.h</code>) has two filters. Each message has a <span class="key-term">level</span> from 1 (EMERG) to 8 (DEBUG): 4 is ERR, 5 WARNING, 6 NOTICE, 7 INFO. Each message also belongs to a <span class="key-term">logtype</span>, a dotted name such as <code>lib.eal</code>, <code>lib.ethdev</code>, <code>pmd.net.null</code> or, for applications, <code>user.&lt;something&gt;</code>. Each logtype has its own level, and there is one global level. A message is printed only if its level is at or below <em>both</em> (<code>rte_log_can_log()</code> in <code>lib/log/log.c</code>). The default output is stderr.</p>
+
+    <figure class="diagram">
+      <div class="wide-svg">
+      <svg viewBox="0 0 640 150" role="img" aria-labelledby="f-logpath-t">
+        <title id="f-logpath-t">Path of a log message: macro, global level check, logtype level check, output stream</title>
+        <rect class="svg-box c7" x="10" y="45" width="140" height="56"/>
+        <text class="svg-label center small mono" x="80" y="66">APP_LOG(INFO,</text>
+        <text class="svg-label center small mono" x="80" y="82">"rx=%u", n)</text>
+        <rect class="svg-box c1" x="185" y="45" width="120" height="56"/>
+        <text class="svg-label center small" x="245" y="66">level &le; global?</text>
+        <text class="svg-label center small muted" x="245" y="84">default 8</text>
+        <rect class="svg-box c1" x="340" y="45" width="130" height="56"/>
+        <text class="svg-label center small" x="405" y="66">level &le; type level?</text>
+        <text class="svg-label center small muted" x="405" y="84">user.ch03app: 7</text>
+        <rect class="svg-box c6" x="505" y="10" width="125" height="36"/><text class="svg-label center small" x="567" y="28">stderr (default)</text>
+        <rect class="svg-box c6" x="505" y="56" width="125" height="36"/><text class="svg-label center small" x="567" y="74">rte_openlog_stream(f)</text>
+        <rect class="svg-box c6" x="505" y="102" width="125" height="36"/><text class="svg-label center small" x="567" y="120">--syslog</text>
+        <path class="svg-arrow" d="M150,73 L181,73"/>
+        <path class="svg-arrow" d="M305,73 L336,73"/>
+        <path class="svg-arrow c6" d="M470,73 L501,28"/>
+        <path class="svg-arrow c6 dashed" d="M470,73 L501,74"/>
+        <path class="svg-arrow c6 dashed" d="M470,73 L501,120"/>
+        <path class="svg-arrow c4 dashed" d="M245,101 L245,135"/><text class="svg-label small" x="252" y="134">dropped</text>
+        <path class="svg-arrow c4 dashed" d="M405,101 L405,135"/><text class="svg-label small" x="412" y="134">dropped</text>
+      </svg>
+      </div>
+      <figcaption><span class="fig-num"></span>Two level checks, then one output. <code>RTE_LOG_LINE</code> adds the newline and the <code>APP: </code> prefix; data-path variants (<code>RTE_LOG_DP*</code>) can be removed at compile time (ch13).</figcaption>
+    </figure>
+
+    <h3 id="logtype">Your own logtype</h3>
+    <p><code>RTE_LOG_REGISTER_SUFFIX(var, suffix, LEVEL)</code> registers the logtype <code>RTE_LOG_DEFAULT_LOGTYPE "." suffix</code> in a constructor that runs before <code>main()</code>, stores its numeric id in <code>var</code>, and gives it a default level. Inside DPDK the build system defines <code>RTE_LOG_DEFAULT_LOGTYPE</code> (for example <code>lib.ethdev</code>); an application must define it itself. The other pieces are naming conventions that the macros rely on:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/log_lab.c (lines 35-47)</span><span class="lang">C</span></div>
+<pre data-lines data-start="35" data-hl="36,37,41,44,46,47"><code class="language-c">#define RTE_LOG_DEFAULT_LOGTYPE user
+RTE_LOG_REGISTER_SUFFIX(app_logtype, ch03app, INFO);
+RTE_LOG_REGISTER_SUFFIX(rx_logtype, ch03app.rx, WARNING);
+
+/* RTE_LOG(l, t, ...) pastes RTE_LOGTYPE_##t, so give each type a short name.
+ * The short name is also the prefix printed on each line ("APP: ..."). */
+#define RTE_LOGTYPE_APP app_logtype
+#define RTE_LOGTYPE_RX  rx_logtype
+
+/* The usual app-wide wrappers. RTE_LOG_LINE adds the '\n' for you and
+ * refuses (at compile time) a format string that already ends in '\n'. */
+#define APP_LOG(level, ...) RTE_LOG_LINE(level, APP, __VA_ARGS__)
+#define RX_LOG(level, ...)  RTE_LOG_LINE(level, RX, __VA_ARGS__)</code></pre>
+</div>
+    <ul>
+      <li><code>RTE_LOG(level, t, fmt, ...)</code> pastes <code>RTE_LOGTYPE_##t</code>, so you must <code>#define RTE_LOGTYPE_APP app_logtype</code>. The short name <code>APP</code> is also the prefix printed on each line.</li>
+      <li><code>RTE_LOG_LINE()</code> appends <code>\n</code> itself and contains a <code>static_assert</code> that rejects a format string with <code>\n</code> in it (exercise 3 shows the compiler error).</li>
+      <li>Levels can be changed at run time: <code>rte_log_set_level(type, lvl)</code>, <code>rte_log_set_level_pattern("user.ch03app*", lvl)</code> (shell-style glob), <code>rte_log_set_level_regexp()</code>, <code>rte_log_set_global_level()</code>.</li>
+      <li><code>rte_log_can_log(type, lvl)</code> tells you whether a message would be printed, so you can skip expensive formatting.</li>
+      <li><code>rte_openlog_stream(FILE *)</code> sends <em>all</em> DPDK logs, EAL's included, to your stream; <code>NULL</code> restores the default.</li>
+    </ul>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">section 6: log_lab</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./log_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch03-log</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch03-log/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+logtype ids: user.ch03app=32 user.ch03app.rx=33 (dynamic ids)
+<span class="hl">current levels: app=7 rx=5 global=8</span>
+<span class="dim">--- 1. as registered (or as set by --log-level)</span>
+APP: app ERR     (level 4)
+APP: app WARNING (level 5)
+APP: app NOTICE  (level 6)
+APP: app INFO    (level 7)
+RX: rx  WARNING (level 5)
+<span class="dim">--- 2. after rte_log_set_level_pattern("user.ch03app*", DEBUG)</span>
+APP: app ERR     (level 4)
+APP: app WARNING (level 5)
+APP: app NOTICE  (level 6)
+APP: app INFO    (level 7)
+APP: app DEBUG   (level 8)
+RX: rx  WARNING (level 5)
+RX: rx  INFO    (level 7)
+<span class="hl">RX: rx  DEBUG   (level 8)</span>
+<span class="dim">--- 3. after rte_log_set_level(rx, ERR)</span>
+APP: app ERR     (level 4)
+APP: app WARNING (level 5)
+APP: app NOTICE  (level 6)
+APP: app INFO    (level 7)
+APP: app DEBUG   (level 8)
+<span class="dim">--- 4. rte_log_can_log guard</span>
+<span class="hl">rx DEBUG is off: skipped expensive_summary()</span>
+APP: summary=2513697526527747472
+<span class="dim">--- 5. rte_openlog_stream(file)</span>
+APP: back on the default stream
+<span class="hl">file: APP: this line goes to the file, not stderr</span>
+<span class="hl">file: EAL: even EAL lines follow the stream</span>
+<span class="dim">--- 6. rte_log_list_types: our types and a few library types</span>
+  lib.eal
+  pmd.net.null
+  user.ch03app
+  user.ch03app.rx
+<span class="ok">[exit code 0]</span></pre>
+</div>
+    <p class="output-caption">Our two logtypes got the dynamic ids 32 and 33 (0 to 31 are the old static types). With the default levels (app INFO = 7, rx WARNING = 5) DEBUG lines are dropped. After the glob pattern both types print everything. Note the ordering in part 5: the line "back on the default stream" went to stderr immediately, while the two lines sent to the file were only printed when the program read the file back.</p>
+
+    <h3 id="log-level">The <code>--log-level</code> option</h3>
+    <p>The command-line option has three forms, parsed by <code>eal_parse_log_level()</code> in <code>lib/eal/common/eal_common_options.c</code>:</p>
+    <ul>
+      <li><code>--log-level=&lt;glob&gt;:&lt;level&gt;</code>, for example <code>'user.ch03*:debug'</code> or <code>lib.eal:warning</code> (matched with <code>fnmatch()</code>);</li>
+      <li><code>--log-level=&lt;regex&gt;,&lt;level&gt;</code>, for example <code>'^pmd\.net,7'</code> (a POSIX regular expression, matched anywhere in the name);</li>
+      <li><code>--log-level=&lt;level&gt;</code> alone sets the <em>global</em> level.</li>
+    </ul>
+    <p>You can repeat the option; rules apply in order, so a later rule wins. Patterns are also remembered and applied to logtypes registered later (a driver loaded with <code>-d</code>, for example). <code>--log-level=help</code> lists the forms, and <code>--log-timestamp</code> and <code>--log-color</code> decorate each line. Try it on a small logtype tree:</p>
+
+    <div class="widget" id="w-log">
+      <div class="widget-head"><span class="widget-title">Log routing: which logtypes print a message?</span><span class="badge">interactive</span></div>
+      <div class="controls">
+        <label for="log-in" class="visually-hidden">--log-level options</label>
+        <input class="ch3-input" id="log-in" type="text" value="--log-level='user.ch03*:debug' --log-level=lib.eal:warning" spellcheck="false" autocomplete="off">
+        <button class="btn small primary" type="button" id="log-go">Apply</button>
+        <label>message level <select class="ch3-select" id="log-lvl"></select></label>
+      </div>
+      <div class="ch3-presets" id="log-presets"></div>
+      <div class="widget-body">
+        <div class="wide-svg"><svg viewBox="0 0 640 250" role="img" aria-label="Logtype tree with the effective level of each logtype and whether the message passes"></svg></div>
+        <ul class="ch3-msgs" id="log-msgs"></ul>
+      </div>
+    </div>
+
+    <p>The same experiments on the real program:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">section 6: --log-level patterns</span></div>
+<pre><span class="dim">--- the same program with a command-line pattern</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./log_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch03-log --log-level=user.ch03*:debug</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch03-log/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+logtype ids: user.ch03app=32 user.ch03app.rx=33 (dynamic ids)
+<span class="hl">current levels: app=8 rx=8 global=8</span>
+<span class="dim">--- 1. as registered (or as set by --log-level)</span>
+APP: app ERR     (level 4)
+APP: app WARNING (level 5)
+APP: app NOTICE  (level 6)
+APP: app INFO    (level 7)
+<span class="hl">APP: app DEBUG   (level 8)</span>
+RX: rx  WARNING (level 5)
+RX: rx  INFO    (level 7)
+<span class="dim">--- only the rx sub-type, and EAL quieted to warnings</span>
+<span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./log_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch03-log --log-level=lib.eal:warning --log-level=user.ch03app.rx:debug</span>
+logtype ids: user.ch03app=32 user.ch03app.rx=33 (dynamic ids)
+<span class="hl">current levels: app=7 rx=8 global=8</span>
+<span class="dim">--- 1. as registered (or as set by --log-level)</span>
+APP: app ERR     (level 4)
+APP: app WARNING (level 5)
+APP: app NOTICE  (level 6)
+APP: app INFO    (level 7)
+RX: rx  WARNING (level 5)
+RX: rx  INFO    (level 7)
+<span class="hl">RX: rx  DEBUG   (level 8)</span>
+<span class="hl">--- 2. after rte_log_set_level_pattern("user.ch03app*", DEBUG)</span>
+APP: app ERR     (level 4)
+APP: app WARNING (level 5)</pre>
+</div>
+    <p class="output-caption">With <code>'user.ch03*:debug'</code> both types start at level 8. With <code>lib.eal:warning</code> the five EAL info lines at the top disappear, and <code>user.ch03app.rx:debug</code> raised only the rx type (the app type kept its INFO = 7).</p>
+
+    <!-- ===================================================== 9 -->
+    <h2 id="time"><span class="sec-num">9</span>Time: the TSC, delays, and how to measure</h2>
+    <p>Every x86 core has a <span class="key-term">time stamp counter (TSC)</span>, a 64-bit register that counts at a fixed rate. On this machine the CPU flags <code>constant_tsc</code> and <code>nonstop_tsc</code> are set, so the rate does not change with CPU frequency or sleep states, and the counters of all cores agree. EAL measures the rate once at init. After that, reading the time is one instruction:</p>
+    <ul>
+      <li><code>rte_rdtsc()</code>: read the counter (<code>lib/eal/x86/include/rte_cycles.h</code>). The CPU may execute it a little earlier or later than the surrounding instructions.</li>
+      <li><code>rte_rdtsc_precise()</code>: a full memory barrier (<code>rte_mb()</code>), then <code>rte_rdtsc()</code>. Use it at the start and end of a measured region, so earlier work cannot slip past the read.</li>
+      <li><code>rte_get_tsc_hz()</code>: counts per second. Cycles to seconds: <code>cycles / (double)rte_get_tsc_hz()</code>.</li>
+      <li><code>rte_get_timer_cycles()</code> / <code>rte_get_timer_hz()</code>: the generic timer, which is the TSC unless DPDK was built with HPET support.</li>
+      <li><code>rte_delay_us_block(us)</code> spins (100% CPU); <code>rte_delay_us_sleep(us)</code> sleeps in the kernel (<code>nanosleep</code>); <code>rte_delay_us()</code> and <code>rte_delay_ms()</code> spin by default.</li>
+    </ul>
+    <p><code>tsc_lab.c</code> measures all of that. The core of it is a tiny benchmark harness that follows the recipe in the box below:</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/tsc_lab.c (lines 67-90)</span><span class="lang">C</span></div>
+<pre data-lines data-start="67" data-hl="73,76,86,87,89"><code class="language-c">/* One repetition: CALLS calls, timed with the TSC; returns ns per call. */
+static double
+one_rep(clock_fn fn, double ns_per_cycle)
+{
+	uint64_t acc = 0, t0, t1;
+
+	t0 = rte_rdtsc_precise();
+	for (int i = 0; i &lt; CALLS; i++)
+		acc += fn();
+	t1 = rte_rdtsc_precise();
+	sink = acc;
+	return (double)(t1 - t0) * ns_per_cycle / CALLS;
+}
+
+static void
+bench_clock(const char *name, clock_fn fn, double ns_per_cycle)
+{
+	double v[REPS];
+
+	one_rep(fn, ns_per_cycle);                  /* 1. warm-up, discarded */
+	for (int r = 0; r &lt; REPS; r++)              /* 2. N repetitions */
+		v[r] = one_rep(fn, ns_per_cycle);
+	report(name, v, REPS, "ns/call");           /* 3. median, min, max */
+}</code></pre>
+</div>
+    
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">section 7: tsc_lab</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./tsc_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch03-tsc</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch03-tsc/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+== A. TSC frequency
+  rte_get_tsc_hz()   = 2700000000 Hz
+  rte_get_timer_hz() = 2700000000 Hz (timer source = TSC here)
+<span class="hl">  TSC measured vs CLOCK_MONOTONIC    median  2700.00 MHz   (min  2699.98, max  2700.02, N=7)</span>
+
+== B. cost of reading a clock (1000000 calls per repetition)
+<span class="hl">  rte_rdtsc()                        median    12.29 ns/call   (min    12.28, max    12.31, N=7)</span>
+<span class="hl">  rte_rdtsc_precise()                median    24.58 ns/call   (min    24.57, max    24.99, N=7)</span>
+<span class="hl">  rte_get_timer_cycles()             median    12.29 ns/call   (min    12.27, max    12.46, N=7)</span>
+<span class="hl">  clock_gettime(CLOCK_MONOTONIC)     median    21.87 ns/call   (min    21.84, max    21.90, N=7)</span>
+
+== C. busy delay vs sleeping delay
+  rte_delay_us_block(10000):
+<span class="hl">      wall time                      median 10000.78 us   (min 10000.76, max 10002.64, N=5)</span>
+<span class="hl">      CPU time of this thread        median 10000.40 us   (min 10000.39, max 10000.73, N=5)</span>
+  rte_delay_us_sleep(10000):
+<span class="hl">      wall time                      median 10080.25 us   (min 10076.21, max 10081.96, N=5)</span>
+<span class="hl">      CPU time of this thread        median    17.74 us   (min    17.05, max    18.90, N=5)</span>
+<span class="ok">[exit code 0]</span></pre>
+</div>
+    <p class="output-caption">Part A: the TSC agrees with the kernel clock to about 0.001%. Part B: on this VM <code>rte_rdtsc()</code> costs about 12 ns (around 33 cycles at 2.7 GHz), the barrier in <code>rte_rdtsc_precise()</code> doubles that, and <code>clock_gettime()</code> (served by the vDSO, no system call) is in between. On bare metal <code>rdtsc</code> is usually cheaper; the VM adds cost. Part C: both delays last 10 ms of wall time, but the busy one burns 10 ms of CPU and the sleeping one 17 &micro;s. The sleeping one overshoots by about 80 &micro;s, because the kernel has to wake the thread up again.</p>
+
+    <section class="box measure-box" id="measure">
+      <div class="box-title">How to measure on this machine (used by every later benchmark)</div>
+      <p>The course machine is a 4-CPU virtual machine shared with other jobs, so a single run is noise. Every number published in this course follows these rules:</p>
+      <ol>
+        <li><strong>Warm up</strong> once and throw the result away (caches, page faults, CPU frequency).</li>
+        <li><strong>Repeat</strong> at least 5 times (<code>tsc_lab</code> uses 7) with identical settings.</li>
+        <li><strong>Report the median</strong>, plus min and max to show the spread. Not the mean: one disturbed run moves the mean a lot, the median hardly.</li>
+        <li><strong>Do not oversubscribe</strong>: one busy lcore per CPU, and leave a CPU for control threads, unless oversubscription is the experiment.</li>
+        <li><strong>Time with the TSC</strong> around the whole region (<code>rte_rdtsc_precise()</code> at both ends), and repeat the operation enough times (here a million) that the cost of the clock itself does not matter.</li>
+        <li><strong>Expect noise</strong> from other processes; if min and max are far apart, say so, or run again.</li>
+        <li><strong>Never quote a number you did not measure</strong>, and label VM and software-driver numbers as such. ch22 goes much deeper (isolation, profiling, power).</li>
+      </ol>
+    </section>
+
+    <!-- ===================================================== 10 -->
+    <h2 id="shutdown"><span class="sec-num">10</span>Signals and a clean shutdown</h2>
+    <p>Polling loops never end by themselves, so Ctrl-C (SIGINT) is the usual way to stop a DPDK application. Two rules:</p>
+    <ol>
+      <li><strong>The signal handler only sets a flag.</strong> A handler can interrupt any code, including code that holds a DPDK lock. Calling <code>printf()</code>, <code>rte_eth_dev_stop()</code> or <code>rte_eal_cleanup()</code> from it can deadlock or corrupt state. Storing to a lock-free atomic variable is safe.</li>
+      <li><strong>Every loop checks the flag and returns</strong>; the main lcore waits for all of them (<code>rte_eal_mp_wait_lcore()</code>), then stops devices (ch8, ch12) and calls <code>rte_eal_cleanup()</code> once.</li>
+    </ol>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/eal_tour.c (lines 48-50)</span><span class="lang">C</span></div>
+<pre data-lines data-start="48" data-hl="50"><code class="language-c">/* Set by the signal handler, read by every lcore. A lock-free atomic int is
+ * async-signal-safe to store to; DPDK calls are not. */
+static RTE_ATOMIC(int) quit;</code></pre>
+</div>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/eal_tour.c (lines 175-181)</span><span class="lang">C</span></div>
+<pre data-lines data-start="175" data-hl="180"><code class="language-c">static void
+on_signal(int sig)
+{
+	/* Only async-signal-safe work here: store a flag. No printf, no rte_*. */
+	(void)sig;
+	rte_atomic_store_explicit(&amp;quit, 1, rte_memory_order_relaxed);
+}</code></pre>
+</div>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/eal_tour.c (lines 128-140)</span><span class="lang">C</span></div>
+<pre data-lines data-start="128" data-hl="133,137"><code class="language-c">static int
+work_poll(void *arg)
+{
+	uint64_t loops = 0;
+	(void)arg;
+	while (!rte_atomic_load_explicit(&amp;quit, rte_memory_order_relaxed)) {
+		loops++;            /* a real app would rte_eth_rx_burst() here */
+		rte_pause();
+	}
+	printf("  [lcore %u] saw quit after %" PRIu64 " loops\n",
+	       rte_lcore_id(), loops);
+	return 0;
+}</code></pre>
+</div>
+    <p>And the supervising main lcore in serve mode (its output is in section 7):</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/eal_tour.c (lines 218-237)</span><span class="lang">C</span></div>
+<pre data-lines data-start="218" data-hl="227,229,232,233,235"><code class="language-c">	if (serve_secs &gt; 0) {
+		int one = 1;
+		rte_thread_t ctl;
+		uint64_t end;
+
+		printf("\n== serve mode: pid %d, polling for up to %d s (SIGINT stops)\n",
+		       (int)getpid(), serve_secs);
+		fflush(stdout);
+		rte_thread_create_control(&amp;ctl, "ch03-ctl", control_thread, &amp;one);
+		rte_eal_mp_remote_launch(work_poll, NULL, SKIP_MAIN);
+		end = rte_get_tsc_cycles() + (uint64_t)serve_secs * rte_get_tsc_hz();
+		while (!rte_atomic_load_explicit(&amp;quit, rte_memory_order_relaxed) &amp;&amp;
+		       rte_get_tsc_cycles() &lt; end)
+			usleep(10 * 1000);       /* main just supervises */
+		rte_atomic_store_explicit(&amp;quit, 1, rte_memory_order_relaxed);
+		rte_eal_mp_wait_lcore();          /* every worker back in WAIT */
+		rte_thread_join(ctl, NULL);
+		printf("  all lcores stopped; cleanup=%d\n", rte_eal_cleanup());
+		return 0;
+	}</code></pre>
+</div>
+    <p><code>rte_eal_cleanup()</code> releases what init created: it stops services, detaches devices, closes the multi-process channel, frees memory and returns hugepages. After it, every DPDK pointer is dangling. It does not join the worker threads; they stay asleep until the process exits. If the process dies without it (SIGKILL, a crash), the files stay behind. The exercise 4 solution, run with real hugepages (<code>-m 64</code>), shows both cases:</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">section 9: exercise 4</span></div>
+<pre><span class="dim">--- exercise 4: SIGINT stops every lcore (hugepage run, -m 64)</span>
+<span class="prompt">$ </span><span class="cmd">ls /dev/hugepages | grep ch03-stop | wc -l    (while running)</span>
+<span class="hl">32</span>
+<span class="ok">[exit code 0]</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch03-stop/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'PA'</span>
+main: allocated 4 MB at 0x103dfdf80; polling until SIGINT
+<span class="hl">lcore 1: stopping after 161421364 iterations</span>
+<span class="hl">lcore 0: stopping after 160940277 iterations</span>
+<span class="hl">lcore 2: stopping after 161684533 iterations</span>
+<span class="hl">main: all lcores returned; rte_eal_cleanup() = 0</span>
+<span class="prompt">$ </span><span class="cmd">ls /dev/hugepages | grep ch03-stop | wc -l    (after SIGINT + cleanup)</span>
+<span class="hl">0</span>
+<span class="hl">--- the same program killed with SIGKILL (no cleanup can run)</span>
+<span class="err">[exit code 137]</span>
+<span class="prompt">$ </span><span class="cmd">ls /dev/hugepages | grep ch03-stop    (leftovers; first 3 and a count)</span>
+  ch03-stopmap_0_0
+  ch03-stopmap_0_1
+  ch03-stopmap_0_2
+<span class="hl">  ... 32 files of 2 MB = the whole -m 64</span>
+<span class="prompt">$ </span><span class="cmd">ls /var/run/dpdk/ch03-stop</span>
+  config
+  dpdk_telemetry.v2
+  fbarray_memseg-2048k-0-0
+  fbarray_memzone
+  hugepage_info
+  mp_socket
+(run.sh removed them)</pre>
+</div>
+    <p class="output-caption">While running, the process had 32 hugepage files of 2 MB (the whole <code>-m 64</code>). After SIGINT and <code>rte_eal_cleanup()</code>: zero. After SIGKILL: all 32 files stay in <code>/dev/hugepages</code> and the runtime directory keeps its sockets. On a shared machine leftover hugepages are lost memory for everybody, which is why every <code>run.sh</code> in this course removes <code>/dev/hugepages/&lt;prefix&gt;map_*</code> in its exit trap. The skeleton's <code>lcore_main()</code> loops forever, so its <code>rte_eal_cleanup()</code> is never reached; a production app must use the flag pattern.</p>
+
+    <!-- ===================================================== whole program -->
+    <h2 id="programs"><span class="sec-num">11</span>The complete programs</h2>
+    <p>All sources build with <code>make</code> (<code>-Wall -Wextra</code>, static link through <code>pkg-config --static libdpdk</code>) and run from <code>./run.sh</code>.</p>
+    <div class="tabs">
+      <div class="tab-list">
+        <button class="tab-btn" data-tab="t1">eal_tour.c</button>
+        <button class="tab-btn" data-tab="t2">log_lab.c</button>
+        <button class="tab-btn" data-tab="t3">tsc_lab.c</button>
+        <button class="tab-btn" data-tab="t4">Makefile</button>
+        <button class="tab-btn" data-tab="t5">run.sh</button>
+      </div>
+      <div class="tab-panel" data-tab="t1"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * eal_tour.c - Chapter 3: a guided tour of the EAL from the application's view.
+ *
+ *   ./eal_tour -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch03-tour
+ *   ./eal_tour -l 0-2 --no-pci --no-huge -m 64 --file-prefix=ch03-serve -- --serve 10
+ *
+ * Tour mode (default) shows, in order:
+ *   1. what rte_eal_init() returned and the basic lcore facts
+ *   2. the lcore table: lcore id -&gt; CPU, NUMA socket, role, state
+ *   3. rte_eal_remote_launch() + rte_eal_wait_lcore() collecting return values
+ *   4. the WAIT/RUNNING state machine and the -EBUSY error
+ *   5. rte_eal_mp_remote_launch(CALL_MAIN) and per-lcore TLS (RTE_DEFINE_PER_LCORE)
+ *   6. a plain pthread before and after rte_thread_register()
+ *   7. a control thread made with rte_thread_create_control()
+ *   8. rte_lcore_dump() and rte_eal_cleanup()
+ *
+ * Serve mode (-- --serve N) keeps every worker busy-polling until SIGINT /
+ * SIGTERM or N seconds pass, so run.sh can look at the threads in /proc.
+ * It also shows the right way to stop: the signal handler only sets an
+ * atomic flag, the lcores see it and return, then main cleans up.
+ */
+#define _GNU_SOURCE      /* sched_getaffinity, sched_getcpu, CPU_* */
+#include &lt;errno.h&gt;
+#include &lt;inttypes.h&gt;
+#include &lt;pthread.h&gt;
+#include &lt;sched.h&gt;
+#include &lt;signal.h&gt;
+#include &lt;stdbool.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;unistd.h&gt;
+
+#include &lt;rte_common.h&gt;
+#include &lt;rte_cycles.h&gt;
+#include &lt;rte_eal.h&gt;
+#include &lt;rte_errno.h&gt;
+#include &lt;rte_launch.h&gt;
+#include &lt;rte_lcore.h&gt;
+#include &lt;rte_pause.h&gt;
+#include &lt;rte_per_lcore.h&gt;
+#include &lt;rte_stdatomic.h&gt;
+#include &lt;rte_thread.h&gt;
+
+/* ---- shared state ------------------------------------------------------ */
+
+/* Set by the signal handler, read by every lcore. A lock-free atomic int is
+ * async-signal-safe to store to; DPDK calls are not. */
+static RTE_ATOMIC(int) quit;
+
+/* Used by the -EBUSY demo: the worker spins until main sets it. */
+static RTE_ATOMIC(int) go;
+
+/* Per-thread (TLS) counter: every thread has its own copy, no sharing. */
+static RTE_DEFINE_PER_LCORE(uint64_t, calls);
+
+static const char *
+role_name(enum rte_lcore_role_t r)
+{
+	switch (r) {
+	case RTE_LCORE_ROLE_RTE:     return "RTE";
+	case RTE_LCORE_ROLE_OFF:     return "OFF";
+	case RTE_LCORE_ROLE_SERVICE: return "SERVICE";
+	case RTE_LCORE_ROLE_NON_EAL: return "NON_EAL";
+	}
+	return "?";
+}
+
+static const char *
+state_name(enum rte_lcore_state_t s)
+{
+	return s == WAIT ? "WAIT" : s == RUNNING ? "RUNNING" : "?";
+}
+
+/* Print the CPUs the *calling thread* may run on, e.g. "1" or "0,3". */
+static void
+print_my_cpus(const char *who)
+{
+	cpu_set_t set;
+	char buf[64] = "";
+	int n = 0;
+
+	CPU_ZERO(&amp;set);
+	sched_getaffinity(0, sizeof(set), &amp;set);   /* 0 = this thread */
+	for (int c = 0; c &lt; CPU_SETSIZE &amp;&amp; n &lt; (int)sizeof(buf) - 4; c++)
+		if (CPU_ISSET(c, &amp;set))
+			n += snprintf(buf + n, sizeof(buf) - n, "%s%d", n ? "," : "", c);
+	printf("  %-28s lcore_id=%-3d allowed CPUs=%s\n", who,
+	       (int)rte_lcore_id(), buf);
+}
+
+/* ---- work functions (lcore_function_t: int f(void *)) ------------------ */
+
+/* 3. Returns a value main can collect with rte_eal_wait_lcore(). */
+static int
+work_square(void *arg)
+{
+	unsigned int id = rte_lcore_id();
+	(void)arg;
+	printf("  [lcore %u on CPU %d] running work_square\n", id, sched_getcpu());
+	return 100 + (int)(id * id);
+}
+
+/* 4. Spins until main says "go", so main can observe RUNNING. */
+static int
+work_wait_for_go(void *arg)
+{
+	(void)arg;
+	while (!rte_atomic_load_explicit(&amp;go, rte_memory_order_acquire))
+		rte_pause();
+	return 7;
+}
+
+/* 5. Runs on every lcore including main (CALL_MAIN). */
+static int
+work_count(void *arg)
+{
+	int n = *(int *)arg;
+	for (int i = 0; i &lt; n; i++)
+		RTE_PER_LCORE(calls)++;
+	printf("  [lcore %u] my TLS counter = %" PRIu64 "\n",
+	       rte_lcore_id(), RTE_PER_LCORE(calls));
+	return 0;
+}
+
+/* Serve mode: a typical polling loop that checks the quit flag. */
+static int
+work_poll(void *arg)
+{
+	uint64_t loops = 0;
+	(void)arg;
+	while (!rte_atomic_load_explicit(&amp;quit, rte_memory_order_relaxed)) {
+		loops++;            /* a real app would rte_eth_rx_burst() here */
+		rte_pause();
+	}
+	printf("  [lcore %u] saw quit after %" PRIu64 " loops\n",
+	       rte_lcore_id(), loops);
+	return 0;
+}
+
+/* ---- threads that are not EAL lcores ----------------------------------- */
+
+/* 6. A plain pthread: no lcore id until it registers. */
+static void *
+plain_thread(void *arg)
+{
+	(void)arg;
+	print_my_cpus("pthread before register:");
+	if (rte_thread_register() != 0) {
+		printf("  rte_thread_register failed: %s\n", rte_strerror(rte_errno));
+		return NULL;
+	}
+	printf("  pthread after register:      lcore_id=%u role=%s\n",
+	       rte_lcore_id(), role_name(rte_eal_lcore_role(rte_lcore_id())));
+	rte_thread_unregister();
+	printf("  pthread after unregister:    lcore_id=%d\n", (int)rte_lcore_id());
+	return NULL;
+}
+
+/* 7. A control thread: rte_thread_func returns uint32_t. */
+static uint32_t
+control_thread(void *arg)
+{
+	int serve = *(int *)arg;
+	print_my_cpus("control thread 'ch03-ctl':");
+	/* In serve mode it stays alive so it shows up in /proc. */
+	while (serve &amp;&amp; !rte_atomic_load_explicit(&amp;quit, rte_memory_order_relaxed))
+		usleep(10 * 1000);
+	return 42;
+}
+
+/* ---- signals ------------------------------------------------------------ */
+
+static void
+on_signal(int sig)
+{
+	/* Only async-signal-safe work here: store a flag. No printf, no rte_*. */
+	(void)sig;
+	rte_atomic_store_explicit(&amp;quit, 1, rte_memory_order_relaxed);
+}
+
+/* ---- main --------------------------------------------------------------- */
+
+int
+main(int argc, char **argv)
+{
+	unsigned int id;
+	int serve_secs = 0;
+	int ret = rte_eal_init(argc, argv);
+
+	if (ret &lt; 0) {
+		fprintf(stderr, "rte_eal_init failed: %s\n", rte_strerror(rte_errno));
+		return 1;
+	}
+	/* EAL consumed 'ret' arguments; what is left belongs to us. */
+	argc -= ret;
+	argv += ret;
+	if (argc &gt;= 3 &amp;&amp; strcmp(argv[1], "--serve") == 0)
+		serve_secs = atoi(argv[2]);
+
+	signal(SIGINT, on_signal);
+	signal(SIGTERM, on_signal);
+
+	printf("\n== 1. rte_eal_init returned %d (arguments consumed)\n", ret);
+	printf("  main lcore=%u  lcore count=%u  TSC hz=%" PRIu64 "\n",
+	       rte_get_main_lcore(), rte_lcore_count(), rte_get_tsc_hz());
+
+	printf("\n== 2. lcore table (RTE_LCORE_FOREACH)\n");
+	printf("  lcore  cpu  socket  role     state\n");
+	RTE_LCORE_FOREACH(id)
+		printf("  %5u  %3d  %6u  %-7s  %s\n", id, rte_lcore_to_cpu_id(id),
+		       rte_lcore_to_socket_id(id), role_name(rte_eal_lcore_role(id)),
+		       id == rte_get_main_lcore() ? "(main)" :
+		       state_name(rte_eal_get_lcore_state(id)));
+	print_my_cpus("main thread:");
+
+	if (serve_secs &gt; 0) {
+		int one = 1;
+		rte_thread_t ctl;
+		uint64_t end;
+
+		printf("\n== serve mode: pid %d, polling for up to %d s (SIGINT stops)\n",
+		       (int)getpid(), serve_secs);
+		fflush(stdout);
+		rte_thread_create_control(&amp;ctl, "ch03-ctl", control_thread, &amp;one);
+		rte_eal_mp_remote_launch(work_poll, NULL, SKIP_MAIN);
+		end = rte_get_tsc_cycles() + (uint64_t)serve_secs * rte_get_tsc_hz();
+		while (!rte_atomic_load_explicit(&amp;quit, rte_memory_order_relaxed) &amp;&amp;
+		       rte_get_tsc_cycles() &lt; end)
+			usleep(10 * 1000);       /* main just supervises */
+		rte_atomic_store_explicit(&amp;quit, 1, rte_memory_order_relaxed);
+		rte_eal_mp_wait_lcore();          /* every worker back in WAIT */
+		rte_thread_join(ctl, NULL);
+		printf("  all lcores stopped; cleanup=%d\n", rte_eal_cleanup());
+		return 0;
+	}
+
+	printf("\n== 3. remote_launch + wait_lcore (return values)\n");
+	RTE_LCORE_FOREACH_WORKER(id) {
+		ret = rte_eal_remote_launch(work_square, NULL, id);
+		if (ret != 0)
+			printf("  launch on %u failed: %d\n", id, ret);
+	}
+	RTE_LCORE_FOREACH_WORKER(id)
+		printf("  rte_eal_wait_lcore(%u) = %d\n", id, rte_eal_wait_lcore(id));
+
+	printf("\n== 4. state machine and -EBUSY\n");
+	id = rte_get_next_lcore(-1, 1, 0);          /* first worker */
+	if (id &lt; RTE_MAX_LCORE) {
+		printf("  before launch: lcore %u is %s\n", id,
+		       state_name(rte_eal_get_lcore_state(id)));
+		rte_eal_remote_launch(work_wait_for_go, NULL, id);
+		printf("  after launch:  lcore %u is %s\n", id,
+		       state_name(rte_eal_get_lcore_state(id)));
+		ret = rte_eal_remote_launch(work_square, NULL, id);
+		printf("  second launch while RUNNING returns %d (-EBUSY is %d)\n",
+		       ret, -EBUSY);
+		rte_atomic_store_explicit(&amp;go, 1, rte_memory_order_release);
+		printf("  rte_eal_wait_lcore(%u) = %d\n", id, rte_eal_wait_lcore(id));
+		printf("  after wait:    lcore %u is %s\n", id,
+		       state_name(rte_eal_get_lcore_state(id)));
+	}
+
+	printf("\n== 5. mp_remote_launch(CALL_MAIN) + RTE_PER_LCORE\n");
+	{
+		int n = 3;
+		/* main runs work_count itself, synchronously, after waking workers */
+		rte_eal_mp_remote_launch(work_count, &amp;n, CALL_MAIN);
+		rte_eal_mp_wait_lcore();
+		rte_eal_mp_remote_launch(work_count, &amp;n, CALL_MAIN);
+		rte_eal_mp_wait_lcore();
+	}
+
+	printf("\n== 6. a non-EAL pthread and rte_thread_register()\n");
+	{
+		pthread_t t;
+		pthread_create(&amp;t, NULL, plain_thread, NULL);
+		pthread_join(t, NULL);
+	}
+
+	printf("\n== 7. rte_thread_create_control()\n");
+	{
+		rte_thread_t ctl;
+		uint32_t rv = 0;
+		int zero = 0;
+		ret = rte_thread_create_control(&amp;ctl, "ch03-ctl", control_thread, &amp;zero);
+		if (ret == 0) {
+			rte_thread_join(ctl, &amp;rv);
+			printf("  control thread returned %u\n", rv);
+		} else {
+			printf("  rte_thread_create_control failed: %d\n", ret);
+		}
+	}
+
+	printf("\n== 8. rte_lcore_dump() and rte_eal_cleanup()\n");
+	rte_lcore_dump(stdout);
+	ret = rte_eal_cleanup();
+	printf("  rte_eal_cleanup() = %d\n", ret);
+	return 0;
+}</code></pre></div>
+      <div class="tab-panel" data-tab="t2"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * log_lab.c - Chapter 3: DPDK logging from the application's side.
+ *
+ *   ./log_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch03-log
+ *   ./log_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch03-log \
+ *             --log-level='user.ch03*:debug'
+ *
+ * Shows:
+ *   - registering two dynamic logtypes with RTE_LOG_REGISTER_SUFFIX
+ *     ("user.ch03app" and "user.ch03app.rx")
+ *   - the RTE_LOGTYPE_&lt;NAME&gt; naming trick that RTE_LOG / RTE_LOG_LINE need
+ *   - which levels pass by default and with --log-level patterns
+ *   - changing levels at run time with rte_log_set_level_pattern()
+ *   - rte_log_can_log() to skip expensive formatting
+ *   - redirecting all DPDK logs to a FILE* with rte_openlog_stream()
+ */
+#include &lt;inttypes.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+#include &lt;rte_eal.h&gt;
+#include &lt;rte_errno.h&gt;
+#include &lt;rte_log.h&gt;
+
+/*
+ * RTE_LOG_REGISTER_SUFFIX(var, suffix, level) registers the name
+ *     RTE_LOG_DEFAULT_LOGTYPE "." suffix
+ * Inside DPDK the build system defines RTE_LOG_DEFAULT_LOGTYPE (lib.eal,
+ * pmd.net.null, ...). An application must define it itself, before use.
+ * Here the prefix is "user", so the names become user.ch03app and
+ * user.ch03app.rx. The registration runs as a constructor, before main().
+ */
+#define RTE_LOG_DEFAULT_LOGTYPE user
+RTE_LOG_REGISTER_SUFFIX(app_logtype, ch03app, INFO);
+RTE_LOG_REGISTER_SUFFIX(rx_logtype, ch03app.rx, WARNING);
+
+/* RTE_LOG(l, t, ...) pastes RTE_LOGTYPE_##t, so give each type a short name.
+ * The short name is also the prefix printed on each line ("APP: ..."). */
+#define RTE_LOGTYPE_APP app_logtype
+#define RTE_LOGTYPE_RX  rx_logtype
+
+/* The usual app-wide wrappers. RTE_LOG_LINE adds the '\n' for you and
+ * refuses (at compile time) a format string that already ends in '\n'. */
+#define APP_LOG(level, ...) RTE_LOG_LINE(level, APP, __VA_ARGS__)
+#define RX_LOG(level, ...)  RTE_LOG_LINE(level, RX, __VA_ARGS__)
+
+static void
+emit_all(const char *tag)
+{
+	printf("--- %s\n", tag);
+	fflush(stdout);
+	APP_LOG(ERR,     "app ERR     (level 4)");
+	APP_LOG(WARNING, "app WARNING (level 5)");
+	APP_LOG(NOTICE,  "app NOTICE  (level 6)");
+	APP_LOG(INFO,    "app INFO    (level 7)");
+	APP_LOG(DEBUG,   "app DEBUG   (level 8)");
+	RX_LOG(WARNING,  "rx  WARNING (level 5)");
+	RX_LOG(INFO,     "rx  INFO    (level 7)");
+	RX_LOG(DEBUG,    "rx  DEBUG   (level 8)");
+	fflush(stderr);
+}
+
+static uint64_t
+expensive_summary(void)
+{
+	uint64_t s = 0;
+	for (uint64_t i = 0; i &lt; 1000000; i++)
+		s += i ^ (s &gt;&gt; 3);
+	return s;
+}
+
+int
+main(int argc, char **argv)
+{
+	int ret = rte_eal_init(argc, argv);
+	FILE *f;
+	char line[256];
+
+	if (ret &lt; 0) {
+		fprintf(stderr, "rte_eal_init failed: %s\n", rte_strerror(rte_errno));
+		return 1;
+	}
+	/* DPDK logs go to stderr (unbuffered); make stdout line-buffered so the
+	 * two streams stay in order when both are piped into one file. */
+	setvbuf(stdout, NULL, _IOLBF, 0);
+
+	printf("logtype ids: user.ch03app=%d user.ch03app.rx=%d (dynamic ids)\n",
+	       app_logtype, rx_logtype);
+	printf("current levels: app=%d rx=%d global=%d\n",
+	       rte_log_get_level(app_logtype), rte_log_get_level(rx_logtype),
+	       (int)rte_log_get_global_level());
+
+	emit_all("1. as registered (or as set by --log-level)");
+
+	/* Change levels at run time with a glob pattern. */
+	rte_log_set_level_pattern("user.ch03app*", RTE_LOG_DEBUG);
+	emit_all("2. after rte_log_set_level_pattern(\"user.ch03app*\", DEBUG)");
+
+	rte_log_set_level(rx_logtype, RTE_LOG_ERR);
+	emit_all("3. after rte_log_set_level(rx, ERR)");
+
+	/* Guard expensive work: only compute if the message would be printed. */
+	printf("--- 4. rte_log_can_log guard\n");
+	if (rte_log_can_log(rx_logtype, RTE_LOG_DEBUG))
+		RX_LOG(DEBUG, "summary=%" PRIu64, expensive_summary());
+	else
+		printf("rx DEBUG is off: skipped expensive_summary()\n");
+	if (rte_log_can_log(app_logtype, RTE_LOG_DEBUG))
+		APP_LOG(DEBUG, "summary=%" PRIu64, expensive_summary());
+
+	/* Redirect: every DPDK log line (EAL's too) now goes to the file. */
+	printf("--- 5. rte_openlog_stream(file)\n");
+	f = tmpfile();
+	if (f == NULL)
+		return 1;
+	rte_openlog_stream(f);
+	APP_LOG(NOTICE, "this line goes to the file, not stderr");
+	RTE_LOG(WARNING, EAL, "even EAL lines follow the stream\n");
+	rte_openlog_stream(NULL);                /* back to the default */
+	APP_LOG(NOTICE, "back on the default stream");
+	fflush(stderr);
+	rewind(f);
+	while (fgets(line, sizeof(line), f) != NULL)
+		printf("file: %s", line);
+	fclose(f);
+
+	/* rte_log_list_types(out, prefix) prints EVERY dynamic type; 'prefix'
+	 * is only text put in front of each name. We filter ourselves. */
+	printf("--- 6. rte_log_list_types: our types and a few library types\n");
+	f = tmpfile();
+	if (f != NULL) {
+		rte_log_list_types(f, "  ");
+		rewind(f);
+		while (fgets(line, sizeof(line), f) != NULL)
+			if (strstr(line, "user.ch03") || strstr(line, "lib.eal") ||
+			    strstr(line, "pmd.net.null"))
+				printf("%s", line);
+		fclose(f);
+	}
+
+	rte_eal_cleanup();
+	return 0;
+}</code></pre></div>
+      <div class="tab-panel" data-tab="t3"><pre data-lines><code class="language-c">/* SPDX-License-Identifier: BSD-3-Clause
+ *
+ * tsc_lab.c - Chapter 3: time in DPDK, and the course measurement recipe.
+ *
+ *   ./tsc_lab -l 0 --no-pci --no-huge -m 64 --file-prefix=ch03-tsc
+ *
+ * Part A: check rte_get_tsc_hz() against the kernel clock.
+ * Part B: cost per call of four clocks (rte_rdtsc, rte_rdtsc_precise,
+ *         rte_get_timer_cycles, clock_gettime(CLOCK_MONOTONIC)).
+ * Part C: rte_delay_us_block() vs rte_delay_us_sleep(): same wall time,
+ *         very different CPU time.
+ *
+ * "How to measure on this machine" (used by every later benchmark):
+ *   1. warm up once and throw the result away,
+ *   2. repeat N &gt;= 5 times (here N = 7),
+ *   3. report the median, and min and max to show the noise,
+ *   4. use one lcore per CPU (no oversubscription),
+ *   5. never publish a number you did not measure.
+ */
+#define _GNU_SOURCE
+#include &lt;inttypes.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;time.h&gt;
+
+#include &lt;rte_cycles.h&gt;
+#include &lt;rte_eal.h&gt;
+#include &lt;rte_errno.h&gt;
+
+#define REPS   7            /* N measured repetitions (after 1 warm-up) */
+#define CALLS  1000000      /* calls per repetition in part B */
+
+static volatile uint64_t sink;   /* stops the compiler deleting the loops */
+
+static int
+cmp_double(const void *a, const void *b)
+{
+	double x = *(const double *)a, y = *(const double *)b;
+	return (x &gt; y) - (x &lt; y);
+}
+
+/* Sort the samples and print "median (min .. max)". */
+static void
+report(const char *name, double *v, int n, const char *unit)
+{
+	qsort(v, n, sizeof(*v), cmp_double);
+	printf("  %-34s median %8.2f %s   (min %8.2f, max %8.2f, N=%d)\n",
+	       name, v[n / 2], unit, v[0], v[n - 1], n);
+}
+
+static uint64_t
+now_ns(clockid_t c)
+{
+	struct timespec ts;
+	clock_gettime(c, &amp;ts);
+	return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+}
+
+/* ---- the four clocks under test --------------------------------------- */
+static inline uint64_t c_rdtsc(void)    { return rte_rdtsc(); }
+static inline uint64_t c_precise(void)  { return rte_rdtsc_precise(); }
+static inline uint64_t c_timer(void)    { return rte_get_timer_cycles(); }
+static inline uint64_t c_mono(void)     { return now_ns(CLOCK_MONOTONIC); }
+
+typedef uint64_t (*clock_fn)(void);
+
+/* One repetition: CALLS calls, timed with the TSC; returns ns per call. */
+static double
+one_rep(clock_fn fn, double ns_per_cycle)
+{
+	uint64_t acc = 0, t0, t1;
+
+	t0 = rte_rdtsc_precise();
+	for (int i = 0; i &lt; CALLS; i++)
+		acc += fn();
+	t1 = rte_rdtsc_precise();
+	sink = acc;
+	return (double)(t1 - t0) * ns_per_cycle / CALLS;
+}
+
+static void
+bench_clock(const char *name, clock_fn fn, double ns_per_cycle)
+{
+	double v[REPS];
+
+	one_rep(fn, ns_per_cycle);                  /* 1. warm-up, discarded */
+	for (int r = 0; r &lt; REPS; r++)              /* 2. N repetitions */
+		v[r] = one_rep(fn, ns_per_cycle);
+	report(name, v, REPS, "ns/call");           /* 3. median, min, max */
+}
+
+/* Part C: wall time and CPU time of one delay call, in microseconds. */
+static void
+bench_delay(const char *name, void (*delay)(unsigned int), unsigned int us)
+{
+	double wall[5], cpu[5];
+
+	delay(us);                                   /* warm-up */
+	for (int r = 0; r &lt; 5; r++) {
+		uint64_t w0 = now_ns(CLOCK_MONOTONIC);
+		uint64_t c0 = now_ns(CLOCK_THREAD_CPUTIME_ID);
+		delay(us);
+		cpu[r]  = (now_ns(CLOCK_THREAD_CPUTIME_ID) - c0) / 1000.0;
+		wall[r] = (now_ns(CLOCK_MONOTONIC) - w0) / 1000.0;
+	}
+	printf("  %s(%u):\n", name, us);
+	report("    wall time", wall, 5, "us");
+	report("    CPU time of this thread", cpu, 5, "us");
+}
+
+int
+main(int argc, char **argv)
+{
+	int ret = rte_eal_init(argc, argv);
+	uint64_t hz;
+	double ns_per_cycle;
+
+	if (ret &lt; 0) {
+		fprintf(stderr, "rte_eal_init failed: %s\n", rte_strerror(rte_errno));
+		return 1;
+	}
+	setvbuf(stdout, NULL, _IOLBF, 0);
+	hz = rte_get_tsc_hz();
+	ns_per_cycle = 1e9 / (double)hz;
+
+	printf("== A. TSC frequency\n");
+	printf("  rte_get_tsc_hz()   = %" PRIu64 " Hz\n", hz);
+	printf("  rte_get_timer_hz() = %" PRIu64 " Hz (timer source = TSC here)\n",
+	       rte_get_timer_hz());
+	{
+		double v[REPS];
+		for (int r = 0; r &lt; REPS; r++) {
+			uint64_t n0 = now_ns(CLOCK_MONOTONIC), t0 = rte_rdtsc_precise();
+			rte_delay_us_block(20000);                 /* 20 ms */
+			uint64_t n1 = now_ns(CLOCK_MONOTONIC), t1 = rte_rdtsc_precise();
+			v[r] = (double)(t1 - t0) / (double)(n1 - n0) * 1000.0; /* MHz */
+		}
+		report("TSC measured vs CLOCK_MONOTONIC", v, REPS, "MHz");
+	}
+
+	printf("\n== B. cost of reading a clock (%d calls per repetition)\n", CALLS);
+	bench_clock("rte_rdtsc()", c_rdtsc, ns_per_cycle);
+	bench_clock("rte_rdtsc_precise()", c_precise, ns_per_cycle);
+	bench_clock("rte_get_timer_cycles()", c_timer, ns_per_cycle);
+	bench_clock("clock_gettime(CLOCK_MONOTONIC)", c_mono, ns_per_cycle);
+
+	printf("\n== C. busy delay vs sleeping delay\n");
+	bench_delay("rte_delay_us_block", rte_delay_us_block, 10000);
+	bench_delay("rte_delay_us_sleep", rte_delay_us_sleep, 10000);
+
+	rte_eal_cleanup();
+	return 0;
+}</code></pre></div>
+      <div class="tab-panel" data-tab="t4"><pre data-lines><code class="language-make"># SPDX-License-Identifier: BSD-3-Clause
+# Chapter 3 Makefile: every program links DPDK statically through pkg-config.
+# Run "source &lt;dpdk-env.sh&gt;" first so pkg-config finds libdpdk.pc.
+
+PKGCONF ?= pkg-config
+
+ifneq ($(shell $(PKGCONF) --exists libdpdk &amp;&amp; echo 0),0)
+$(error "no installation of DPDK found (is PKG_CONFIG_PATH set?)")
+endif
+
+CFLAGS += -O2 -g -Wall -Wextra $(shell $(PKGCONF) --cflags libdpdk)
+LDLIBS  = $(shell $(PKGCONF) --libs --static libdpdk)
+
+APPS      = eal_tour log_lab tsc_lab
+SOLUTIONS = reverse_wait clean_stop
+
+all: $(APPS) $(SOLUTIONS)
+
+%: %.c
+	$(CC) $(CFLAGS) $&lt; -o $@ $(LDLIBS)
+
+reverse_wait clean_stop: %: solutions/%.c
+	$(CC) $(CFLAGS) $&lt; -o $@ $(LDLIBS)
+
+# Exercise 3: this target is EXPECTED to fail (RTE_LOG_LINE rejects '\n').
+newline_bad: solutions/newline_bad.c
+	$(CC) $(CFLAGS) $&lt; -o $@ $(LDLIBS)
+
+clean:
+	rm -f $(APPS) $(SOLUTIONS) newline_bad
+
+.PHONY: all clean</code></pre></div>
+      <div class="tab-panel" data-tab="t5"><pre data-lines><code class="language-bash">#!/bin/bash
+# SPDX-License-Identifier: BSD-3-Clause
+# run.sh - build and run every Chapter 3 example. Self-cleaning, bounded by
+# timeout, unique --file-prefix=ch03-*. Takes about 30 s.
+#
+#   ./run.sh 2&gt;&amp;1 | tee expected_output.txt
+set -u
+cd "$(dirname "$0")"
+ENV_SH=${ENV_SH:-/tmp/claude-0/-home-user-ai-lab/fae9d2b5-bcbe-5be9-a4f0-08ae6c821ee6/scratchpad/dpdk-env.sh}
+# shellcheck disable=SC1090
+source "$ENV_SH"
+E=$DPDK_SRC/build/examples            # prebuilt samples (not on PATH)
+EAL="--no-pci --no-huge -m 64"        # sandbox flags used by every run
+T="timeout -s INT -k 5 20"
+
+cleanup() {
+	pkill -INT -f 'file-prefix=ch03-' 2&gt;/dev/null
+	sleep 0.3
+	pkill -KILL -f 'file-prefix=ch03-' 2&gt;/dev/null
+	rm -rf /var/run/dpdk/ch03-*
+	rm -f /dev/hugepages/ch03-*map_*
+	true
+}
+trap cleanup EXIT
+strip() { sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -e "s|$DPDK_SRC|\$DPDK_SRC|g"; }
+run() {
+	echo "\$ $*" | sed "s|$DPDK_SRC|\$DPDK_SRC|g"
+	stdbuf -oL -eL "$@" 2&gt;&amp;1 | strip
+	echo "[exit code ${PIPESTATUS[0]}]"
+}
+section() { echo; echo "=================== $* ==================="; }
+
+section "0. build (make, -Wall -Wextra)"
+make -s clean
+make -s all 2&gt;&amp;1 | strip
+echo "[make exit code ${PIPESTATUS[0]}]"
+
+section "1. eal_tour: launch, roles, states, threads"
+run $T ./eal_tour -l 0-2 $EAL --file-prefix=ch03-tour
+
+section "2. a service lcore is counted but not visited by FOREACH"
+run $T ./eal_tour -l 0-2 -S 2 $EAL --file-prefix=ch03-svc | sed -n '1,16p;/== 8/,$p'
+
+section "3. the rte_eal_init timeline (helloworld, lib.eal:debug, delta timestamps)"
+run $T $E/dpdk-helloworld -l 0-1 $EAL --file-prefix=ch03-init \
+	--log-level=lib.eal:debug --log-timestamp=delta
+
+section "4. lcore mapping lab (prebuilt helloworld)"
+for m in "-l 0-3" "--lcores=0,(1-3)@(1,2)" "-l 2-3 -R" "-l 1-3 --main-lcore 3" \
+	 "--lcores=0@0,(1,2)@(1-3)" "--lcores=(0-3)@0"; do
+	# shellcheck disable=SC2086
+	run $T $E/dpdk-helloworld $m $EAL --file-prefix=ch03-map --log-level=lib.eal:debug \
+		| grep -E '^\$|mapped to|Control threads|is ready|hello from|exit code'
+done
+
+section "5. reading EAL errors"
+run $T $E/dpdk-helloworld -l 0-5 $EAL --file-prefix=ch03-err | grep -v '^[0-9]*: '
+run $T $E/dpdk-helloworld -l 1-2 --main-lcore 0 $EAL --file-prefix=ch03-err | grep -v '^[0-9]*: '
+run $T $E/dpdk-helloworld -c 0x3 $EAL --file-prefix=ch03-err
+
+section "6. log_lab: logtypes, levels, patterns, streams"
+run $T ./log_lab -l 0 $EAL --file-prefix=ch03-log
+echo "--- the same program with a command-line pattern"
+run $T ./log_lab -l 0 $EAL --file-prefix=ch03-log --log-level='user.ch03*:debug' | sed -n '1,16p'
+echo "--- only the rx sub-type, and EAL quieted to warnings"
+run $T ./log_lab -l 0 $EAL --file-prefix=ch03-log --log-level=lib.eal:warning \
+	--log-level=user.ch03app.rx:debug | sed -n '1,14p'
+echo "--- exercise 3: RTE_LOG_LINE rejects a newline at compile time"
+make newline_bad 2&gt;&amp;1 | strip | grep -E 'error|newline_bad.c:[0-9]+:[0-9]+: note' | head -3
+
+section "7. tsc_lab: TSC, clock cost, delays (the measurement recipe)"
+run $T ./tsc_lab -l 0 $EAL --file-prefix=ch03-tsc
+
+section "8. thread anatomy of a running DPDK process"
+stdbuf -oL ./eal_tour -l 1-2 $EAL --file-prefix=ch03-serve -- --serve 15 &gt; .serve.out 2&gt;&amp;1 &amp;
+APP=$!
+sleep 1.5
+echo "\$ for t in /proc/&lt;pid&gt;/task/*; do comm; Cpus_allowed_list; done"
+printf '  %-8s %-16s %s\n' TID NAME CPUS
+for t in /proc/$APP/task/*; do
+	printf '  %-8s %-16s %s\n' "${t##*/}" "$(cat "$t/comm")" \
+		"$(awk '/Cpus_allowed_list/ {print $2}' "$t/status")"
+done | sort -k2 | sed "s/^  $APP     /  &lt;pid&gt;    /"
+echo "\$ ls /var/run/dpdk/ch03-serve"
+ls /var/run/dpdk/ch03-serve | sed 's/^/  /'
+echo "\$ kill -INT &lt;pid&gt;"
+kill -INT $APP
+wait $APP
+echo "[exit code $?]"
+strip &lt; .serve.out
+rm -f .serve.out
+echo "\$ ls /var/run/dpdk/ch03-serve   (after a clean exit)"
+ls /var/run/dpdk/ch03-serve 2&gt;&amp;1 | sed 's/^/  /'
+
+section "9. exercise solutions"
+run $T ./reverse_wait -l 0-3 $EAL --file-prefix=ch03-ex1
+echo "--- exercise 4: SIGINT stops every lcore (hugepage run, -m 64)"
+./clean_stop -l 0-2 --no-pci -m 64 --file-prefix=ch03-stop &gt; .stop.out 2&gt;&amp;1 &amp;
+APP=$!
+sleep 2
+echo "\$ ls /dev/hugepages | grep ch03-stop | wc -l    (while running)"
+ls /dev/hugepages | grep -c '^ch03-stop'
+kill -INT $APP; wait $APP; echo "[exit code $?]"
+strip &lt; .stop.out
+echo "\$ ls /dev/hugepages | grep ch03-stop | wc -l    (after SIGINT + cleanup)"
+ls /dev/hugepages | grep -c '^ch03-stop'
+echo "--- the same program killed with SIGKILL (no cleanup can run)"
+./clean_stop -l 0-2 --no-pci -m 64 --file-prefix=ch03-stop &gt; .stop.out 2&gt;&amp;1 &amp;
+APP=$!
+sleep 2
+kill -KILL $APP; wait $APP 2&gt;/dev/null; echo "[exit code $?]"
+echo "\$ ls /dev/hugepages | grep ch03-stop    (leftovers; first 3 and a count)"
+ls /dev/hugepages | grep '^ch03-stop' | sort -V | head -3 | sed 's/^/  /'
+echo "  ... $(ls /dev/hugepages | grep -c '^ch03-stop') files of 2 MB = the whole -m 64"
+echo "\$ ls /var/run/dpdk/ch03-stop"
+ls /var/run/dpdk/ch03-stop | sed 's/^/  /'
+rm -f .stop.out /dev/hugepages/ch03-stop*map_*
+rm -rf /var/run/dpdk/ch03-stop
+echo "(run.sh removed them)"</code></pre></div>
+    </div>
+
+    <!-- ===================== PITFALLS ===================== -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong>"lcore 4 unavailable ... invalid coremask or core-list parameter"</strong>: you asked for a CPU the machine does not have, or one outside the process's allowed CPUs (a container or <code>taskset</code> can restrict them). Check <code>nproc</code> and <code>grep Cpus_allowed_list /proc/self/status</code>.</li>
+      <li><strong>"Main lcore is not enabled for DPDK"</strong>: <code>--main-lcore</code> names an lcore that is not in <code>-l</code>.</li>
+      <li><strong>Using <code>-c</code>/<code>-s</code></strong> from an old tutorial: works today with a deprecation warning, will break later. Use <code>-l</code> and <code>-S</code>.</li>
+      <li><strong>Confusing lcore id and CPU id</strong>: with <code>-R</code> or <code>@</code> they differ. Use <code>rte_lcore_to_cpu_id()</code> when you need the CPU, and <code>rte_lcore_id()</code> to index per-lcore arrays.</li>
+      <li><strong>All CPUs given to lcores</strong>: control threads then share the main lcore's CPU. Interrupts, alarms, telemetry and multi-process requests get delayed, and a busy-polling main lcore gets interrupted. Leave one CPU free.</li>
+      <li><strong>Launching on a busy worker</strong>: <code>rte_eal_remote_launch()</code> returns <code>-EBUSY</code> and does nothing. Check the return value, and call <code>rte_eal_wait_lcore()</code> first.</li>
+      <li><strong>Assuming <code>rte_lcore_count()</code> equals the number of workers + 1</strong>: service lcores are counted but not visited by <code>RTE_LCORE_FOREACH</code>.</li>
+      <li><strong>Calling DPDK functions from a plain pthread</strong> that needs an lcore id (mempool caches, timers): register it with <code>rte_thread_register()</code>, or keep that work on lcores.</li>
+      <li><strong><code>RTE_LOG_LINE</code> with <code>"...\n"</code></strong>: compile error "This log format string contains a \n". Drop the newline. Also define <code>RTE_LOGTYPE_&lt;NAME&gt;</code>, and <code>RTE_LOG_DEFAULT_LOGTYPE</code> before <code>RTE_LOG_REGISTER_SUFFIX</code>.</li>
+      <li><strong>Work inside a signal handler</strong>: only set an atomic flag there.</li>
+      <li><strong>Leftover hugepage files</strong> after a crash: remove <code>/dev/hugepages/&lt;prefix&gt;map_*</code> and <code>/var/run/dpdk/&lt;prefix&gt;</code> only when no process with that prefix runs.</li>
+      <li><strong>Timing with <code>rte_delay_us()</code> in a shared environment</strong>: it spins and burns a whole CPU. Use <code>rte_delay_us_sleep()</code> when you just need to wait.</li>
+    </ul>
+
+    <!-- ===================== CHECK ===================== -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="1" data-explain="Each element is lcores@cpus. 0@0 pins lcore 0 to CPU 0; (1,2)@(1-3) gives lcores 1 and 2 the same cpuset {1,2,3}. That is exactly what the lab printed: cpuset=[1-3] for lcores 1 and 2.">
+        <div class="q-text">With <code>--lcores='0@0,(1,2)@(1-3)'</code>, where may lcore 2 run?</div>
+        <div class="q-opts">
+          <button class="q-opt">Only on CPU 2</button>
+          <button class="q-opt">On any of CPUs 1, 2 and 3</button>
+          <button class="q-opt">On CPU 3, the last one in the list</button>
+        </div>
+      </div>
+      <div class="q" data-answer="2" data-explain="rte_eal_remote_launch checks the state first; if it is not WAIT it returns -EBUSY at once. Nothing is queued.">
+        <div class="q-text">You call <code>rte_eal_remote_launch(f, NULL, 1)</code> while lcore 1 is still RUNNING an earlier function. What happens?</div>
+        <div class="q-opts">
+          <button class="q-opt">The call blocks until lcore 1 is free</button>
+          <button class="q-opt">f is queued and runs next</button>
+          <button class="q-opt">It returns -EBUSY and does nothing</button>
+        </div>
+      </div>
+      <div class="q" data-answer="0" data-explain="Control threads use the start-up CPUs minus all lcore cpusets: {0,1,2,3} minus {2,3} = {0,1}. The real run printed 'Control threads will use cores: 0-1'.">
+        <div class="q-text">With <code>-l 2-3 -R</code> on this 4-CPU machine, where do control threads run?</div>
+        <div class="q-opts">
+          <button class="q-opt">CPUs 0 and 1</button>
+          <button class="q-opt">CPU 2, the main lcore's CPU</button>
+          <button class="q-opt">Any CPU, they are not pinned</button>
+        </div>
+      </div>
+      <div class="q" data-answer="1" data-explain="A message passes only if its level is at or below both the global level (default 8) and its logtype's level. INFO is 7 and the type is at WARNING (5), so it is dropped.">
+        <div class="q-text">A logtype is at level WARNING and the global level is the default. Is an INFO message of that type printed?</div>
+        <div class="q-opts">
+          <button class="q-opt">Yes, the global level allows DEBUG</button>
+          <button class="q-opt">No, INFO (7) is above the type's level (5)</button>
+          <button class="q-opt">Only if it uses RTE_LOG_LINE</button>
+        </div>
+      </div>
+      <div class="q" data-answer="2" data-explain="One disturbed run moves the mean a lot; the median is robust, and min/max show the spread. Repeating N >= 5 times after a warm-up is the course recipe.">
+        <div class="q-text">On a shared VM, which summary of 7 timed runs does the course publish?</div>
+        <div class="q-opts">
+          <button class="q-opt">The fastest run, because it is the true cost</button>
+          <button class="q-opt">The mean of all 7</button>
+          <button class="q-opt">The median, with min and max</button>
+        </div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ===================== EXERCISES ===================== -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span></div>
+      <p>Write a program that launches a <em>different</em> function on each worker lcore (for example one that adds, one that multiplies after a 30 ms delay, one that returns a negative number after 60 ms), then has the main lcore wait for them in <em>reverse</em> order and print each return value. Does the order of the printed results depend on which worker finishes first?</p>
+      <details><summary>Hint</summary><p>Keep an array of <code>lcore_function_t *</code>, remember the lcore ids in launch order, then loop backwards calling <code>rte_eal_wait_lcore()</code>.</p></details>
+      <details><summary>Solution</summary><p>See <code>code/solutions/reverse_wait.c</code>. No: <code>rte_eal_wait_lcore()</code> blocks until the lcore you name is back in WAIT, so results come out in the order you ask:</p>
+      <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">section 9: exercise 1</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">timeout -s INT -k 5 20 ./reverse_wait -l 0-3 --no-pci --no-huge -m 64 --file-prefix=ch03-ex1</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch03-ex1/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+launch f_add  on lcore 1
+launch f_mul  on lcore 2
+launch f_slow on lcore 3
+<span class="hl">wait lcore 3 -&gt; -5</span>
+<span class="hl">wait lcore 2 -&gt; 42</span>
+<span class="hl">wait lcore 1 -&gt; 2</span>
+<span class="ok">[exit code 0]</span></pre>
+</div></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span></div>
+      <p>Predict, on paper, the cpuset of each lcore, the main lcore and the control-thread CPUs for <code>--lcores='0@0,(1,2)@(1-3)'</code>. Then check your answer in the mapper, and finally for real: <code>dpdk-helloworld --lcores='0@0,(1,2)@(1-3)' --no-pci --no-huge -m 64 --file-prefix=ch03-ex2 --log-level=lib.eal:debug</code>. Then do the same for <code>-l 1-3 -S 3</code>.</p>
+      <details><summary>Hint</summary><p>Control threads get the leftover CPUs. Here nothing is left, so they fall back to the main lcore's CPU.</p></details>
+      <details><summary>Solution</summary><p>Lcore 0 on CPU 0 (main); lcores 1 and 2 on CPUs 1-3; control threads on CPU 0. The real run in section 4 printed <code>cpuset=[1-3]</code> for lcores 1 and 2 and <code>Control threads will use cores: 0</code>.</p></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag medium">medium</span></div>
+      <p>In <code>log_lab.c</code>, add a DEBUG message that appears only with <code>--log-level=user.ch03app:debug</code>, and check it does not appear with <code>'user.ch03app.rx:debug'</code>. Then put a <code>\n</code> at the end of an <code>RTE_LOG_LINE</code> format and read the compiler error.</p>
+      <details><summary>Hint</summary><p>The glob <code>user.ch03app</code> (no star) matches only that exact name. <code>make newline_bad</code> builds <code>solutions/newline_bad.c</code>, which is meant to fail.</p></details>
+      <details><summary>Solution</summary><p>The error, as produced by <code>run.sh</code>:</p>
+      <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">section 6: exercise 3</span></div>
+<pre><span class="dim">--- exercise 3: RTE_LOG_LINE rejects a newline at compile time</span>
+<span class="err">/tmp/claude-0/-home-user-ai-lab/fae9d2b5-bcbe-5be9-a4f0-08ae6c821ee6/scratchpad/dpdk-install/include/rte_log.h:364:9: error: static assertion failed: "This log format string contains a \\n"</span>
+solutions/newline_bad.c:20:9: note: in expansion of macro 'RTE_LOG_LINE'
+   20 |         RTE_LOG_LINE(INFO, APP, "oops, a trailing newline\n");   /* &lt;- error */</pre>
+</div></details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4 <span class="tag stretch">stretch</span></div>
+      <p>Install a SIGINT handler that stops a polling loop on all lcores (main included, use <code>CALL_MAIN</code>), then cleans up. Run it with hugepages (<code>-m 64</code>, no <code>--no-huge</code>) and check that no <code>/dev/hugepages/ch03-*map_*</code> files are left after Ctrl-C. Then kill it with SIGKILL and look again (and remove the leftovers).</p>
+      <details><summary>Solution</summary><p>See <code>code/solutions/clean_stop.c</code> and its output in section 10.</p></details>
+    </div>
+
+    <!-- ===================== SUMMARY ===================== -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li><code>rte_eal_init()</code> parses options, detects CPUs, creates the runtime directory and shared config, starts the interrupt and multi-process threads, scans buses, picks the IOVA mode, sets up memory, measures the TSC, starts the lcore threads, probes devices and starts telemetry. It returns the number of arguments it consumed.</li>
+        <li>An lcore is a DPDK thread id with a cpuset; a CPU is a hardware thread. <code>-l</code>/<code>--lcores</code> with <code>@</code> and groups maps them; <code>--main-lcore</code> and <code>-R</code> adjust ids; <code>-c</code>/<code>-s</code> are deprecated.</li>
+        <li>Workers sleep in WAIT until <code>rte_eal_remote_launch()</code>; they return to WAIT when the function returns; <code>rte_eal_wait_lcore()</code> collects the return value; launching a RUNNING worker gives <code>-EBUSY</code>.</li>
+        <li>A process has EAL threads (lcores), control threads (<code>dpdk-intr</code>, <code>dpdk-mp-msg</code>, <code>dpdk-telemet-v2</code>, yours) on the leftover CPUs, and possibly registered non-EAL threads.</li>
+        <li>Logs pass two level checks (global and per logtype). Register <code>user.*</code> types with <code>RTE_LOG_REGISTER_SUFFIX</code>, log with <code>RTE_LOG_LINE</code>, steer with <code>--log-level</code> globs, regexes or a global number.</li>
+        <li>Read time with <code>rte_rdtsc()</code> (about 12 ns here), fence measurements with <code>rte_rdtsc_precise()</code>, and measure with warm-up, N &ge; 5, median, min and max.</li>
+        <li>Stop with a flag set by the signal handler, wait for all lcores, then <code>rte_eal_cleanup()</code>; otherwise hugepage and runtime files are left behind.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Programmer's Guide, Environment Abstraction Layer <span class="src-path">doc/guides/prog_guide/env_abstraction_layer.rst</span></li>
+        <li>EAL parameters (Linux) <span class="src-path">doc/guides/linux_gsg/linux_eal_parameters.rst</span>, <span class="src-path">doc/guides/linux_gsg/eal_args.include.rst</span></li>
+        <li>Log library <span class="src-path">doc/guides/prog_guide/log_lib.rst</span>, <span class="src-path">lib/log/rte_log.h</span>, <span class="src-path">lib/log/log.c</span></li>
+        <li>Init sequence: <code>rte_eal_init()</code> <span class="src-path">lib/eal/linux/eal.c</span></li>
+        <li>Option table (with the deprecated <code>-c</code>/<code>-s</code>) <span class="src-path">lib/eal/common/eal_option_list.h</span>; parsing, control-thread cpuset and <code>--log-level</code> <span class="src-path">lib/eal/common/eal_common_options.c</span></li>
+        <li>Lcores <span class="src-path">lib/eal/include/rte_lcore.h</span>, <span class="src-path">lib/eal/common/eal_common_lcore.c</span></li>
+        <li>Launch API and worker loop <span class="src-path">lib/eal/include/rte_launch.h</span>, <span class="src-path">lib/eal/common/eal_common_launch.c</span>, <span class="src-path">lib/eal/common/eal_common_thread.c</span></li>
+        <li>Threads <span class="src-path">lib/eal/include/rte_thread.h</span>, per-lcore TLS <span class="src-path">lib/eal/include/rte_per_lcore.h</span></li>
+        <li>Time <span class="src-path">lib/eal/include/generic/rte_cycles.h</span>, <span class="src-path">lib/eal/x86/include/rte_cycles.h</span>, TSC calibration <span class="src-path">lib/eal/linux/eal_timer.c</span></li>
+        <li>Samples <span class="src-path">examples/helloworld/main.c</span>, <span class="src-path">examples/skeleton/basicfwd.c</span></li>
+        <li>Course plan, section 03 <span class="src-path">PLAN.md</span>; research note <span class="src-path">research/02-eal.md</span></li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../02-build-and-first-app/index.html"><span class="dir">&larr; Previous</span><span class="ttl">02 &middot; Building DPDK and Your First Application</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../04-memory-hugepages/index.html"><span class="dir">Next &rarr;</span><span class="ttl">04 &middot; Memory: Hugepages, Memzones, rte_malloc and IOVA</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script src="ch03.js"></script>
+</body>
+</html>

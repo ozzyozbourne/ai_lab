@@ -1,0 +1,1229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>07 rte_mbuf | DPDK from Zero to Expert</title>
+<meta name="description" content="The DPDK packet buffer: the two-cache-line struct rte_mbuf, pktmbuf pools, headroom/data/tailroom helpers, chains, refcnt and clones, external buffers, ol_flags and packet types, dynamic fields and flags, pool ops, segment-level free, ownership rules and debugging aids.">
+<link rel="stylesheet" href="../../assets/course.css">
+<style>
+  /* Chapter 7 only. Colours come from course.css variables. */
+  .wide-svg { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .wide-svg > svg { min-width: 560px; display: block; }
+  .ch7-info, .ch7-log, .ch7-olinfo, .ch7-hex { margin: .5rem 1rem 0; font-size: .88rem; line-height: 1.5; color: var(--text); }
+  .ch7-log { color: var(--text-muted); min-height: 2.6em; }
+  .ch7-olcode { margin: .4rem 1rem 0; font-size: .85rem; }
+  .ch7-olcode pre { margin: .4rem 0 0; }
+  .ch7-bad { color: var(--c4); }
+  .ch7-null { fill: var(--c4); font-size: 14px; }
+  .ch7-cb { fill: var(--c4); }
+  .ch7-badge-t { fill: var(--bg); font-size: 15px; }
+  .ch7-field, .ch7-bit { cursor: pointer; }
+  .ch7-field:focus, .ch7-bit:focus { outline: none; }
+  .ch7-field:focus rect, .ch7-bit:focus rect { stroke: var(--accent); stroke-width: 2.5; }
+  .ch7-bit.lit rect { fill: var(--accent); stroke: var(--accent); }
+  .ch7-bit.lit text { fill: var(--bg); font-weight: 700; }
+  .ch7-recipes { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .ch7-legend { display: flex; flex-wrap: wrap; gap: .3rem .9rem; padding: .5rem 1rem 0; font-size: .8rem; color: var(--text-muted); }
+  .ch7-legend .sw { display: inline-block; width: .9em; height: .9em; border-radius: 2px; vertical-align: -.1em; margin-right: .3em; border: 1px solid var(--border-strong); }
+  .ch7-select { font-size: .85rem; padding: .25rem .4rem; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text); }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button class="btn small toc-toggle" type="button" aria-label="Table of contents">&#9776;</button>
+  <a class="brand" href="../../index.html"><span>DPDK</span> Zero to Expert</a>
+  <span class="crumb">Chapter 07 &middot; rte_mbuf</span>
+  <button class="btn small theme-toggle" type="button">Theme</button>
+  <div class="progress-bar"></div>
+</header>
+
+<div class="page">
+  <nav class="sidebar" data-auto-toc aria-label="On this page"></nav>
+
+  <main id="main" class="content">
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../06-mempools/index.html"><span class="dir">&larr; Previous</span><span class="ttl">06 &middot; rte_mempool and rte_stack</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../08-ethdev-first-port/index.html"><span class="dir">Next &rarr;</span><span class="ttl">08 &middot; Your First Port: ethdev Lifecycle and the Burst API</span></a>
+    </nav>
+
+    <header class="chapter-header">
+      <div class="chapter-kicker">Chapter 07</div>
+      <h1>rte_mbuf: The Packet Buffer</h1>
+      <p class="chapter-subtitle">Every packet a DPDK driver receives or sends is an <code>rte_mbuf</code>. After this chapter you can read its two cache lines field by field, move the data window with the helper functions, build chains, share data with clones and external buffers, set offload flags, add your own per-packet fields at run time, and tell who owns an mbuf at every moment.</p>
+      <ul class="meta-row">
+        <li><span class="badge level-intermediate">Intermediate</span></li>
+        <li><span class="badge">~90 min</span></li>
+        <li><span class="badge">Prerequisites: ch6</span></li>
+        <li><span class="tag api">rte_pktmbuf_*</span></li>
+        <li><span class="tag api">rte_mbuf_dyn*</span></li>
+      </ul>
+    </header>
+
+    <section class="objectives">
+      <div class="box-title">Learning objectives</div>
+      <ul>
+        <li>Explain why DPDK puts packet metadata and packet data in one mempool object, and name what lives in each of the two 64-byte cache lines of <code>struct rte_mbuf</code>.</li>
+        <li>Create a pktmbuf pool with the right data room and private size, and move the data window with <code>append</code>, <code>prepend</code>, <code>adj</code> and <code>trim</code>, handling their failure returns.</li>
+        <li>Build and walk multi-segment chains, read across segment boundaries with <code>rte_pktmbuf_read</code>, and linearize.</li>
+        <li>Predict reference counts through clone, copy, free and external-buffer callbacks, and avoid the "writing into a clone" trap.</li>
+        <li>Read and set <code>ol_flags</code>, <code>packet_type</code> and the <code>tx_offload</code> lengths; register dynamic fields and flags (including the timestamp) by name.</li>
+        <li>Choose a mempool handler per pool or per process, explain what a PMD does with <code>rte_pktmbuf_prefree_seg</code>, and use the debug aids to catch double frees.</li>
+      </ul>
+    </section>
+
+    <section class="tools-box">
+      <div class="box-title">Tools for this chapter</div>
+      <ul>
+        <li><code>code/run.sh</code>: builds and runs the seven examples and three exercise solutions with <code>--no-pci --no-huge -m 64</code> and a unique <code>--file-prefix=ch07-*</code>. No ports, no devices: this chapter is about the buffer alone.</li>
+        <li><code>rte_pktmbuf_dump()</code>, <code>rte_hexdump()</code> and <code>rte_mbuf_dyn_dump()</code>: the library's own printers, used in every example.</li>
+        <li><code>usertools/dpdk-mbuf-history-parser.py</code>: decodes an mbuf history dump from a build with <code>RTE_MBUF_HISTORY_DEBUG</code> (section 14; this build does not have it, and we show what it says).</li>
+      </ul>
+    </section>
+
+    <div class="box">
+      <div class="box-title">Skeleton x-ray: where mbufs appear in <code>examples/skeleton/basicfwd.c</code></div>
+      <p>Chapter 6 explained the pool. This chapter explains what is <em>in</em> it and what the forwarding loop holds in its hands:</p>
+<pre data-hl="1-2,4,9,13"><code class="language-c">mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports,
+        MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+...
+struct rte_mbuf *bufs[BURST_SIZE];            /* an array of packet POINTERS */
+const uint16_t nb_rx = rte_eth_rx_burst(port, 0, bufs, BURST_SIZE);
+const uint16_t nb_tx = rte_eth_tx_burst(port ^ 1, 0, bufs, nb_rx);
+if (unlikely(nb_tx &lt; nb_rx)) {
+        uint16_t buf;
+        for (buf = nb_tx; buf &lt; nb_rx; buf++)
+                rte_pktmbuf_free(bufs[buf]);  /* we still own the unsent ones */
+}</code></pre>
+      <p>The <code>0</code> is the private-area size, <code>RTE_MBUF_DEFAULT_BUF_SIZE</code> the buffer size (section 3). <code>bufs</code> holds pointers to <code>struct rte_mbuf</code> (sections 1-2). The free loop is an ownership rule (section 13). The burst calls themselves are ch8.</p>
+    </div>
+
+    <!-- ===================================================================== -->
+    <h2 id="what"><span class="sec-num">1</span>What an mbuf is</h2>
+    <p>A NIC writes received bytes into memory by DMA, and reads bytes to send the same way. Software needs, next to those bytes, a little bookkeeping: where the data starts, how long it is, which port it came from, whether the NIC already verified the checksum, which buffer comes next if the packet did not fit in one. DPDK keeps both together in one object, the <span class="key-term">mbuf</span> (message buffer, a name inherited from BSD).</p>
+    <p>The design decision that shapes everything else: <strong>metadata and data share a single mempool element.</strong> One <code>rte_pktmbuf_alloc()</code> gets both, one <code>rte_pktmbuf_free()</code> returns both, and they sit next to each other in memory. Each element of a pktmbuf pool holds, in order:</p>
+    <ol>
+      <li><code>struct rte_mbuf</code>, exactly 128 bytes (two cache lines);</li>
+      <li>an optional application <span class="key-term">private area</span> of <code>priv_size</code> bytes;</li>
+      <li>the data buffer of <code>buf_len</code> bytes, which starts with the <span class="key-term">headroom</span>.</li>
+    </ol>
+    <p>Every mbuf also stores a pointer to the pool it came from (<code>m-&gt;pool</code>), which is why freeing takes no pool argument. And an mbuf does not have to carry a packet: crypto operations, events and compression jobs (ch25-ch27) move data in mbufs too.</p>
+
+    <figure class="diagram">
+      <div class="wide-svg"><svg viewBox="0 0 720 240" role="img" aria-labelledby="f-obj-t">
+        <title id="f-obj-t">One element of a pktmbuf pool, measured by mbuf_anatomy with priv_size 16: struct rte_mbuf at offset 0 to 128, private area 128 to 144, headroom 144 to 272, data from 272, end of buffer at 2320</title>
+        <text class="svg-title" x="20" y="22">One pool element (mbuf_anatomy: priv_size 16, data room 2176, elt_size 2320)</text>
+        <rect class="svg-box c7" x="20" y="60" width="50" height="56"/>
+        <text class="svg-label small center" x="45" y="80">obj</text>
+        <text class="svg-label small center" x="45" y="96">header</text>
+        <rect class="svg-box c3" x="70" y="60" width="80" height="56"/>
+        <text class="svg-label small center bold" x="110" y="80">CL0</text>
+        <text class="svg-label small center" x="110" y="96">RX fields</text>
+        <rect class="svg-box c5" x="150" y="60" width="80" height="56"/>
+        <text class="svg-label small center bold" x="190" y="80">CL1</text>
+        <text class="svg-label small center" x="190" y="96">TX, dynfields</text>
+        <rect class="svg-box c1" x="230" y="60" width="34" height="56"/>
+        <text class="svg-label small center" x="247" y="88">priv</text>
+        <rect class="svg-slot" x="264" y="60" width="90" height="56"/>
+        <text class="svg-label small center" x="309" y="88">headroom 128</text>
+        <rect class="svg-slot full" x="354" y="60" width="110" height="56"/>
+        <text class="svg-label small center bold" x="409" y="88">data</text>
+        <rect class="svg-slot" x="464" y="60" width="236" height="56"/>
+        <text class="svg-label small center" x="582" y="88">tailroom (rest of the 2048-byte data room)</text>
+        <path class="svg-line" d="M70,52 L230,52"/>
+        <text class="svg-label small center" x="150" y="46">struct rte_mbuf, 128 B</text>
+        <path class="svg-line" d="M264,52 L700,52"/>
+        <text class="svg-label small center" x="482" y="46">data buffer, buf_len = 2176</text>
+        <text class="svg-label small mono center" x="70" y="134">m+0</text>
+        <text class="svg-label small mono center" x="230" y="150">+128 rte_mbuf_to_priv(m)</text>
+        <text class="svg-label small mono center" x="292" y="134">+144 buf_addr</text>
+        <text class="svg-label small mono center" x="370" y="166">+272 mtod(m) = buf_addr + data_off(128)</text>
+        <text class="svg-label small mono center" x="680" y="134">+2320</text>
+        <rect class="svg-box c2" x="20" y="196" width="130" height="30"/>
+        <text class="svg-label small center bold" x="85" y="211">struct rte_mempool</text>
+        <path class="svg-arrow c2" d="M110,116 C110,150 100,170 95,193"/>
+        <text class="svg-label small" x="164" y="215">m-&gt;pool (bytes 56-63) points back to the pool, so rte_pktmbuf_free(m) needs no pool argument</text>
+      </svg></div>
+      <figcaption><span class="fig-num"></span>Addresses printed by <code>mbuf_anatomy</code> (section 2) relative to <code>m</code>. The mempool object header (ch6) sits just before <code>m</code>. The NIC only ever touches the data buffer; the CPU touches mostly CL0.</figcaption>
+    </figure>
+
+    <!-- ===================================================================== -->
+    <h2 id="layout"><span class="sec-num">2</span>The two cache lines</h2>
+    <p><code>struct rte_mbuf</code> is defined in <span class="src-path">lib/mbuf/rte_mbuf_core.h</span> with <code>__rte_cache_aligned</code>, and its field order is a performance decision. On receive, a driver writes a handful of fields for every packet; on a 64-byte-line CPU it is far cheaper if they are all in <strong>one</strong> cache line. So:</p>
+    <ul>
+      <li><strong>Cache line 0 (bytes 0-63)</strong> holds everything the RX path needs: the buffer addresses, <code>data_off</code>, <code>refcnt</code>, <code>nb_segs</code>, <code>port</code>, <code>ol_flags</code>, <code>packet_type</code>, the lengths, VLAN, the RSS hash and <code>pool</code>. Two groups are laid out for single wide stores: the 8-byte <code>rearm_data</code> (<code>data_off</code>, <code>refcnt</code>, <code>nb_segs</code>, <code>port</code>), which a vector driver resets with one 64-bit write when it gives a buffer back to the NIC, and the 24-byte <code>rx_descriptor_fields1</code> (packet type through <code>buf_len</code>), which it fills from the RX descriptor with one or two SIMD stores (ch23).</li>
+      <li><strong>Cache line 1 (bytes 64-127)</strong> holds fields used on transmit or in slower paths: <code>next</code> (chains), the <code>tx_offload</code> bitfields, <code>shinfo</code> (external buffers), <code>priv_size</code>, <code>timesync</code> and 36 bytes of <code>dynfield1</code> handed out at run time.</li>
+    </ul>
+    <p>The program below prints <code>offsetof()</code> for every field on this build. Hover or tap the fields in the explorer that follows to read what each one means; the colours are the same as in Figure 1.</p>
+
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/mbuf_anatomy.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="34"><code class="language-c">#define FIELD(f) printf("  %-14s off %3zu  size %2zu  cache line %zu\n", #f, \</code></pre>
+</div>
+
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./mbuf_anatomy -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-anat</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch07-anat/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+== 1. struct rte_mbuf on this build ==
+<span class="hl">sizeof(struct rte_mbuf) = 128 bytes (2 cache lines of 64)</span>
+RTE_IOVA_IN_MBUF=1 RTE_PKTMBUF_HEADROOM=128 RTE_MBUF_DEFAULT_BUF_SIZE=2176
+  buf_addr       off   0  size  8  cache line 0
+  buf_iova       off   8  size  8  cache line 0
+  data_off       off  16  size  2  cache line 0
+  refcnt         off  18  size  2  cache line 0
+  nb_segs        off  20  size  2  cache line 0
+  port           off  22  size  2  cache line 0
+  ol_flags       off  24  size  8  cache line 0
+  packet_type    off  32  size  4  cache line 0
+  pkt_len        off  36  size  4  cache line 0
+  data_len       off  40  size  2  cache line 0
+  vlan_tci       off  42  size  2  cache line 0
+  hash           off  44  size  8  cache line 0
+  vlan_tci_outer off  52  size  2  cache line 0
+  buf_len        off  54  size  2  cache line 0
+  pool           off  56  size  8  cache line 0
+  next           off  64  size  8  cache line 1
+  tx_offload     off  72  size  8  cache line 1
+  shinfo         off  80  size  8  cache line 1
+  priv_size      off  88  size  2  cache line 1
+  timesync       off  90  size  2  cache line 1
+<span class="hl">  dynfield1      off  92  size 36  cache line 1</span>
+<span class="dim">[... 43 more lines in expected_output.txt ...]</span></pre>
+</div>
+    <p class="output-caption"><code>sizeof(struct rte_mbuf)</code> is 128 on x86-64. <code>RTE_IOVA_IN_MBUF=1</code> means <code>buf_iova</code> is present; a build with <code>-Denable_iova_as_pa=false</code> drops it, moves <code>next</code> into its slot in line 0 and frees 8 more dynamic-field bytes in line 1.</p>
+
+    <div class="widget" id="w-anat">
+      <div class="widget-head"><span class="widget-title">mbuf anatomy explorer: fields at their byte offsets, and the data window</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="wide-svg"><svg viewBox="0 0 680 320" role="img" aria-label="The 128 bytes of struct rte_mbuf as two rows of 64 bytes with every field at its offset, and below it the 2176-byte buffer drawn to scale with headroom, data and tailroom"></svg></div>
+        <div class="ch7-legend">
+          <span><span class="sw" style="background:var(--c2-soft);border-color:var(--c2)"></span>constant, set at pool creation</span>
+          <span><span class="sw" style="background:var(--c3-soft);border-color:var(--c3)"></span>written per packet on RX</span>
+          <span><span class="sw" style="background:var(--c5-soft);border-color:var(--c5)"></span>TX / slow path</span>
+          <span><span class="sw" style="background:var(--c7-soft);border-color:var(--c7)"></span>dynamic fields</span>
+        </div>
+        <div class="ch7-info" aria-live="polite"></div>
+        <div class="stat-row">
+          <div class="stat"><div class="stat-label">data_off</div><div class="stat-value" data-k="off">128</div></div>
+          <div class="stat"><div class="stat-label">data_len</div><div class="stat-value" data-k="len">0</div></div>
+          <div class="stat"><div class="stat-label">pkt_len</div><div class="stat-value" data-k="pkt">0</div></div>
+          <div class="stat"><div class="stat-label">headroom</div><div class="stat-value" data-k="head">128</div></div>
+          <div class="stat"><div class="stat-label">tailroom</div><div class="stat-value" data-k="tail">2048</div></div>
+        </div>
+        <div class="ch7-log" aria-live="polite"></div>
+      </div>
+      <div class="controls">
+        <label>bytes <select id="anat-n" class="ch7-select"><option>4</option><option selected>14</option><option>20</option><option>100</option><option>200</option><option>1000</option><option>2000</option></select></label>
+        <button class="btn small" type="button" data-op="append">append</button>
+        <button class="btn small" type="button" data-op="prepend">prepend</button>
+        <button class="btn small" type="button" data-op="adj">adj</button>
+        <button class="btn small" type="button" data-op="trim">trim</button>
+        <button class="btn small" type="button" data-op="reset">reset</button>
+      </div>
+    </div>
+    <p class="output-caption">Try: append 100, prepend 14, then prepend 200. The last one flashes NULL, exactly as <code>mbuf_anatomy</code> printed in section 4. The highlighted field boxes are the ones each call writes.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="pool"><span class="sec-num">3</span>Creating a pktmbuf pool</h2>
+    <p>A pool of mbufs is an ordinary mempool (ch6) whose elements are initialised as mbufs. One call does it:</p>
+<pre><code class="language-c">struct rte_mempool *
+rte_pktmbuf_pool_create(const char *name, unsigned n,
+        unsigned cache_size, uint16_t priv_size, uint16_t data_room_size,
+        int socket_id);</code></pre>
+    <ul>
+      <li><code>n</code> and <code>cache_size</code> mean exactly what they meant in ch6 (2<sup>q</sup>-1 elements is the most memory-efficient size).</li>
+      <li><code>priv_size</code> is the private area per mbuf. It must be a multiple of <code>RTE_MBUF_PRIV_ALIGN</code> (8) or creation fails with <code>EINVAL</code>.</li>
+      <li><code>data_room_size</code> is the size of the data buffer <strong>including</strong> the headroom. <code>RTE_MBUF_DEFAULT_BUF_SIZE</code> is <code>2048 + RTE_PKTMBUF_HEADROOM</code> = 2176, so a default mbuf has 128 bytes of headroom and 2048 bytes for a frame. A pool for clones uses 0 (section 8).</li>
+    </ul>
+    <p>Each element is <code>sizeof(struct rte_mbuf) + priv_size + data_room_size</code> bytes (2320 in our run). While creating the pool, <code>rte_pktmbuf_init()</code> runs once per element and writes the fields that never change: <code>buf_addr</code>, <code>buf_iova</code>, <code>buf_len</code>, <code>pool</code>, <code>priv_size</code>, <code>refcnt = 1</code>, <code>nb_segs = 1</code>. That is why allocation can be so cheap: <code>rte_pktmbuf_alloc()</code> is a mempool get plus <code>rte_pktmbuf_reset()</code>, which only resets the per-packet fields.</p>
+
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./mbuf_anatomy -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-anat</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+<span class="dim">[... 25 lines omitted ...]</span>
+== 2. pool and a fresh mbuf ==
+<span class="hl">pool elt_size=2320 (= 128 mbuf + 16 priv + 2176 data room)</span>
+m                 = 0x103ef7040  (+0)
+rte_mbuf_to_priv  = 0x103ef70c0  (+128)
+<span class="hl">m-&gt;buf_addr       = 0x103ef70d0  (+144)</span>
+<span class="hl">mtod(m)           = 0x103ef7150  (+272)  buf_addr + data_off</span>
+<span class="hl">end of buffer     = 0x103ef7950  (+2320)  buf_addr + buf_len</span>
+buf_len=2176 refcnt=1 nb_segs=1 next=(nil) pool=ch07_anat
+<span class="dim">[... 34 more lines in expected_output.txt ...]</span></pre>
+</div>
+    <p class="output-caption">The addresses match Figure 1: priv at +128, buffer at +144, the first data byte at +272 because a fresh mbuf has <code>data_off = 128</code>. <code>buf_len</code> is the full 2176 bytes. In IOVA-as-VA mode (here) <code>buf_iova</code> equals <code>buf_addr</code>.</p>
+
+    <div class="callout pitfall"><div class="callout-title">Pitfall: the data room includes the headroom</div><p>A pool created with <code>data_room_size = 1518</code> to "fit a full frame" holds at most 1518 - 128 = 1390 bytes after the default headroom. A driver receiving a 1500-byte frame into it must scatter it over two mbufs or drop it (ch8). Size the room as <em>headroom + largest frame</em>, which is what <code>RTE_MBUF_DEFAULT_BUF_SIZE</code> does for 2048-byte frames.</p></div>
+
+    <!-- ===================================================================== -->
+    <h2 id="window"><span class="sec-num">4</span>Headroom, data and tailroom</h2>
+    <p>Inside the buffer, the packet occupies a window: it starts <code>data_off</code> bytes after <code>buf_addr</code> and is <code>data_len</code> bytes long. Everything before the window is <span class="key-term">headroom</span>, everything after is <span class="key-term">tailroom</span>. Packet processing is mostly moving the edges of that window, without copying the bytes in the middle:</p>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Call</th><th>Effect</th><th>Returns</th><th>On failure</th></tr></thead>
+        <tbody>
+          <tr><td><code>rte_pktmbuf_mtod(m, T)</code></td><td><code>(T)(buf_addr + data_off)</code>: pointer to the first byte</td><td>pointer</td><td>no check at all</td></tr>
+          <tr><td><code>rte_pktmbuf_mtod_offset(m, T, o)</code></td><td>same, plus <code>o</code> bytes</td><td>pointer</td><td>no check at all</td></tr>
+          <tr><td><code>rte_pktmbuf_append(m, n)</code></td><td>grow at the tail of the <em>last</em> segment</td><td>pointer to the new bytes</td><td><code>NULL</code>, nothing changed</td></tr>
+          <tr><td><code>rte_pktmbuf_prepend(m, n)</code></td><td>grow at the front of the first segment, into the headroom</td><td>pointer to the new start</td><td><code>NULL</code>, nothing changed</td></tr>
+          <tr><td><code>rte_pktmbuf_adj(m, n)</code></td><td>remove <code>n</code> bytes from the front (strip a header)</td><td>pointer to the new start</td><td><code>NULL</code></td></tr>
+          <tr><td><code>rte_pktmbuf_trim(m, n)</code></td><td>remove <code>n</code> bytes from the tail of the last segment</td><td><code>0</code></td><td><code>-1</code></td></tr>
+          <tr><td><code>rte_pktmbuf_headroom(m)</code> / <code>tailroom(m)</code></td><td>bytes free before / after the window</td><td><code>uint16_t</code></td><td></td></tr>
+          <tr><td><code>rte_pktmbuf_data_len(m)</code> / <code>pkt_len(m)</code></td><td>this segment's length / the whole packet's</td><td>length</td><td></td></tr>
+          <tr><td><code>rte_pktmbuf_reset(m)</code></td><td>back to the fresh state (<code>data_off</code> 128, lengths 0, flags 0)</td><td></td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Two lengths exist because packets can span several buffers (section 7): <code>data_len</code> is the bytes in <em>this</em> segment, <code>pkt_len</code> the sum over all segments, stored in the first one. For a single-segment packet they are equal, and every helper keeps them in step.</p>
+    <p>Why a headroom at all? Because protocol stacks build packets inside out. The payload is written first; then UDP, IP and Ethernet each <em>prepend</em> their header in front of what is there. With 128 bytes reserved in front, that is pointer arithmetic, not a copy. The same holds for encapsulation (adding a VLAN or a tunnel header) on a received packet.</p>
+
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/mbuf_anatomy.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="112" data-hl="116,121,126,130,139,141,143"><code class="language-c">	/* ---- 3. Moving the data window ---------------------------------- */
+	printf("\n== 3. append / prepend / adj / trim ==\n");
+	show("fresh mbuf", m);
+
+	/* append: grow at the tail. Returns a pointer to the NEW bytes. */
+	char *tail = rte_pktmbuf_append(m, 100);
+	memset(tail, 'P', 100);                 /* 100 bytes of "payload" */
+	show("append(100)", m);
+
+	/* prepend: grow at the front into the headroom. Returns the NEW start. */
+	char *head = rte_pktmbuf_prepend(m, 14);
+	memset(head, 'H', 14);                  /* 14 bytes of "header" */
+	show("prepend(14)", m);
+
+	/* adj: drop bytes from the front (strip a header). */
+	rte_pktmbuf_adj(m, 14);
+	show("adj(14)", m);
+
+	/* trim: drop bytes from the tail (cut a trailer). Returns 0 or -1. */
+	rte_pktmbuf_trim(m, 10);
+	show("trim(10)", m);
+
+	/* mtod_offset: a typed pointer N bytes into the data */
+	printf("mtod_offset(m, char *, 89) -&gt; '%c' (last byte)\n",
+	       *rte_pktmbuf_mtod_offset(m, char *, 89));
+
+	/* ---- 4. Overflows return NULL / -1 and change nothing ----------- */
+	printf("\n== 4. overflow is refused, not clamped ==\n");
+	char *p = rte_pktmbuf_prepend(m, 200);  /* headroom is only 128 */
+	printf("prepend(200) -&gt; %s\n", p ? "pointer" : "NULL");
+	p = rte_pktmbuf_append(m, 3000);        /* tailroom is ~2000 */
+	printf("append(3000) -&gt; %s\n", p ? "pointer" : "NULL");
+	printf("trim(500)    -&gt; %d\n", rte_pktmbuf_trim(m, 500));
+	show("after the failed calls", m);</code></pre>
+</div>
+
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./mbuf_anatomy -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-anat</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+<span class="dim">[... 34 lines omitted ...]</span>
+== 3. append / prepend / adj / trim ==
+fresh mbuf                   data_off=128 data_len=  0 pkt_len=  0 headroom=128 tailroom=2048
+append(100)                  data_off=128 data_len=100 pkt_len=100 headroom=128 tailroom=1948
+prepend(14)                  data_off=114 data_len=114 pkt_len=114 headroom=114 tailroom=1948
+adj(14)                      data_off=128 data_len=100 pkt_len=100 headroom=128 tailroom=1948
+trim(10)                     data_off=128 data_len= 90 pkt_len= 90 headroom=128 tailroom=1958
+mtod_offset(m, char *, 89) -&gt; 'P' (last byte)
+
+== 4. overflow is refused, not clamped ==
+<span class="hl">prepend(200) -&gt; NULL</span>
+<span class="hl">append(3000) -&gt; NULL</span>
+<span class="hl">trim(500)    -&gt; -1</span>
+after the failed calls       data_off=128 data_len= 90 pkt_len= 90 headroom=128 tailroom=1958
+
+rte_pktmbuf_dump(stdout, m, 32):
+dump mbuf at 0x103ef7040, iova=0x103ef70d0, buf_len=2176
+  pkt_len=90, ol_flags=0, nb_segs=1, port=65535, ptype=0
+  segment at 0x103ef7040, data=0x103ef7150, len=90, off=128, refcnt=1
+  Dump data at [0x103ef7150], len=32
+00000000: 50 50 50 50 50 50 50 50 50 50 50 50 50 50 50 50 | PPPPPPPPPPPPPPPP
+00000010: 50 50 50 50 50 50 50 50 50 50 50 50 50 50 50 50 | PPPPPPPPPPPPPPPP
+rte_pktmbuf_reset(m)         data_off=128 data_len=  0 pkt_len=  0 headroom=128 tailroom=2048
+<span class="dim">[... 11 more lines in expected_output.txt ...]</span></pre>
+</div>
+    <p class="output-caption">Note what does <em>not</em> move: <code>append</code> and <code>trim</code> leave <code>data_off</code> alone; <code>prepend</code> and <code>adj</code> move it. Failed calls change nothing and do not clamp: you get all the bytes or none. <code>rte_pktmbuf_dump()</code> prints the header and the first 32 data bytes in hex; <code>port=65535</code> is <code>RTE_MBUF_PORT_INVALID</code>, because no port ever received this mbuf.</p>
+
+    <div class="callout warning"><div class="callout-title">Warning: mtod does not check anything</div><p><code>rte_pktmbuf_mtod(m, struct foo *)</code> is a cast of <code>buf_addr + data_off</code>. If the packet is shorter than <code>struct foo</code>, or the header continues in the next segment, you read past the data. Check <code>data_len</code> first, or use <code>rte_pktmbuf_read()</code> (section 7), which checks bounds and copes with segments.</p></div>
+
+    <!-- ===================================================================== -->
+    <h2 id="payload"><span class="sec-num">5</span>Building a payload, and the private area</h2>
+    <p>Here is the "inside out" recipe with no network protocols yet (Ethernet/IP/UDP are ch10): a text payload is appended, then our own 8-byte application header is prepended in front of it. Multi-byte fields go in network byte order with <code>rte_cpu_to_be_16/32</code>. The header struct uses the 26.11 spelling for packed structs, <code>struct __rte_packed_begin name { ... } __rte_packed_end;</code> (the old <code>__rte_packed</code> attribute was removed).</p>
+    <p>The program also uses the <span class="key-term">private area</span>: <code>priv_size</code> bytes between the mbuf and its buffer, reached with <code>rte_mbuf_to_priv(m)</code> (which is simply <code>m + 1</code>). It is for per-packet application data that must travel with the mbuf but never go on the wire: a creation timestamp, a flow id, a pointer to a session. Unlike the headroom, nothing in the library touches it.</p>
+
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/payload_build.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="36"><code class="language-c">struct __rte_packed_begin app_hdr {
+	uint8_t  magic;        /* 0xD7 */
+	uint8_t  version;      /* 1 */
+	rte_be16_t length;     /* payload length, network order */
+	rte_be32_t seq;        /* sequence number, network order */
+} __rte_packed_end;</code></pre>
+</div>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/payload_build.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="73" data-hl="73,80,90"><code class="language-c">	/* 1. payload first: append() returns where to write */
+	char *pay = rte_pktmbuf_append(m, plen);
+	if (pay == NULL)
+		rte_exit(EXIT_FAILURE, "no tailroom\n");
+	memcpy(pay, text, plen);
+	printf("after payload : data_off=%u data_len=%u\n", m-&gt;data_off, m-&gt;data_len);
+
+	/* 2. header second: prepend() into the headroom */
+	struct app_hdr *h = (struct app_hdr *)rte_pktmbuf_prepend(m, sizeof(*h));
+	if (h == NULL)
+		rte_exit(EXIT_FAILURE, "no headroom\n");
+	h-&gt;magic   = 0xD7;
+	h-&gt;version = 1;
+	h-&gt;length  = rte_cpu_to_be_16(plen);
+	h-&gt;seq     = rte_cpu_to_be_32(0x01020304);
+	printf("after header  : data_off=%u data_len=%u\n", m-&gt;data_off, m-&gt;data_len);
+
+	/* 3. private metadata (not part of the data) */
+	struct app_priv *pv = rte_mbuf_to_priv(m);
+	pv-&gt;created_tsc = rte_rdtsc();
+	pv-&gt;flow_id = 42;
+	printf("priv area at m+%td, flow_id=%u (not in the packet bytes)\n",
+	       (char *)pv - (char *)m, pv-&gt;flow_id);
+
+	/* 4. read it back the way a receiver would: mtod gives the first byte */
+	const struct app_hdr *rh = rte_pktmbuf_mtod(m, const struct app_hdr *);
+	printf("parsed header : magic=0x%02X version=%u length=%u seq=0x%08X\n",
+	       rh-&gt;magic, rh-&gt;version, rte_be_to_cpu_16(rh-&gt;length),
+	       rte_be_to_cpu_32(rh-&gt;seq));
+	printf("parsed payload: \"%.*s\"\n", rte_be_to_cpu_16(rh-&gt;length),
+	       rte_pktmbuf_mtod_offset(m, const char *, sizeof(*rh)));
+
+	/* 5. inspect */</code></pre>
+</div>
+
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./payload_build -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-pay</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch07-pay/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+after payload : data_off=128 data_len=30
+after header  : data_off=120 data_len=38
+priv area at m+128, flow_id=42 (not in the packet bytes)
+parsed header : magic=0xD7 version=1 length=30 seq=0x01020304
+parsed payload: "Hello from the mbuf data room!"
+
+rte_pktmbuf_dump(stdout, m, 64):
+dump mbuf at 0x103ff4040, iova=0x103ff40d0, buf_len=2176
+  pkt_len=38, ol_flags=0, nb_segs=1, port=65535, ptype=0
+  segment at 0x103ff4040, data=0x103ff4148, len=38, off=120, refcnt=1
+  Dump data at [0x103ff4148], len=38
+00000000: D7 01 00 1E 01 02 03 04 48 65 6C 6C 6F 20 66 72 | ........Hello fr
+00000010: 6F 6D 20 74 68 65 20 6D 62 75 66 20 64 61 74 61 | om the mbuf data
+00000020: 20 72 6F 6F 6D 21                               |  room!
+
+rte_hexdump of the first 16 bytes (header + start of text):
+app_hdr+text at [0x103ff4148], len=16
+00000000: D7 01 00 1E 01 02 03 04 48 65 6C 6C 6F 20 66 72 | ........Hello fr</pre>
+</div>
+    <p class="output-caption"><code>data_off</code> went from 128 to 120 when the 8-byte header was prepended. The hex dump shows <code>D7 01</code>, the length 30 as <code>00 1E</code> (big-endian) and the sequence <code>01 02 03 04</code>, then the text. The private <code>flow_id</code> is not in the bytes.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="alloc"><span class="sec-num">6</span>Allocating and freeing, and the free-mbuf invariant</h2>
+    <div class="table-wrap">
+      <table class="compact">
+        <thead><tr><th>Call</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><code>rte_pktmbuf_alloc(mp)</code></td><td>One mbuf, reset: <code>data_off</code> = headroom, lengths 0, <code>ol_flags</code> 0, <code>port</code> invalid. NULL if the pool is empty.</td></tr>
+          <tr><td><code>rte_pktmbuf_alloc_bulk(mp, m[], n)</code></td><td>All <code>n</code> or none: returns 0 or a negative errno. One mempool get for the whole array.</td></tr>
+          <tr><td><code>rte_pktmbuf_free(m)</code></td><td>Drops one reference on every segment of the chain; segments that reach 0 go back to <em>their own</em> pool (<code>m-&gt;pool</code>). NULL is allowed.</td></tr>
+          <tr><td><code>rte_pktmbuf_free_bulk(m[], n)</code></td><td>Same for an array, batching the pool puts per pool. NULL entries are allowed.</td></tr>
+          <tr><td><code>rte_pktmbuf_free_seg(m)</code></td><td>Frees one segment only, without following <code>next</code> (section 13).</td></tr>
+          <tr><td><code>rte_mbuf_raw_alloc</code> / <code>rte_mbuf_raw_free</code> (+ <code>_bulk</code>)</td><td>Bare mempool get/put with no reset and no refcount logic. For drivers that keep the invariant themselves.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>An mbuf sitting in its pool always satisfies the <span class="key-term">free-mbuf invariant</span>: <code>refcnt == 1</code>, <code>next == NULL</code>, <code>nb_segs == 1</code>, and it is direct (not attached to another buffer). <code>rte_pktmbuf_prefree_seg()</code> restores those fields before an mbuf goes back, which is what lets <code>alloc</code> skip them. The raw functions do not, so they are only correct on mbufs you know are in that state, which in practice means inside a PMD.</p>
+    <p>Freeing also shows the payoff of <code>m-&gt;pool</code>: a packet received on one port from pool A and sent on another port is still returned to pool A, by whoever frees it.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="chains"><span class="sec-num">7</span>Chains: packets in several buffers</h2>
+    <p>A packet larger than one buffer (a 9000-byte jumbo frame in 2 KB mbufs), or one assembled from parts (a header from one place, a payload from another), is a <span class="key-term">chain</span> of mbufs linked through <code>next</code>. Each <span class="key-term">segment</span> has its own buffer and its own <code>data_off</code>/<code>data_len</code>. The <strong>first</strong> segment is the packet: only it carries <code>pkt_len</code>, <code>nb_segs</code>, <code>ol_flags</code>, <code>packet_type</code>, <code>port</code> and the offload lengths; those fields in the other segments are ignored.</p>
+    <ul>
+      <li><code>rte_pktmbuf_chain(head, tail)</code> appends <code>tail</code>'s segments to <code>head</code>, updating <code>head-&gt;nb_segs</code> and <code>head-&gt;pkt_len</code>. It returns <code>-EOVERFLOW</code> if <code>nb_segs</code> would exceed <code>RTE_MBUF_MAX_NB_SEGS</code>. After it, <code>tail</code> is no longer a packet of its own.</li>
+      <li><code>rte_pktmbuf_lastseg(m)</code> walks to the last segment (append and trim work there).</li>
+      <li><code>rte_pktmbuf_is_contiguous(m)</code> is true for a single segment.</li>
+      <li><code>rte_pktmbuf_read(m, off, len, buf)</code> returns a pointer to <code>len</code> bytes at packet offset <code>off</code>: directly into the mbuf if they sit in one segment, otherwise after copying them into your <code>buf</code>; NULL if the range is past <code>pkt_len</code>.</li>
+      <li><code>rte_pktmbuf_linearize(m)</code> copies all segments into the first one, if its tailroom is large enough, and frees the rest. 0 on success, -1 if it does not fit.</li>
+      <li><code>rte_pktmbuf_free(m)</code> frees the whole chain.</li>
+    </ul>
+
+    <div class="widget" id="w-chain">
+      <div class="widget-head"><span class="widget-title">Chain view: chain three mbufs, read across a boundary, linearize</span><span class="badge">predict, then step</span></div>
+      <div class="widget-body">
+        <div class="wide-svg"><svg viewBox="0 0 680 300" role="img" aria-label="Three mbuf segments with their metadata and data, a read window over packet offsets, and a 16-byte temporary buffer"></svg></div>
+      </div>
+    </div>
+    <p class="output-caption">The same three segments and the same reads as <code>chain_demo.c</code>. The accent frame is the requested byte range; it is drawn in two pieces when it crosses a segment boundary.</p>
+
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/chain_demo.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="70" data-hl="69,77,82,87,94"><code class="language-c">	if (rte_pktmbuf_chain(hdr, p1) != 0 || rte_pktmbuf_chain(hdr, p2) != 0)
+		rte_exit(EXIT_FAILURE, "chain failed\n");
+	walk("after chaining", hdr);
+	printf("  (pkt_len/nb_segs in segments 1 and 2 are stale leftovers: only the head counts)\n");
+
+	/* Reading across a segment boundary: bytes 56..71 are the last 4 of
+	 * seg 1 (offsets 20..59) and the first 12 of seg 2 (60..99). */
+	char tmp[16];
+	const char *r = rte_pktmbuf_read(hdr, 56, sizeof(tmp), tmp);
+	printf("\nrte_pktmbuf_read(off=56,len=16) -&gt; %s : \"%.16s\"\n",
+	       r == tmp ? "copied into tmp (crosses a boundary)" : "pointer into mbuf", r);
+
+	/* Inside one segment: no copy, the returned pointer is into seg 1 */
+	r = rte_pktmbuf_read(hdr, 24, 8, tmp);
+	printf("rte_pktmbuf_read(off=24,len=8)  -&gt; %s : \"%.8s\"\n",
+	       r == tmp ? "copied into tmp" : "pointer into the mbuf data (no copy)", r);
+
+	/* Out of range: NULL */
+	r = rte_pktmbuf_read(hdr, 95, 10, tmp);
+	printf("rte_pktmbuf_read(off=95,len=10) -&gt; %s (pkt_len is 100)\n", r ? "ptr" : "NULL");
+
+	/* Linearize: copies seg 1..n into seg 0's tailroom and frees them.
+	 * Note: call it as its own statement. Putting it in the same printf
+	 * as m-&gt;nb_segs reads nb_segs in unspecified order. */
+	printf("\npool in_use before linearize: %u\n", rte_mempool_in_use_count(mp));
+	int rc = rte_pktmbuf_linearize(hdr);
+	printf("rte_pktmbuf_linearize() = %d\n", rc);
+	walk("after linearize", hdr);
+	printf("pool in_use after linearize : %u (the two payload segments went back)\n",</code></pre>
+</div>
+
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./chain_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-chain</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+after chaining: pkt_len=100 nb_segs=3 contiguous=0
+  seg 0: 0x103ff4040 data_len= 20 pkt_len=100 nb_segs=3 next=0x103ff5040
+  seg 1: 0x103ff5040 data_len= 40 pkt_len= 40 nb_segs=1 next=0x103ff6040
+  seg 2: 0x103ff6040 data_len= 40 pkt_len= 40 nb_segs=1 next=(nil)
+  (pkt_len/nb_segs in segments 1 and 2 are stale leftovers: only the head counts)
+
+<span class="hl">rte_pktmbuf_read(off=56,len=16) -&gt; copied into tmp (crosses a boundary) : "aaaa2bbbbbbbbbbb"</span>
+<span class="hl">rte_pktmbuf_read(off=24,len=8)  -&gt; pointer into the mbuf data (no copy) : "aaaaaaaa"</span>
+rte_pktmbuf_read(off=95,len=10) -&gt; NULL (pkt_len is 100)
+
+pool in_use before linearize: 3
+rte_pktmbuf_linearize() = 0
+<span class="hl">after linearize: pkt_len=100 nb_segs=1 contiguous=1</span>
+  seg 0: 0x103ff4040 data_len=100 pkt_len=100 nb_segs=1 next=(nil)
+pool in_use after linearize : 1 (the two payload segments went back)
+bytes 16..27 now contiguous : "HHHH1aaaaaaa"
+
+chain onto a head with nb_segs=RTE_MBUF_MAX_NB_SEGS(65535) -&gt; -75 (-EOVERFLOW)
+<span class="dim">[... 6 more lines in expected_output.txt ...]</span></pre>
+</div>
+    <p class="output-caption">After chaining, segments 1 and 2 still show <code>nb_segs=1</code> and their own <code>pkt_len</code>: leftovers nobody reads. The cross-boundary read was copied; the in-segment read was not. After linearize, one mbuf holds all 100 bytes and <code>in_use</code> dropped from 3 to 1.</p>
+
+    <div class="callout pitfall"><div class="callout-title">Pitfall: argument evaluation order</div><p><code>printf("%d %u", rte_pktmbuf_linearize(m), m-&gt;nb_segs)</code> may print the <em>old</em> <code>nb_segs</code>: C does not define the order in which function arguments are evaluated. We hit exactly this while writing <code>dynfield_demo.c</code>: printing <code>found.size</code> in the same call as the lookup that fills <code>found</code> printed garbage. Put calls with side effects in their own statements.</p></div>
+
+    <!-- ===================================================================== -->
+    <h2 id="clones"><span class="sec-num">8</span>Reference counts, clones and copies</h2>
+    <p>Sometimes several packets should carry the <em>same</em> bytes: multicast (one payload, a different header per receiver), mirroring a flow to a monitor port, keeping a packet for retransmission while it is also being sent. Copying 1500 bytes per receiver wastes memory bandwidth. Instead, mbufs can share a buffer.</p>
+    <p>Every mbuf has a 16-bit <code>refcnt</code>. <code>rte_pktmbuf_free()</code> does not really mean "free": it means "drop one reference". The mbuf goes back to its pool only when the count reaches 0. (When the count is 1, the common case, the free path skips the atomic operation entirely.)</p>
+    <p><code>rte_pktmbuf_clone(m, clone_pool)</code> creates an <span class="key-term">indirect mbuf</span> for each segment of <code>m</code>: a new <code>struct rte_mbuf</code> from <code>clone_pool</code> whose <code>buf_addr</code>/<code>data_off</code>/<code>data_len</code> point into <code>m</code>'s buffer (it calls <code>rte_pktmbuf_attach()</code>), with the <code>RTE_MBUF_F_INDIRECT</code> flag set. The original, called the <span class="key-term">direct</span> mbuf, gets <code>refcnt + 1</code>. Freeing a clone <em>detaches</em> it (<code>rte_pktmbuf_detach()</code>), which drops the direct mbuf's count, then returns the clone itself to its pool. Because a clone never uses its own buffer, its pool is created with <code>data_room_size = 0</code>: each element is just the 128-byte struct.</p>
+
+    <figure class="diagram">
+      <div class="wide-svg"><svg viewBox="0 0 720 210" role="img" aria-labelledby="f-ind-t">
+        <title id="f-ind-t">Three kinds of mbuf: direct uses its own buffer; indirect (a clone) points at a direct mbuf's buffer and the count is in the direct mbuf; external points at user memory whose count and free callback live in a shared info structure at the end of that memory</title>
+        <text class="svg-title" x="20" y="22">Who owns the bytes</text>
+        <rect class="svg-box c3" x="20" y="44" width="200" height="40"/>
+        <text class="svg-label center bold" x="120" y="64">direct mbuf, refcnt N</text>
+        <rect class="svg-slot full" x="20" y="120" width="200" height="34"/>
+        <text class="svg-label small center" x="120" y="137">its own data buffer</text>
+        <path class="svg-arrow c3" d="M120,84 L120,117"/>
+        <text class="svg-label small center muted" x="120" y="180">flags: none</text>
+        <rect class="svg-box c5 dashed" x="260" y="44" width="200" height="40"/>
+        <text class="svg-label center bold" x="360" y="64">indirect mbuf (clone)</text>
+        <path class="svg-arrow c5 dashed" d="M285,84 C285,135 250,137 224,137"/>
+        <text class="svg-label small" x="298" y="112">buf_addr points into the</text>
+        <text class="svg-label small" x="298" y="126">direct mbuf's buffer;</text>
+        <text class="svg-label small" x="298" y="140">the count +1 is there</text>
+        <text class="svg-label small center muted" x="360" y="172">RTE_MBUF_F_INDIRECT</text>
+        <text class="svg-label small center muted" x="360" y="188">clone pool: data_room_size 0</text>
+        <rect class="svg-box c3" x="500" y="44" width="200" height="40"/>
+        <text class="svg-label center bold" x="600" y="64">mbuf with external buffer</text>
+        <rect class="svg-box c6" x="500" y="120" width="170" height="34"/>
+        <text class="svg-label small center" x="585" y="137">your memory</text>
+        <rect class="svg-box c4" x="670" y="120" width="30" height="34"/>
+        <text class="svg-label small center" x="685" y="137">sh</text>
+        <path class="svg-arrow c3" d="M560,84 L560,117"/>
+        <text class="svg-label small center muted" x="600" y="172">RTE_MBUF_F_EXTERNAL; count and free_cb</text>
+        <text class="svg-label small center muted" x="600" y="188">in shinfo ("sh"); clones bump shinfo</text>
+      </svg></div>
+      <figcaption><span class="fig-num"></span>The three buffer kinds. <code>RTE_MBUF_DIRECT(m)</code>, <code>RTE_MBUF_CLONED(m)</code> and <code>RTE_MBUF_HAS_EXTBUF(m)</code> test them; <code>rte_mbuf_from_indirect(mi)</code> finds the direct mbuf behind a clone.</figcaption>
+    </figure>
+
+    <p>The multicast pattern of <span class="src-path">examples/ipv4_multicast/main.c</span> combines the two ideas: each receiver gets a small private <em>header</em> mbuf chained in front of a <em>clone</em> of the shared payload. Headers differ, payload bytes exist once. Step through it, then read the real run:</p>
+
+    <div class="widget" id="w-ref">
+      <div class="widget-head"><span class="widget-title">Refcnt and clone: one payload, three destinations; then an external buffer</span><span class="badge">animation &middot; predict, then step</span></div>
+      <div class="widget-body">
+        <div class="wide-svg"><svg viewBox="0 0 680 320" role="img" aria-label="A payload mbuf with a reference-count badge, three header and clone pairs pointing at its buffer, and three pools with in-use counters"></svg></div>
+      </div>
+    </div>
+    <p class="output-caption">Press Play, or step with the arrow keys. The red badge is the reference count that decides when the buffer goes back to its pool.</p>
+
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/clone_extbuf.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="78" data-hl="85,88"><code class="language-c">	struct rte_mbuf *pkt[NDEST];
+	for (int d = 0; d &lt; NDEST; d++) {
+		struct rte_mbuf *h = rte_pktmbuf_alloc(hdr_pool);
+		char hb[16];
+		snprintf(hb, sizeof(hb), "DEST-%d: ", d);   /* 8 header bytes */
+		memcpy(rte_pktmbuf_append(h, 8), hb, 8);
+
+		/* clone = allocate from clone_pool + rte_pktmbuf_attach() */
+		struct rte_mbuf *c = rte_pktmbuf_clone(payload, clone_pool);
+		if (c == NULL)
+			rte_exit(EXIT_FAILURE, "clone failed\n");
+		if (rte_pktmbuf_chain(h, c) != 0)</code></pre>
+</div>
+
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./clone_extbuf -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-clone</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch07-clone/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+elt_size: data=2304 hdr=320 clone=128
+
+== Part A: one payload, 3 destinations ==
+payload refcnt=1
+  after payload alloc                in_use: data=1 hdr=0 clone=0
+dest 0: clone 0x1040a9240 INDIRECT=1 buf_addr == payload's, from_indirect==payload: 1 -&gt; payload refcnt=2
+dest 1: clone 0x1040a9300 INDIRECT=1 buf_addr == payload's, from_indirect==payload: 1 -&gt; payload refcnt=3
+<span class="hl">dest 2: clone 0x1040a93c0 INDIRECT=1 buf_addr == payload's, from_indirect==payload: 1 -&gt; payload refcnt=4</span>
+  after 3 header+clone chains        in_use: data=1 hdr=3 clone=3
+pkt 0: nb_segs=2 pkt_len=40 "DEST-0: shared payload, written once...."
+pkt 1: nb_segs=2 pkt_len=40 "DEST-1: shared payload, written once...."
+pkt 2: nb_segs=2 pkt_len=40 "DEST-2: shared payload, written once...."
+free(payload)      -&gt; payload refcnt=3 (buffer still alive)
+  after free(payload)                in_use: data=1 hdr=3 clone=3
+free(pkt 0)        -&gt; payload refcnt=2
+                                     in_use: data=1 hdr=2 clone=2
+free(pkt 1)        -&gt; payload refcnt=1
+                                     in_use: data=1 hdr=1 clone=1
+<span class="hl">free(pkt 2)        -&gt; last reference: payload returned to data_pool</span>
+                                     in_use: data=0 hdr=0 clone=0
+<span class="dim">[... 12 more lines in expected_output.txt ...]</span></pre>
+</div>
+    <p class="output-caption">Element sizes first: 2304 for data mbufs, 320 for 64-byte header mbufs, and 128 for clones (struct only). Freeing the payload left the data pool's <code>in_use</code> at 1; only the last packet's free returned it.</p>
+
+    <h3 id="copy">Clone or copy?</h3>
+    <p>A clone is cheap but <strong>read-only by convention</strong>. Its bytes are the original's bytes, so writing into a clone changes the original and every other clone. Even <code>rte_pktmbuf_prepend()</code> on a clone writes into the <em>shared</em> headroom: two clones that each prepend a different header overwrite each other. (That is why the multicast pattern chains a separate header mbuf.) When you need private, writable bytes, use <code>rte_pktmbuf_copy(m, pool, offset, length)</code>, which allocates new mbufs from a normal pool and copies the data (<code>length = UINT32_MAX</code> means "to the end"). Packet capture uses copy for exactly this reason (ch16). Exercise 2 demonstrates both effects with real output.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="extbuf"><span class="sec-num">9</span>External buffers</h2>
+    <p>Sometimes packet data already lives somewhere that is not an mbuf pool: a guest's memory in vhost zero-copy (ch24), a big receive buffer that the NIC fills with many packets, a file mapped from disk. An mbuf can point at such memory with <code>rte_pktmbuf_attach_extbuf(m, addr, iova, len, shinfo)</code>. Since the mbuf library does not own that memory, it needs two things from you, stored in a <code>struct rte_mbuf_ext_shared_info</code>: a reference count for the buffer, and a <code>free_cb(addr, opaque)</code> to call when the last reference is gone. <code>rte_pktmbuf_ext_shinfo_init_helper()</code> carves that struct out of the end of your buffer (shrinking the usable length) and fills it in.</p>
+    <p>Clones of an extbuf mbuf attach to the external buffer directly and increment the <strong>shinfo</strong> count, not the mbuf's; freeing the mbuf that carried it does not free the memory while clones exist.</p>
+
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/clone_extbuf.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="131" data-hl="136-138,146"><code class="language-c">	uint16_t buf_len = 1024;
+	void *ext = rte_malloc("ch07_ext", buf_len, RTE_CACHE_LINE_SIZE);
+	if (ext == NULL)
+		rte_exit(EXIT_FAILURE, "rte_malloc\n");
+
+	/* Puts the shared info at the END of the buffer and shrinks buf_len */
+	struct rte_mbuf_ext_shared_info *shinfo =
+		rte_pktmbuf_ext_shinfo_init_helper(ext, &amp;buf_len, ext_free_cb,
+						   (void *)"my 1 KiB buffer");
+	printf("shinfo at ext+%td, usable buf_len=%u, shinfo refcnt=%u\n",
+	       (char *)shinfo - (char *)ext, buf_len,
+	       rte_mbuf_ext_refcnt_read(shinfo));
+
+	/* Any mbuf can carry an external buffer; the clone pool's 128 B
+	 * mbufs are perfect because their own buffer is empty anyway. */
+	struct rte_mbuf *em = rte_pktmbuf_alloc(clone_pool);
+	rte_pktmbuf_attach_extbuf(em, ext, rte_malloc_virt2iova(ext), buf_len, shinfo);
+	rte_pktmbuf_reset_headroom(em);  /* data_off = min(headroom, buf_len) */
+	memcpy(rte_pktmbuf_append(em, 16), "external data!!!", 16);
+	printf("em: EXTERNAL=%d buf_addr==ext %d data_off=%u data_len=%u mbuf refcnt=%u\n",
+	       RTE_MBUF_HAS_EXTBUF(em) ? 1 : 0, em-&gt;buf_addr == ext,
+	       em-&gt;data_off, em-&gt;data_len, rte_mbuf_refcnt_read(em));</code></pre>
+</div>
+
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./clone_extbuf -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-clone</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+<span class="dim">[... 21 lines omitted ...]</span>
+== Part B: external buffer with a free callback ==
+shinfo at ext+1000, usable buf_len=1000, shinfo refcnt=1
+em: EXTERNAL=1 buf_addr==ext 1 data_off=128 data_len=16 mbuf refcnt=1
+2 clones: shinfo refcnt=3, em mbuf refcnt=1 (clones of an extbuf count in shinfo, not in em)
+free(em)
+  shinfo refcnt=2
+free(c1)
+  shinfo refcnt=1
+free(c2)  (last reference)
+  &gt;&gt;&gt; ext_free_cb(addr=0x1040a8cc0, opaque="my 1 KiB buffer"): freeing external buffer
+  end                                in_use: data=0 hdr=0 clone=0</pre>
+</div>
+    <p class="output-caption">The helper placed the 24-byte shinfo at offset 1000 (aligned down to 8), leaving <code>buf_len = 1000</code>. The callback ran exactly once, after the third free. The pools are all back to zero.</p>
+
+    <h3 id="pinned">Pinned external-buffer pools</h3>
+    <p><code>rte_pktmbuf_pool_create_extbuf(name, n, cache, priv, room, socket, ext_mem[], ext_num)</code> builds a whole pool whose mbufs carry data buffers carved from memory you describe with <code>struct rte_pktmbuf_extmem { buf_ptr, buf_iova, buf_len, elt_size }</code>. The pool private flag <code>RTE_PKTMBUF_POOL_F_PINNED_EXT_BUF</code> is set: each mbuf is permanently bound to its slice, so free puts the mbuf back without detaching. NICs that receive into large pre-registered memory regions use this. Your code must keep the memory alive (and, for a real NIC, registered with <code>rte_extmem_register()</code> and DMA-mapped, ch4) for as long as the pool exists.</p>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./pool_ops -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-ops</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+<span class="dim">[... 16 lines omitted ...]</span>
+== 3. rte_pktmbuf_pool_create_extbuf ==
+<span class="hl">pool elt_size=152 (mbuf struct only: data is outside), flags=0x1 PINNED_EXT_BUF=1</span>
+mbuf a: EXTERNAL=1 buf_addr=ext+0 buf_len=2176 data_off=128
+mbuf b: EXTERNAL=1 buf_addr=ext+2176
+after free: in_use=0 (the data buffers stay pinned to their mbufs)
+<span class="dim">[... 9 more lines in expected_output.txt ...]</span></pre>
+</div>
+    <p class="output-caption">The pool element is 152 bytes: the 128-byte mbuf plus a 24-byte shinfo per mbuf; the data is all in our <code>rte_malloc</code> region. Consecutive mbufs point 2176 bytes apart inside it.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="olflags"><span class="sec-num">10</span>Offload flags, packet types and TX lengths</h2>
+    <p>The 64-bit <code>ol_flags</code> word is the conversation between the application and the NIC driver. It holds three kinds of bits (all named <code>RTE_MBUF_F_*</code> since 21.11; the old <code>PKT_*</code> names are gone):</p>
+    <ul>
+      <li><strong>RX status bits</strong> (0-22), written by the driver: "the NIC checked the IP checksum and it is good", "hash.rss is valid", "a VLAN tag was stripped into vlan_tci". Some are 2-bit fields: the IP checksum status is <code>UNKNOWN</code> (neither bit), <code>BAD</code>, <code>GOOD</code> or <code>NONE</code> (both), so you test it with a mask: <code>(m-&gt;ol_flags &amp; RTE_MBUF_F_RX_IP_CKSUM_MASK) == RTE_MBUF_F_RX_IP_CKSUM_GOOD</code>.</li>
+      <li><strong>TX request bits</strong> (41-60), written by the application: "compute the IPv4 checksum", "segment this TCP packet", "insert vlan_tci". They only work if the port has the matching <code>RTE_ETH_TX_OFFLOAD_*</code> capability enabled (ch8, ch19), and they come with a contract: set <code>l2_len</code>/<code>l3_len</code>/<code>l4_len</code> in <code>tx_offload</code>, zero the IP checksum field, seed the L4 checksum with the pseudo-header sum.</li>
+      <li><strong>Internal bits</strong> 61 (<code>EXTERNAL</code>) and 62 (<code>INDIRECT</code>), set by the library; and bits 23-40, which are not fixed at all but handed out at run time as <strong>dynamic flags</strong> (section 11).</li>
+    </ul>
+    <p>Pick a recipe; the board lights the bits it needs and shows the C code. Click individual squares to build your own value.</p>
+
+    <div class="widget" id="w-ol">
+      <div class="widget-head"><span class="widget-title">ol_flags bit-board: 64 bits, and the offload recipes that use them</span><span class="badge">interactive</span></div>
+      <div class="widget-body">
+        <div class="wide-svg"><svg viewBox="0 0 680 196" role="img" aria-label="The 64 bits of ol_flags as four rows of 16 squares, coloured by kind"></svg></div>
+        <div class="ch7-legend">
+          <span><span class="sw" style="background:var(--c1-soft);border-color:var(--c1)"></span>RX status (driver writes)</span>
+          <span><span class="sw" style="background:var(--c5-soft);border-color:var(--c5)"></span>TX request (app writes)</span>
+          <span><span class="sw" style="background:var(--c4-soft);border-color:var(--c4)"></span>internal (library)</span>
+          <span><span class="sw" style="background:transparent;border-style:dashed"></span>dynamic flags (23-40)</span>
+          <span><span class="sw" style="background:var(--surface-2)"></span>unused</span>
+        </div>
+        <div class="ch7-hex" aria-live="polite"></div>
+        <div class="ch7-olinfo" aria-live="polite"></div>
+        <div class="ch7-olcode"></div>
+      </div>
+      <div class="controls ch7-recipes">
+        <button class="btn small" type="button" data-recipe="rxgood">RX: cksums good</button>
+        <button class="btn small" type="button" data-recipe="ipck">TX: IPv4 cksum</button>
+        <button class="btn small" type="button" data-recipe="udpck">TX: IPv4+UDP cksum</button>
+        <button class="btn small" type="button" data-recipe="tso">TX: TSO</button>
+        <button class="btn small" type="button" data-recipe="vxlan">TX: VXLAN cksums</button>
+        <button class="btn small" type="button" data-recipe="vlan">TX: VLAN insert</button>
+        <button class="btn small" type="button" data-recipe="clone">clone of extbuf</button>
+        <button class="btn small" type="button" data-recipe="dyn">our dynflags</button>
+        <button class="btn small" type="button" data-clear>clear</button>
+      </div>
+    </div>
+    <p class="output-caption">Bit numbers and recipes come from <span class="src-path">lib/mbuf/rte_mbuf_core.h</span> and the TX offload section of <span class="src-path">doc/guides/prog_guide/mbuf_lib.rst</span>. The dynamic bits 23-25 are what <code>dynfield_demo</code> was given on this run.</p>
+
+    <h3 id="ptype">packet_type</h3>
+    <p>NICs that parse headers report what they found in the 32-bit <code>packet_type</code>, built from 4-bit nibbles: L2 (bits 0-3), L3 (4-7), L4 (8-11), tunnel (12-15), then inner L2, L3, L4. You compare a nibble through its mask, e.g. <code>(m-&gt;packet_type &amp; RTE_PTYPE_L3_MASK) == RTE_PTYPE_L3_IPV4</code>. Many virtual PMDs report nothing (0); lib/net can parse in software (ch10), and <code>rte_eth_dev_get_supported_ptypes()</code> asks a port what it can classify (ch19).</p>
+    <h3 id="txoff">tx_offload: six lengths in one word</h3>
+    <figure class="diagram">
+      <div class="wide-svg"><svg viewBox="0 0 720 110" role="img" aria-labelledby="f-txo-t">
+        <title id="f-txo-t">The 64-bit tx_offload word: l2_len bits 0-6, l3_len 7-15, l4_len 16-23, tso_segsz 24-39, outer_l3_len 40-48, outer_l2_len 49-55, unused 56-63</title>
+        <text class="svg-title" x="20" y="20">tx_offload (bit 63 on the left, bit 0 on the right; 10 px per bit)</text>
+        <rect class="svg-slot" x="40" y="36" width="80" height="34"/><text class="svg-label small center" x="80" y="53">unused</text>
+        <rect class="svg-box c5" x="120" y="36" width="70" height="34"/><text class="svg-label small center" x="155" y="53">outer_l2:7</text>
+        <rect class="svg-box c5" x="190" y="36" width="90" height="34"/><text class="svg-label small center" x="235" y="53">outer_l3:9</text>
+        <rect class="svg-box c1" x="280" y="36" width="160" height="34"/><text class="svg-label small center" x="360" y="53">tso_segsz:16</text>
+        <rect class="svg-box c3" x="440" y="36" width="80" height="34"/><text class="svg-label small center" x="480" y="53">l4_len:8</text>
+        <rect class="svg-box c3" x="520" y="36" width="90" height="34"/><text class="svg-label small center" x="565" y="53">l3_len:9</text>
+        <rect class="svg-box c3" x="610" y="36" width="70" height="34"/><text class="svg-label small center" x="645" y="53">l2_len:7</text>
+        <text class="svg-label small mono center" x="120" y="86">56</text><text class="svg-label small mono center" x="190" y="86">49</text>
+        <text class="svg-label small mono center" x="280" y="86">40</text><text class="svg-label small mono center" x="440" y="86">24</text>
+        <text class="svg-label small mono center" x="520" y="86">16</text><text class="svg-label small mono center" x="610" y="86">7</text><text class="svg-label small mono center" x="680" y="86">0</text>
+      </svg></div>
+      <figcaption><span class="fig-num"></span><code>l2_len=14, l3_len=20, l4_len=8</code> packs to <code>0x80a0e</code>: 14 + (20 &lt;&lt; 7) + (8 &lt;&lt; 16). Drivers read the whole word with one load.</figcaption>
+    </figure>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/mbuf_anatomy.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="154"><code class="language-c">	/* ---- 5. Naming flags and packet types --------------------------- */
+	/* No parsing here (that is lib/net, ch10): we only set the bits a
+	 * driver or an app would set, and let the library name them. */
+	printf("\n== 5. ol_flags, packet_type and tx_offload ==\n");
+	char names[256];
+	uint64_t rx = RTE_MBUF_F_RX_RSS_HASH | RTE_MBUF_F_RX_IP_CKSUM_GOOD |
+		      RTE_MBUF_F_RX_L4_CKSUM_GOOD;
+	rte_get_rx_ol_flag_list(rx, names, sizeof(names));
+	printf("RX ol_flags 0x%016" PRIx64 " = %s\n", rx, names);
+	uint64_t tx = RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM |
+		      RTE_MBUF_F_TX_UDP_CKSUM;
+	rte_get_tx_ol_flag_list(tx, names, sizeof(names));
+	printf("TX ol_flags 0x%016" PRIx64 " = %s\n", tx, names);
+
+	m-&gt;packet_type = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4 | RTE_PTYPE_L4_UDP;
+	rte_get_ptype_name(m-&gt;packet_type, names, sizeof(names));</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./mbuf_anatomy -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-anat</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+<span class="dim">[... 57 lines omitted ...]</span>
+== 5. ol_flags, packet_type and tx_offload ==
+<span class="hl">RX ol_flags 0x0000000000000182 = RTE_MBUF_F_RX_RSS_HASH RTE_MBUF_F_RX_L4_CKSUM_GOOD RTE_MBUF_F_RX_IP_CKSUM_GOOD RTE_MBUF_F_RX_OUTER_L4_CKSUM_UNKNOWN </span>
+<span class="hl">TX ol_flags 0x00f0000000000000 = RTE_MBUF_F_TX_IP_CKSUM RTE_MBUF_F_TX_UDP_CKSUM RTE_MBUF_F_TX_IPV4 </span>
+packet_type 0x00000211 = L2_ETHER L3_IPV4 L4_UDP 
+packet_type 0x01113211 = L2_ETHER L3_IPV4 L4_UDP TUNNEL_VXLAN INNER_L2_ETHER INNER_L3_IPV4 INNER_L4_TCP 
+  l3 nibble via mask: 0x10 (RTE_PTYPE_L3_IPV4 = 0x10)
+<span class="hl">l2_len=14 l3_len=20 l4_len=8 -&gt; tx_offload=0x0000000000080a0e (l2 in bits 0-6, l3 in 7-15, l4 in 16-23)</span>
+<span class="dim">[... 3 more lines in expected_output.txt ...]</span></pre>
+</div>
+    <p class="output-caption"><code>rte_get_rx_ol_flag_list()</code> also names <code>RX_OUTER_L4_CKSUM_UNKNOWN</code>: its value is 0, so it "matches" every mbuf. That is the 2-bit-field trap in miniature: test multi-bit statuses with their mask, never with a plain <code>&amp;</code>.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="dynfields"><span class="sec-num">11</span>Dynamic fields and flags</h2>
+    <p>Before DPDK 20.11 the mbuf had fixed fields such as <code>timestamp</code>, <code>seqn</code> and <code>userdata</code>, used by a few libraries and wasting space for everyone else. They were replaced by a registry. The last 36 bytes of the struct (<code>dynfield1</code>) and the 18 ol_flags bits 23-40 are handed out <strong>at run time, by name</strong>:</p>
+    <ul>
+      <li><code>rte_mbuf_dynfield_register(&amp;(struct rte_mbuf_dynfield){ .name, .size, .align })</code> returns a byte <strong>offset</strong> inside <code>struct rte_mbuf</code>, or -1 with <code>rte_errno</code> (<code>EEXIST</code> if the name exists with other parameters, <code>ENOENT</code> if there is no room).</li>
+      <li><code>rte_mbuf_dynflag_register(&amp;(struct rte_mbuf_dynflag){ .name })</code> returns a <strong>bit number</strong> in <code>ol_flags</code>.</li>
+      <li><code>RTE_MBUF_DYNFIELD(m, offset, type *)</code> turns the offset into a typed pointer; <code>rte_mbuf_dynfield_lookup()</code> / <code>rte_mbuf_dynflag_lookup()</code> find an existing registration by name.</li>
+      <li>Registering the same name with the same parameters again returns the same offset, so independent modules can share a field. There is no unregister. Registrations are stored in shared memory, so secondary processes (ch16) see the primary's, but only a primary may register.</li>
+      <li>Names starting with <code>rte_</code> are reserved for DPDK; well-known ones include <code>rte_dynfield_timestamp</code>, <code>rte_flow_dynfield_metadata</code> and the reorder library's sequence number.</li>
+    </ul>
+    <p>The <strong>timestamp</strong> has helpers, because drivers and applications must agree on it: <code>rte_mbuf_dyn_rx_timestamp_register(&amp;offset, &amp;rx_flag)</code> registers the shared 8-byte field and an RX flag ("this mbuf has an RX timestamp"), and <code>rte_mbuf_dyn_tx_timestamp_register(&amp;offset, &amp;tx_flag)</code> the same field plus a TX flag ("send at this time"). ch19 (PTP and hardware timestamps) and ch22 (latency measurement) use them.</p>
+
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/dynfield_demo.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="56" data-hl="60,65,68"><code class="language-c">	static const struct rte_mbuf_dynfield lat_desc = {
+		.name  = "ch07_latency_tsc",      /* app names must not start with rte_ */
+		.size  = sizeof(uint64_t),
+		.align = alignof(uint64_t),
+	};
+	lat_off = rte_mbuf_dynfield_register(&amp;lat_desc);
+	if (lat_off &lt; 0)
+		rte_exit(EXIT_FAILURE, "dynfield: %s\n", rte_strerror(rte_errno));
+
+	static const struct rte_mbuf_dynflag sampled_desc = { .name = "ch07_sampled" };
+	int bit = rte_mbuf_dynflag_register(&amp;sampled_desc);
+	if (bit &lt; 0)
+		rte_exit(EXIT_FAILURE, "dynflag: %s\n", rte_strerror(rte_errno));
+	sampled_flag = RTE_BIT64(bit);</code></pre>
+</div>
+
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./dynfield_demo -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-dyn</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+<span class="dim">[... 30 lines omitted ...]</span>
+== 2. register our own field and flag ==
+<span class="hl">ch07_latency_tsc -&gt; offset 96 (inside dynfield1, which starts at 92)</span>
+<span class="hl">ch07_sampled     -&gt; ol_flags bit 23 (mask 0x0000000000800000)</span>
+
+== 3. the well-known Rx timestamp (used by PMDs, ch19/ch22) ==
+<span class="hl">rte_dynfield_timestamp -&gt; offset 104, rte_dynflag_rx_timestamp -&gt; mask 0x0000000001000000 (bit 24)</span>
+tx timestamp   -&gt; offset 104 (same field), rte_dynflag_tx_timestamp -&gt; bit 25
+
+== 4. same name again / conflicting / lookup ==
+register same name+params again -&gt; 96 (same offset)
+<span class="hl">same name, size 4               -&gt; -1, rte_errno=File exists</span>
+lookup("ch07_latency_tsc")      -&gt; 96 (size 8)
+lookup("no_such_field")         -&gt; -1, rte_errno=No such file or directory
+
+== 5. use them on an mbuf ==
+sampled packet: 194338 TSC cycles since stamp (~72 us at 2700000000 Hz)
+rx timestamp field = 123456789
+<span class="hl">after reset: sampled flag=0, field bytes still hold the old value (stale!)</span>
+
+== 6. after registration ==
+<span class="dim">[... 33 more lines in expected_output.txt ...]</span></pre>
+</div>
+    <p class="output-caption">Our 8-byte field asked for 8-byte alignment, so it landed at 96, not at 92 where <code>dynfield1</code> starts: bytes 92-95 stay free for a 4-byte field. The timestamp went to 104; RX and TX timestamp share it with different flags. <code>rte_pktmbuf_reset()</code> cleared our flag but not the field bytes, which is the rule: <strong>a dynamic field is only valid if its flag (or your own protocol) says so</strong>.</p>
+
+    <figure class="diagram">
+      <div class="wide-svg"><svg viewBox="0 0 720 150" role="img" aria-labelledby="f-dyn-t">
+        <title id="f-dyn-t">Bytes 88 to 127 of struct rte_mbuf after dynfield_demo: 88-91 fixed fields, 92-95 free with alignment 4, 96-103 ch07_latency_tsc, 104-111 rte_dynfield_timestamp, 112-127 free with alignment 16</title>
+        <text class="svg-title" x="20" y="20">rte_mbuf_dyn_dump() after registration: bytes 88-127 (16 px per byte)</text>
+        <rect class="svg-box c5" x="40" y="40" width="64" height="40"/><text class="svg-label small center" x="72" y="60">priv/ts</text>
+        <rect class="svg-slot" x="104" y="40" width="64" height="40"/><text class="svg-label small center" x="136" y="60">free (4)</text>
+        <rect class="svg-box c3" x="168" y="40" width="128" height="40"/><text class="svg-label small center" x="232" y="60">ch07_latency_tsc</text>
+        <rect class="svg-box c1" x="296" y="40" width="128" height="40"/><text class="svg-label small center" x="360" y="60">rte_dynfield_timestamp</text>
+        <rect class="svg-slot" x="424" y="40" width="256" height="40"/><text class="svg-label small center" x="552" y="60">free: 16 bytes, alignment 16</text>
+        <text class="svg-label small mono center" x="40" y="96">88</text><text class="svg-label small mono center" x="104" y="96">92</text>
+        <text class="svg-label small mono center" x="168" y="96">96</text><text class="svg-label small mono center" x="296" y="96">104</text>
+        <text class="svg-label small mono center" x="424" y="96">112</text><text class="svg-label small mono center" x="680" y="96">128</text>
+        <text class="svg-label small" x="40" y="126">ol_flags: bits 23 (ch07_sampled), 24 (rx_timestamp), 25 (tx_timestamp) taken; 26-40 still free.</text>
+      </svg></div>
+      <figcaption><span class="fig-num"></span>The free-space map that <code>rte_mbuf_dyn_dump()</code> printed, redrawn. The numbers in its hex map are the alignment the free zone can still offer.</figcaption>
+    </figure>
+
+    <div class="callout pitfall"><div class="callout-title">Pitfall: offsets are runtime values</div><p>Never hard-code 96. A program that loads one more library, or registers fields in another order, gets a different offset (exercise 3 shows "ch07_b" at 96 in one run and 104 in another). Keep the offset in a variable set at start-up, and look it up by name in every process. The space is small and shared by every PMD and library in the process: 36 bytes and 18 flag bits.</p></div>
+
+    <!-- ===================================================================== -->
+    <h2 id="poolops"><span class="sec-num">12</span>Pool ops: which handler backs the pool</h2>
+    <p>Chapter 6 showed that a mempool's free list is pluggable (ring, stack, bucket, hardware). For pktmbuf pools the choice is made by <code>rte_mbuf_best_mempool_ops()</code> in this order: the <code>--mbuf-pool-ops-name=&lt;name&gt;</code> EAL option (the "user" choice), then a platform choice registered by a hardware mempool driver (<code>rte_mbuf_set_platform_mempool_ops()</code>), then the build-time default <code>RTE_MBUF_DEFAULT_MEMPOOL_OPS</code>, which is <code>"ring_mp_mc"</code>. <code>rte_pktmbuf_pool_create()</code> uses that answer; <code>rte_pktmbuf_pool_create_by_ops(..., ops_name)</code> overrides it for one pool.</p>
+
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/pool_ops.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="98"><code class="language-c">		struct rte_mempool *mp = rte_pktmbuf_pool_create_by_ops(pname, 1023, 0,
+				0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id(), names[i]);
+		if (mp == NULL) {
+			printf("  %-12s -&gt; NULL, rte_errno=%d (%s)\n", names[i],
+			       rte_errno, rte_strerror(rte_errno));
+			continue;
+		}
+		double med, mn, mx;
+		unsigned avail = rte_mempool_avail_count(mp);
+		measure(mp, &amp;med, &amp;mn, &amp;mx);
+		printf("  %-12s -&gt; pool ops \"%s\", avail=%u, alloc+free %5.1f ns/mbuf "
+		       "(median of 5, min %.1f max %.1f)\n",
+		       names[i], ops_of(mp), avail, med, mn, mx);</code></pre>
+</div>
+
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./pool_ops -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-ops</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+== 1. ops selection ==
+user (--mbuf-pool-ops-name) : (not set)
+platform                    : (not set)
+build default               : ring_mp_mc
+<span class="hl">rte_mbuf_best_mempool_ops() : ring_mp_mc</span>
+rte_pktmbuf_pool_create() pool uses ops "ring_mp_mc"
+
+== 2. rte_pktmbuf_pool_create_by_ops (cache_size=0) ==
+  ring_mp_mc   -&gt; pool ops "ring_mp_mc", avail=1023, alloc+free  20.2 ns/mbuf (median of 5, min 20.1 max 21.1)
+  ring_sp_sc   -&gt; pool ops "ring_sp_sc", avail=1023, alloc+free  19.2 ns/mbuf (median of 5, min 19.2 max 19.4)
+  stack        -&gt; pool ops "stack", avail=1023, alloc+free   6.8 ns/mbuf (median of 5, min 6.8 max 6.8)
+  lf_stack     -&gt; pool ops "lf_stack", avail=1023, alloc+free   9.9 ns/mbuf (median of 5, min 9.9 max 10.3)
+  bucket       -&gt; pool ops "bucket", avail=1023, alloc+free   9.4 ns/mbuf (median of 5, min 9.2 max 9.8)
+<span class="dim">MBUF: error setting mempool handler</span>
+  no_such_ops  -&gt; NULL, rte_errno=22 (Invalid argument)
+<span class="dim">[... 15 more lines in expected_output.txt ...]</span></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./pool_ops -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-ops --mbuf-pool-ops-name=stack</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+== 1. ops selection ==
+user (--mbuf-pool-ops-name) : stack
+platform                    : (not set)
+build default               : ring_mp_mc
+<span class="hl">rte_mbuf_best_mempool_ops() : stack</span>
+<span class="hl">rte_pktmbuf_pool_create() pool uses ops "stack"</span>
+<span class="dim">[... 24 more lines in expected_output.txt ...]</span></pre>
+</div>
+    <p class="output-caption">With <code>--mbuf-pool-ops-name=stack</code> the default pool silently became a stack pool. An unknown name fails with <code>EINVAL</code> and a <code>MBUF: error setting mempool handler</code> log line. The timings are single-lcore, cache-less, in this VM: they show that handlers differ (a stack pop is cheaper than a multi-producer ring dequeue), not what a real application sees with its per-lcore cache in front (ch6, ch22).</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="ownership"><span class="sec-num">13</span>Ownership, and how drivers free</h2>
+    <p>An mbuf has exactly one owner at any moment, and only the owner may touch it. The owner changes at well-defined calls:</p>
+    <figure class="diagram">
+      <div class="wide-svg"><svg viewBox="0 0 720 250" role="img" aria-labelledby="f-own-t">
+        <title id="f-own-t">Ownership cycle: the pool gives mbufs to the RX driver, which fills RX descriptors; rx_burst hands them to the application; tx_burst hands accepted ones to the TX driver; on TX completion the driver frees them back to the pool; unsent and dropped mbufs are freed by the application</title>
+        <text class="svg-title" x="20" y="20">Who owns an mbuf</text>
+        <rect class="svg-box c2" x="20" y="100" width="120" height="56"/><text class="svg-label center bold" x="80" y="120">mempool</text><text class="svg-label small center" x="80" y="140">free mbufs</text>
+        <rect class="svg-box c4" x="200" y="40" width="140" height="56"/><text class="svg-label center bold" x="270" y="60">RX driver</text><text class="svg-label small center" x="270" y="80">mbufs in RX ring</text>
+        <rect class="svg-box c1" x="400" y="100" width="140" height="56"/><text class="svg-label center bold" x="470" y="120">application</text><text class="svg-label small center" x="470" y="140">bufs[] after rx_burst</text>
+        <rect class="svg-box c4" x="200" y="170" width="140" height="56"/><text class="svg-label center bold" x="270" y="190">TX driver</text><text class="svg-label small center" x="270" y="210">until NIC sent it</text>
+        <path class="svg-arrow c2" d="M110,100 C130,60 160,60 196,62"/>
+        <text class="svg-label small" x="150" y="126">raw_alloc / refill</text>
+        <path class="svg-arrow c4" d="M340,70 C380,72 420,80 450,97"/>
+        <text class="svg-label small" x="372" y="62">rte_eth_rx_burst()</text>
+        <path class="svg-arrow c1" d="M450,156 C420,190 380,196 344,198"/>
+        <text class="svg-label small" x="420" y="196">rte_eth_tx_burst()</text>
+        <text class="svg-label small muted" x="420" y="210">(accepted ones only)</text>
+        <path class="svg-arrow c4" d="M200,200 C150,200 110,190 90,160"/>
+        <text class="svg-label small" x="30" y="214">TX completion:</text>
+        <text class="svg-label small" x="30" y="228">prefree_seg / free_seg</text>
+        <path class="svg-arrow c1 dashed" d="M540,128 C700,128 700,14 420,16 C160,18 60,40 60,96"/>
+        <text class="svg-label small" x="548" y="178">unsent or dropped:</text>
+        <text class="svg-label small" x="548" y="192">app calls rte_pktmbuf_free()</text>
+      </svg></div>
+      <figcaption><span class="fig-num"></span>The ownership cycle. After <code>rte_eth_tx_burst()</code> returns <code>n</code>, the first <code>n</code> mbufs belong to the driver; touching or freeing them is a use-after-free. The rest are still yours (the skeleton's free loop).</figcaption>
+    </figure>
+    <p>How does the TX driver give mbufs back? When the NIC reports descriptors done, the driver calls <code>rte_pktmbuf_prefree_seg(m)</code> on each transmitted segment. It returns <code>m</code> if this was the last reference (and has already reset the invariant fields), or NULL if someone else still holds it (a clone, a retransmit queue). The driver collects the returned mbufs and puts them back with one <code>rte_mempool_put_bulk()</code>; <code>rte_pktmbuf_free_seg()</code> is the one-at-a-time version. This is segment-level: the driver frees each descriptor's segment, not whole chains. You will write such a loop in ch23.</p>
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/pool_ops.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="163"><code class="language-c">	void *back[32];   /* roomy: rte_memcpy inside put_bulk copies in 32 B chunks */
+	unsigned nb = 0;
+	for (int i = 0; i &lt; 4; i++) {
+		struct rte_mbuf *m = rte_pktmbuf_prefree_seg(done[i]);
+		printf("  prefree_seg(#%d) -&gt; %s\n", i, m ? "recyclable" : "NULL (still referenced)");
+		if (m != NULL)
+			back[nb++] = m;
+	}
+	rte_mempool_put_bulk(def, back, nb);</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./pool_ops -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-ops</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+<span class="dim">[... 22 lines omitted ...]</span>
+== 4. rte_pktmbuf_prefree_seg: the TX-completion path ==
+4 transmitted segments, refcnt = 1 1 2 1, pool in_use=4
+  prefree_seg(#0) -&gt; recyclable
+  prefree_seg(#1) -&gt; recyclable
+<span class="hl">  prefree_seg(#2) -&gt; NULL (still referenced)</span>
+<span class="dim">[... 3 more lines in expected_output.txt ...]</span></pre>
+</div>
+
+    <!-- ===================================================================== -->
+    <h2 id="debug"><span class="sec-num">14</span>Debugging aids</h2>
+    <p>mbuf bugs rarely crash where they happen. A double free puts the same pointer in the pool twice; a few microseconds later two different code paths get "their own" mbuf, which is the same memory. The library has three aids:</p>
+    <ul>
+      <li><code>rte_mbuf_check(m, is_header, &amp;reason)</code> validates pool, addresses, refcnt, lengths and segment counts, returning a reason string. <code>rte_mbuf_sanity_check()</code> does the same but panics; with <code>RTE_LIBRTE_MBUF_DEBUG</code> defined at build time, the library itself calls it inside alloc, free, clone and the helpers.</li>
+      <li><code>rte_pktmbuf_dump()</code> (sections 4-5) and <code>rte_mempool_audit()</code> (ch6).</li>
+      <li><strong>mbuf history</strong> (new in 25.11): in a build with <code>RTE_MBUF_HISTORY_DEBUG</code>, each mbuf records its last 16 lifecycle events (alloc, RX, TX, free, plus your own marks via <code>rte_mbuf_history_mark_bulk()</code>) in a dynamic field. <code>rte_mbuf_history_dump_all()</code> writes them out and <span class="src-path">usertools/dpdk-mbuf-history-parser.py</span> turns the dump into readable sequences and flags repeated events such as two frees in a row.</li>
+    </ul>
+
+    <div class="code-block">
+  <div class="code-head"><span class="file">code/debug_aids.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="85" data-hl="89,92,95-96"><code class="language-c">	struct rte_mbuf *busy[4];
+	if (rte_pktmbuf_alloc_bulk(mp, busy, 4) != 0)
+		rte_exit(EXIT_FAILURE, "alloc_bulk\n");
+	printf("m=%p, in_use=%u (m + 4 other packets)\n", (void *)m,
+	       rte_mempool_in_use_count(mp));
+	rte_pktmbuf_free(m);
+	printf("free(m)         in_use=%u avail=%u\n",
+	       rte_mempool_in_use_count(mp), rte_mempool_avail_count(mp));
+	rte_pktmbuf_free(m);                      /* BUG: second free */
+	printf("free(m) again   in_use=%u avail=%u   &lt;- the counters say one mbuf too many is free\n",
+	       rte_mempool_in_use_count(mp), rte_mempool_avail_count(mp));
+	struct rte_mbuf *a = rte_pktmbuf_alloc(mp);
+	struct rte_mbuf *b = rte_pktmbuf_alloc(mp);
+	printf("alloc -&gt; a=%p\nalloc -&gt; b=%p   %s\n", (void *)a, (void *)b,
+	       a == b ? "SAME mbuf handed out twice: two owners, silent corruption"</code></pre>
+</div>
+    <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./debug_aids -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-dbg</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch07-dbg/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+== 1. rte_mbuf_check ==
+RTE_LIBRTE_MBUF_DEBUG is OFF (library-internal checks compiled out) in this build
+  fresh mbuf with 100 bytes            -&gt; OK
+  data_len=2100 (overruns buf_len)     -&gt; INVALID: data length too big in mbuf segment
+  pkt_len=140 but one 100 B segment    -&gt; INVALID: bad pkt_len
+  nb_segs=2 but next == NULL           -&gt; INVALID: bad nb_segs
+  refcnt=0 (already freed?)            -&gt; INVALID: bad ref cnt
+  repaired                             -&gt; OK
+
+== 2. a double free goes unnoticed ==
+m=0x1040f2040, in_use=5 (m + 4 other packets)
+free(m)         in_use=4 avail=59
+free(m) again   in_use=3 avail=60   &lt;- the counters say one mbuf too many is free
+alloc -&gt; a=0x1040f2040
+alloc -&gt; b=0x1040f2040   SAME mbuf handed out twice: two owners, silent corruption
+
+== 3. mbuf history ==
+<span class="dim">MBUF: mbuf history recorder is not enabled</span>
+(rebuild DPDK with -Dc_args=-DRTE_MBUF_HISTORY_DEBUG to record it;
+ usertools/dpdk-mbuf-history-parser.py decodes the dump)</pre>
+</div>
+    <p class="output-caption">The checker names each broken invariant. The double free went through without a word, the in-use counter went down twice, and the next two allocations returned the same address. History recording is compiled out in this build; the call says so instead of failing. ch13 builds a debug variant and works through these tools in labs.</p>
+
+    <!-- ===================================================================== -->
+    <h2 id="pitfalls">Common pitfalls</h2>
+    <ul>
+      <li><strong>Touching an mbuf after <code>tx_burst</code> accepted it</strong>: the driver owns it and may already have freed it. Free only the unsent tail <code>bufs[nb_tx..nb_rx-1]</code>.</li>
+      <li><strong>Double free</strong>: no error, two owners later (section 14). Set pointers to NULL after freeing, and test with a <code>RTE_LIBRTE_MBUF_DEBUG</code> build.</li>
+      <li><strong>Ignoring NULL from append/prepend/adj</strong> (or -1 from trim): the next write goes through a NULL pointer, or past the buffer.</li>
+      <li><strong>Assuming one segment</strong>: <code>mtod</code> and <code>data_len</code> cover only the first segment. Use <code>pkt_len</code> for the packet length and <code>rte_pktmbuf_read()</code> for headers that may straddle segments.</li>
+      <li><strong>Setting metadata on a non-first segment</strong>: <code>ol_flags</code>, <code>pkt_len</code>, <code>nb_segs</code>, <code>packet_type</code> are read from the head only.</li>
+      <li><strong>Writing into a clone</strong>, including prepending: the bytes are shared with the original (exercise 2). Use <code>rte_pktmbuf_copy()</code> or a separate header mbuf.</li>
+      <li><strong>Full-size pool for clones</strong>: a clone pool needs <code>data_room_size = 0</code>; otherwise each clone wastes 2 KB.</li>
+      <li><strong><code>data_room_size</code> without the headroom</strong>: the frame does not fit (section 3).</li>
+      <li><strong>Unaligned private size</strong>: <code>priv_size</code> must be a multiple of 8, or pool creation fails with <code>EINVAL</code>.</li>
+      <li><strong>Testing a 2-bit checksum status with <code>&amp;</code></strong>: <code>m-&gt;ol_flags &amp; RTE_MBUF_F_RX_IP_CKSUM_GOOD</code> is also true for <code>NONE</code>. Mask first.</li>
+      <li><strong>Setting TX offload flags the port did not enable</strong>: the NIC ignores them and sends wrong checksums (ch19).</li>
+      <li><strong>Hard-coding a dynfield offset or flag bit</strong>, or trusting a dynfield without its flag: offsets differ between programs and fields survive <code>reset</code>.</li>
+      <li><strong>Raw alloc/free on mbufs that break the invariant</strong> (refcnt not 1, chained, attached): pool corruption.</li>
+      <li><strong>Freeing an external buffer yourself</strong> while mbufs still point at it: only the <code>free_cb</code> knows when the last reference is gone.</li>
+    </ul>
+
+    <!-- ===================================================================== -->
+    <h2 id="check">Check your understanding</h2>
+    <div class="quiz" data-quiz>
+      <div class="quiz-head">Five questions</div>
+      <div class="q" data-answer="1" data-explain="RTE_MBUF_DEFAULT_BUF_SIZE is 2048 + 128. The data room includes the headroom, so 2048 bytes remain for data after a fresh alloc (tailroom 2048 in mbuf_anatomy).">
+        <div class="q-text">A pool is created with <code>RTE_MBUF_DEFAULT_BUF_SIZE</code>. How many data bytes can a fresh mbuf take with <code>append()</code>?</div>
+        <div class="q-opts"><button class="q-opt">2176</button><button class="q-opt">2048</button><button class="q-opt">1920</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="prepend only succeeds if len &lt;= headroom; otherwise it returns NULL and changes nothing. A fresh mbuf has 128 bytes of headroom.">
+        <div class="q-text">On a fresh mbuf, <code>rte_pktmbuf_prepend(m, 200)</code> returns...</div>
+        <div class="q-opts"><button class="q-opt">a pointer, and data_off becomes 0 (clamped)</button><button class="q-opt">a pointer 200 bytes before buf_addr</button><button class="q-opt">NULL, and the mbuf is unchanged</button></div>
+      </div>
+      <div class="q" data-answer="0" data-explain="Each clone increments the direct mbuf's refcnt: 1 + 2 = 3. The clones themselves have refcnt 1.">
+        <div class="q-text">A direct mbuf with refcnt 1 is cloned twice. What is its refcnt now?</div>
+        <div class="q-opts"><button class="q-opt">3</button><button class="q-opt">1 (each clone has its own count)</button><button class="q-opt">2</button></div>
+      </div>
+      <div class="q" data-answer="1" data-explain="Bytes 56..71 cross from segment 1 into segment 2, which are different buffers, so the function copies them into buf and returns buf.">
+        <div class="q-text">Segments hold packet bytes 0-19, 20-59 and 60-99. <code>rte_pktmbuf_read(m, 56, 16, buf)</code> returns...</div>
+        <div class="q-opts"><button class="q-opt">a pointer into segment 1</button><button class="q-opt">buf, after copying 16 bytes into it</button><button class="q-opt">NULL, because the range crosses a segment</button></div>
+      </div>
+      <div class="q" data-answer="2" data-explain="Offsets are assigned at run time in registration order, subject to alignment. Always store the returned offset (or look it up by name) in each process.">
+        <div class="q-text">Program A registers dynfield "x" and gets offset 96. Program B registers "x" with the same size. Which offset does B get?</div>
+        <div class="q-opts"><button class="q-opt">96, always: the name decides the offset</button><button class="q-opt">92, the start of dynfield1</button><button class="q-opt">Whatever is free in B at that moment; it can differ</button></div>
+      </div>
+      <div class="controls"><button class="btn small quiz-reset" type="button">Reset</button></div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <h2 id="exercises">Exercises</h2>
+    <div class="exercise">
+      <div class="box-title">Exercise 1 <span class="tag easy">easy</span> VLAN prepend in place</div>
+      <p>Write <code>int vlan_prepend(struct rte_mbuf *m, uint16_t vlan_id, uint8_t pcp)</code> that inserts an 802.1Q tag into an Ethernet frame already in <code>m</code>, using the headroom: after the call the frame must read <em>dst MAC, src MAC, 0x8100, TCI, original EtherType, payload</em>. Copy as few bytes as possible, and return -1 without touching anything when there is no room. Build the frame bytes by hand (no lib/net yet); in ch10 you will compare your function with <code>rte_vlan_insert()</code>.</p>
+      <details><summary>Hint</summary><p><code>rte_pktmbuf_prepend(m, 4)</code> moves the start back by 4 bytes. Only the 12 MAC bytes need to move to the new start; the EtherType is already in the right place, 4 bytes later. Use <code>memmove</code>, the regions overlap.</p></details>
+      <details><summary>Solution and output</summary>
+        <p><span class="src-path">code/solutions/vlan_prepend.c</span></p>
+        <div class="code-block">
+  <div class="code-head"><span class="file">code/solutions/vlan_prepend.c</span><span class="lang">C</span></div>
+<pre data-lines data-start="32"><code class="language-c">static int vlan_prepend(struct rte_mbuf *m, uint16_t vlan_id, uint8_t pcp)
+{
+	if (rte_pktmbuf_data_len(m) &lt; 14)
+		return -1;
+	char *old = rte_pktmbuf_mtod(m, char *);
+	char *new = rte_pktmbuf_prepend(m, 4);   /* NULL if headroom &lt; 4 */
+	if (new == NULL)
+		return -1;
+	memmove(new, old, 12);                   /* MACs go 4 bytes earlier */
+	rte_be16_t tpid = rte_cpu_to_be_16(0x8100);
+	rte_be16_t tci  = rte_cpu_to_be_16((uint16_t)(pcp &lt;&lt; 13) | (vlan_id &amp; 0x0fff));
+	memcpy(new + 12, &amp;tpid, 2);              /* the old type stays at +16 */
+	memcpy(new + 14, &amp;tci, 2);
+	return 0;</code></pre>
+</div>
+        <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./vlan_prepend -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-vlan</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+before: data_off=128 len=22
+untagged at [0x1040b46c0], len=22
+00000000: 02 00 00 00 00 02 02 00 00 00 00 01 08 00 70 61 | ..............pa
+00000010: 79 6C 6F 61 64 21                               | yload!
+after : data_off=124 len=26 (VLAN 100, PCP 3 -&gt; TCI 0x6064)
+tagged at [0x1040b46bc], len=26
+<span class="hl">00000000: 02 00 00 00 00 02 02 00 00 00 00 01 81 00 60 64 | ..............`d</span>
+00000010: 08 00 70 61 79 6C 6F 61 64 21                   | ..payload!
+with headroom 2: vlan_prepend -&gt; -1</pre>
+</div>
+      </details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 2 <span class="tag medium">medium</span> A clone corrupts the original</div>
+      <p>Write a test that proves writing into a clone changes the original packet, then fix it with <code>rte_pktmbuf_copy()</code>. Extend it: give two clones of the same packet different 4-byte headers with <code>rte_pktmbuf_prepend()</code> and print both. Explain the result.</p>
+      <details><summary>Hint</summary><p>A clone's <code>buf_addr</code> is the original's <code>buf_addr</code>; print both. The headroom is part of that same buffer.</p></details>
+      <details><summary>Solution and output</summary>
+        <p><span class="src-path">code/solutions/clone_corrupt.c</span></p>
+        <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./clone_corrupt -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-corrupt</span>
+<span class="dim">EAL: Detected CPU lcores: 4</span>
+<span class="dim">EAL: Detected NUMA nodes: 1</span>
+<span class="dim">EAL: Detected static linkage of DPDK</span>
+<span class="dim">EAL: Multi-process socket /var/run/dpdk/ch07-corrupt/mp_socket</span>
+<span class="dim">EAL: Selected IOVA mode 'VA'</span>
+test 1: write through a clone
+<span class="hl">  original  "CLONE-WROTE!" &lt;-- CHANGED</span>
+fix 1: rte_pktmbuf_copy, then write the copy
+  original  "ORIGINAL...." (as expected)
+  copy      "COPY-WROTE!!" (as expected)
+  copy buf_addr != orig buf_addr, copy refcnt=1, orig refcnt=2
+test 2: prepend a header on two clones
+<span class="hl">  clone A   "BBB:ORIGINAL...." &lt;-- CHANGED</span>
+  clone B   "BBB:ORIGINAL...." (as expected)
+<span class="hl">verdict: test1 CORRUPTED the original, fix original intact, test2 header A was overwritten by B</span></pre>
+</div>
+      </details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 3 <span class="tag medium">medium</span> Offsets differ between programs</div>
+      <p>Register a dynfield called <code>ch07_b</code> (8 bytes) in two runs of a program that register other fields before it in a different order. Show that <code>ch07_b</code> gets different offsets.</p>
+      <details><summary>Solution and output</summary>
+        <p><span class="src-path">code/solutions/dyn_order.c</span> takes the registration order as arguments after <code>--</code>.</p>
+        <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./dyn_order -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-dyno -- b</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+order: b
+<span class="hl">  ch07_b                 (8 B) -&gt; offset 96</span></pre>
+</div>
+        <div class="terminal" data-copy>
+  <div class="term-bar"><span class="title">code/expected_output.txt</span></div>
+<pre><span class="prompt">$ </span><span class="cmd">./dyn_order -l 0 --no-pci --no-huge -m 64 --file-prefix=ch07-dyno -- ts b</span>
+<span class="dim">EAL: ... (5 EAL start-up lines)</span>
+order: ts b
+  rte_dynfield_timestamp (8 B) -&gt; offset 96
+<span class="hl">  ch07_b                 (8 B) -&gt; offset 104</span></pre>
+</div>
+      </details>
+    </div>
+    <div class="exercise">
+      <div class="box-title">Exercise 4 <span class="tag stretch">stretch</span> What does one mbuf really cost?</div>
+      <p>Compute the memory used per mbuf for a pool of 8192 mbufs with data room 2048 + headroom: the element (struct + priv + room), the mempool object header (ch6), the alignment padding, and the pool's per-lcore caches. Then measure it: create the pool with and without <code>--no-huge</code>, and compare <code>rte_mempool_calc_obj_size()</code> and the memzone sizes listed by <code>rte_memzone_dump()</code> with your numbers. Where does the difference between 4 KB pages and 2 MB pages come from (ch4)?</p>
+      <details><summary>Hint</summary><p>Start from <code>elt_size = 2304</code> (priv 0) and <code>header_size</code> printed in ch6; objects never straddle a page boundary in some configurations, which matters with 4 KB pages.</p></details>
+    </div>
+
+    <!-- ===================================================================== -->
+    <section class="summary-box">
+      <div class="box-title">Summary</div>
+      <ul>
+        <li>An mbuf is one mempool element: a 128-byte <code>struct rte_mbuf</code>, an optional private area, and a buffer that starts with 128 bytes of headroom. <code>m-&gt;pool</code> lets anyone free it.</li>
+        <li>Cache line 0 holds everything the RX path writes (two groups designed for wide stores); cache line 1 holds TX, chain and dynamic-field data.</li>
+        <li><code>data_off</code> and <code>data_len</code> define a window; <code>append/prepend/adj/trim</code> move its edges without copying and fail cleanly (NULL / -1) instead of clamping. <code>mtod</code> checks nothing.</li>
+        <li>Chains link segments through <code>next</code>; packet-wide metadata lives only in the head. <code>rte_pktmbuf_read</code> copies only when a range crosses segments.</li>
+        <li><code>free</code> drops a reference. Clones share a direct mbuf's buffer and count there; external buffers count in their shinfo and call your <code>free_cb</code>. Clones are read-only; <code>rte_pktmbuf_copy</code> gives private bytes.</li>
+        <li><code>ol_flags</code> carries RX status, TX requests (with the <code>tx_offload</code> lengths), internal bits and dynamic flags; <code>packet_type</code> carries the parsed layers.</li>
+        <li>Dynamic fields and flags are assigned by name at run time; store or look up the offset, and trust a field only with its flag. Timestamps have dedicated register helpers.</li>
+        <li>The pool handler comes from <code>--mbuf-pool-ops-name</code>, the platform, or <code>ring_mp_mc</code>; drivers return transmitted segments with <code>prefree_seg</code> + bulk put. Ownership passes at rx_burst and tx_burst; mbuf bugs are silent without the debug aids.</li>
+      </ul>
+    </section>
+
+    <section class="references">
+      <h2 id="references">References</h2>
+      <ol>
+        <li>Programmer's Guide, Mbuf Library <span class="src-path">doc/guides/prog_guide/mbuf_lib.rst</span> (layout figures, TX offload recipes, dynamic fields, debug)</li>
+        <li><span class="src-path">lib/mbuf/rte_mbuf_core.h</span>: <code>struct rte_mbuf</code>, every <code>RTE_MBUF_F_*</code> bit, <code>struct rte_mbuf_ext_shared_info</code></li>
+        <li><span class="src-path">lib/mbuf/rte_mbuf.h</span>: pool creation (<code>_by_ops</code>, <code>_extbuf</code>), helpers, clone/attach/detach, <code>prefree_seg</code>, <code>rte_mbuf_check</code></li>
+        <li><span class="src-path">lib/mbuf/rte_mbuf.c</span>: <code>rte_pktmbuf_init</code>, <code>__rte_pktmbuf_read</code>, <code>rte_pktmbuf_dump</code>, linearize, copy</li>
+        <li><span class="src-path">lib/mbuf/rte_mbuf_dyn.h</span>, <span class="src-path">lib/mbuf/rte_mbuf_dyn.c</span>: dynamic fields/flags, timestamp helpers, <code>rte_mbuf_dyn_dump</code></li>
+        <li><span class="src-path">lib/mbuf/rte_mbuf_ptype.h</span>: <code>RTE_PTYPE_*</code> and <code>rte_get_ptype_name</code></li>
+        <li><span class="src-path">lib/mbuf/rte_mbuf_pool_ops.h</span>: <code>rte_mbuf_best_mempool_ops</code> and the user/platform selection</li>
+        <li><span class="src-path">lib/mbuf/rte_mbuf_history.h</span> and <span class="src-path">usertools/dpdk-mbuf-history-parser.py</span>: mbuf history</li>
+        <li><span class="src-path">examples/ipv4_multicast/main.c</span>: header pool + clone pool multicast</li>
+        <li><span class="src-path">examples/skeleton/basicfwd.c</span>: the x-ray loop</li>
+        <li><span class="src-path">app/test-pmd/csumonly.c</span>: real use of the TX offload flags and lengths</li>
+        <li>Course research note: <span class="src-path">research/04-mbuf-mempool-ring.md</span> (section 3)</li>
+      </ol>
+    </section>
+
+    <nav class="chapter-nav" aria-label="Chapter navigation">
+      <a class="prev" href="../06-mempools/index.html"><span class="dir">&larr; Previous</span><span class="ttl">06 &middot; rte_mempool and rte_stack</span></a>
+      <a class="index" href="../../index.html">Course index</a>
+      <a class="next" href="../08-ethdev-first-port/index.html"><span class="dir">Next &rarr;</span><span class="ttl">08 &middot; Your First Port: ethdev Lifecycle and the Burst API</span></a>
+    </nav>
+  </main>
+</div>
+<footer class="site-footer">DPDK from Zero to Expert: Building Fast Packet Processing in User Space &middot; DPDK 26.11</footer>
+
+<script src="../../assets/course.js"></script>
+<script src="ch07.js"></script>
+</body>
+</html>

@@ -1,0 +1,586 @@
+
+=================== 0. build (make, -Wall -Wextra) ===================
+[make exit code 0]
+HugePages: 1024 total, 1024 free x 2 MB (shared machine)
+
+=================== 1. hello_memory: rte_malloc, stats, va vs iova ===================
+--- 1a. --no-huge: 4 KB anonymous memory, IOVA mode VA
+$ ./hello_memory -l 0 --no-pci --no-huge -m 64 --file-prefix=ch04-hm
+EAL: Multi-process socket /var/run/dpdk/ch04-hm/mp_socket
+EAL: Selected IOVA mode 'VA'
+IOVA mode        : VA (device uses our virtual addresses)
+hugepages        : no (--no-huge, 4 KB pages)
+physical addrs   : not used
+mapped memory    : 64 MB
+NUMA nodes       : 1 (this lcore is on node 0)
+
+heap of node 0:
+  before                 total= 67108864  alloc=     8320  free= 67100544  allocs=  1  free-elems=1
+  after 4 allocations    total= 67108864  alloc=    11648  free= 67097216  allocs=  5  free-elems=2
+
+buffers:
+  rte_malloc(100, 0)           va=0x1040f3f00  iova=0x01040f3f00  64B-aligned  usable=128
+  rte_malloc(100, 4096)        va=0x1040f3000  iova=0x01040f3000  4K-aligned   usable=128
+  rte_zmalloc(1500, 0)         va=0x1040f3880  iova=0x01040f3880  64B-aligned  usable=1536
+  rte_calloc(256, 4, 0)        va=0x1040f3400  iova=0x01040f3400  64B-aligned  usable=1024
+  zmalloc'd bytes that are not zero: 0
+  rte_realloc(a, 64K, 0)       va=0x1040e2f80  iova=0x01040e2f80  64B-aligned  usable=65536
+  content after realloc: "kept across realloc" (moved)
+
+NUMA:
+  rte_malloc_socket(..., socket 1) = 0x1040e1f00  (accepted: no-huge memory has no node)
+  rte_malloc_socket(..., SOCKET_ID_ANY) = 0x1040e0e80 (ok, node 0)
+  after rte_free         total= 67108864  alloc=     8320  free= 67100544  allocs=  1  free-elems=1
+[exit code 0]
+--- 1b. 64 MB of 2 MB hugepages, root: IOVA mode PA
+$ ./hello_memory -l 0 --no-pci -m 64 --file-prefix=ch04-hm2
+EAL: Multi-process socket /var/run/dpdk/ch04-hm2/mp_socket
+EAL: Selected IOVA mode 'PA'
+IOVA mode        : PA (device uses physical addresses)
+hugepages        : yes
+physical addrs   : readable
+mapped memory    : 64 MB
+NUMA nodes       : 1 (this lcore is on node 0)
+
+heap of node 0:
+  before                 total= 67108864  alloc=     8320  free= 67100544  allocs=  1  free-elems=1
+  after 4 allocations    total= 67108864  alloc=    11648  free= 67097216  allocs=  5  free-elems=2
+
+buffers:
+  rte_malloc(100, 0)           va=0x1041fdf00  iova=0x01997fdf00  64B-aligned  usable=128
+  rte_malloc(100, 4096)        va=0x1041fd000  iova=0x01997fd000  4K-aligned   usable=128
+  rte_zmalloc(1500, 0)         va=0x1041fd880  iova=0x01997fd880  64B-aligned  usable=1536
+  rte_calloc(256, 4, 0)        va=0x1041fd400  iova=0x01997fd400  64B-aligned  usable=1024
+  zmalloc'd bytes that are not zero: 0
+  rte_realloc(a, 64K, 0)       va=0x1041ecf80  iova=0x01997ecf80  64B-aligned  usable=65536
+  content after realloc: "kept across realloc" (moved)
+
+NUMA:
+  rte_malloc_socket(..., socket 1) = NULL  rte_errno=0 (not set by rte_malloc)
+  rte_malloc_socket(..., SOCKET_ID_ANY) = 0x1041ebf00 (ok, node 0)
+  after rte_free         total= 67108864  alloc=     8320  free= 67100544  allocs=  1  free-elems=1
+[exit code 0]
+
+=================== 1c. tlb_bench: the same pointer chase on 4 KB and on 2 MB pages ===================
+$ ./tlb_bench -l 0 --no-pci --no-huge -m 128 --file-prefix=ch04-tlb4k
+EAL: Multi-process socket /var/run/dpdk/ch04-tlb4k/mp_socket
+EAL: Selected IOVA mode 'VA'
+  run 1: 47.1 cycles per load
+  run 2: 46.9 cycles per load
+  run 3: 45.4 cycles per load
+  run 4: 44.1 cycles per load
+  run 5: 44.7 cycles per load
+4 KB pages: median 45.4 cycles/load (min 44.1, max 47.1) over 5 runs [pos=0]
+[exit code 0]
+$ ./tlb_bench -l 0 --no-pci --huge-unlink --file-prefix=ch04-tlb2m
+EAL: Multi-process socket /var/run/dpdk/ch04-tlb2m/mp_socket
+EAL: Selected IOVA mode 'PA'
+  run 1: 11.3 cycles per load
+  run 2: 11.3 cycles per load
+  run 3: 11.3 cycles per load
+  run 4: 11.3 cycles per load
+  run 5: 11.3 cycles per load
+2 MB pages: median 11.3 cycles/load (min 11.3, max 11.3) over 5 runs [pos=0]
+[exit code 0]
+
+=================== 2. see_the_files.sh: where the memory lives, in four modes ===================
+HugePages_Free before: 1024 (shared with other users of this machine)
+
+------------------------------------------------------------------
+mode: default
+$ ./sleeper -l 0 --no-pci -m 32 --file-prefix=ch04-files-default -- 8 &
+  EAL: Selected IOVA mode 'PA'
+  READY pid=5784 buf=0x1019fdf80 mapped=32MB
+$ ls /dev/hugepages | grep ch04-files-default
+  ch04-files-defaultmap_0_0
+  ch04-files-defaultmap_0_1
+  ch04-files-defaultmap_0_10
+  ch04-files-defaultmap_0_11
+  (16 file(s), 32M on disk)
+$ ls /run/dpdk/ch04-files-default
+  config dpdk_telemetry.v2 fbarray_memseg-2048k-0-0 fbarray_memzone hugepage_info mp_socket 
+$ grep -E 'map_|memfd|nohuge|fbarray|config' /proc/5784/maps   (first 5)
+  100000000-100007000         rw-s /run/dpdk/ch04-files-default/config 
+  100007000-100035000         rw-s /run/dpdk/ch04-files-default/fbarray_memzone 
+  100035000-1001b7000         rw-s /run/dpdk/ch04-files-default/fbarray_memseg-2048k-0-0 
+  100200000-100400000         rw-s /dev/hugepages/ch04-files-defaultmap_0_0 
+  100400000-100600000         rw-s /dev/hugepages/ch04-files-defaultmap_0_1 
+$ grep HugetlbPages /proc/5784/status
+  HugetlbPages:	   32768 kB
+  sleeper 5784: clean exit
+  files left in /dev/hugepages after exit: 0
+
+------------------------------------------------------------------
+mode: single
+$ ./sleeper -l 0 --no-pci -m 32 --single-file-segments --file-prefix=ch04-files-single -- 8 &
+  EAL: Selected IOVA mode 'PA'
+  READY pid=5829 buf=0x1019fdf80 mapped=32MB
+$ ls /dev/hugepages | grep ch04-files-single
+  ch04-files-singlemap_0
+  (1 file(s), 32M on disk)
+$ ls /run/dpdk/ch04-files-single
+  config dpdk_telemetry.v2 fbarray_memseg-2048k-0-0 fbarray_memzone hugepage_info mp_socket 
+$ grep -E 'map_|memfd|nohuge|fbarray|config' /proc/5829/maps   (first 5)
+  100000000-100007000         rw-s /run/dpdk/ch04-files-single/config 
+  100007000-100035000         rw-s /run/dpdk/ch04-files-single/fbarray_memzone 
+  100035000-1001b7000         rw-s /run/dpdk/ch04-files-single/fbarray_memseg-2048k-0-0 
+  100200000-100400000         rw-s /dev/hugepages/ch04-files-singlemap_0 
+  100400000-100600000         rw-s /dev/hugepages/ch04-files-singlemap_0 
+$ grep HugetlbPages /proc/5829/status
+  HugetlbPages:	   32768 kB
+  sleeper 5829: clean exit
+  files left in /dev/hugepages after exit: 0
+
+------------------------------------------------------------------
+mode: inmemory
+$ ./sleeper -l 0 --no-pci -m 32 --in-memory --file-prefix=ch04-files-inmemory -- 8 &
+  EAL: Selected IOVA mode 'PA'
+  EAL: No free 1048576 kB hugepages reported on node 0
+  READY pid=5874 buf=0x11417fdf80 mapped=32MB
+$ ls /dev/hugepages | grep ch04-files-inmemory
+  (no files)
+$ ls /run/dpdk/ch04-files-inmemory
+  dpdk_telemetry.v2 
+$ grep -E 'map_|memfd|nohuge|fbarray|config' /proc/5874/maps   (first 5)
+  1140000000-1140200000       rw-s /memfd:seg_1-0 (deleted)
+  1140200000-1140400000       rw-s /memfd:seg_1-1 (deleted)
+  1140400000-1140600000       rw-s /memfd:seg_1-2 (deleted)
+  1140600000-1140800000       rw-s /memfd:seg_1-3 (deleted)
+  1140800000-1140a00000       rw-s /memfd:seg_1-4 (deleted)
+$ grep HugetlbPages /proc/5874/status
+  HugetlbPages:	   32768 kB
+  sleeper 5874: clean exit
+  files left in /dev/hugepages after exit: 0
+
+------------------------------------------------------------------
+mode: nohuge
+$ ./sleeper -l 0 --no-pci -m 32 --no-huge --file-prefix=ch04-files-nohuge -- 8 &
+  EAL: Selected IOVA mode 'VA'
+  READY pid=5905 buf=0x101893f80 mapped=32MB
+$ ls /dev/hugepages | grep ch04-files-nohuge
+  (no files)
+$ ls /run/dpdk/ch04-files-nohuge
+  config dpdk_telemetry.v2 fbarray_memzone fbarray_nohugemem mp_socket 
+$ grep -E 'map_|memfd|nohuge|fbarray|config' /proc/5905/maps   (first 5)
+  100000000-100007000         rw-s /run/dpdk/ch04-files-nohuge/config 
+  100007000-100035000         rw-s /run/dpdk/ch04-files-nohuge/fbarray_memzone 
+  100035000-100096000         rw-s /run/dpdk/ch04-files-nohuge/fbarray_nohugemem 
+  100096000-102096000         rw-s /memfd:nohuge (deleted)
+$ grep HugetlbPages /proc/5905/status
+  HugetlbPages:	       0 kB
+  sleeper 5905: clean exit
+  files left in /dev/hugepages after exit: 0
+
+------------------------------------------------------------------
+mode: crash (kill -9 a default-mode sleeper)
+$ kill -9 5938
+  files left in /dev/hugepages: 16
+  HugePages_Free: 1024 before the run, 1008 now (the files still hold the pages)
+$ rm -f /dev/hugepages/ch04-files-crashmap_* && rm -rf /run/dpdk/ch04-files-crash
+  files left: 0, HugePages_Free: 1024
+
+=================== 3. memseg_walk: memseg lists, memsegs and IOVA contiguity ===================
+--- 3a. -m 32, PA mode: 16 pinned pages, scattered IOVAs
+$ ./memseg_walk -l 0 --no-pci -m 32 --file-prefix=ch04-ms
+EAL: Multi-process socket /var/run/dpdk/ch04-ms/mp_socket
+EAL: Selected IOVA mode 'PA'
+IOVA mode: PA
+
+memseg lists (VA reserved, not memory):
+  list: base_va=0x100200000 page=  2048K socket=0 VA window= 65536 MB slots=32768 used=16
+
+memsegs (pages actually mapped):
+  seg 0: va=0x100200000 iova=0x19c200000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)
+  seg 1: va=0x100400000 iova=0x19c000000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)
+  seg 2: va=0x100600000 iova=0x19be00000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)
+  seg 3: va=0x100800000 iova=0x19bc00000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)
+  seg 4: va=0x100a00000 iova=0x19ba00000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)
+  seg 5: va=0x100c00000 iova=0x11d200000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)
+  seg 6: va=0x100e00000 iova=0x11d400000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)
+  seg 7: va=0x101000000 iova=0x11d800000 len=2048K flags=0x1 (DO_NOT_FREE: pinned by -m)
+  ... 16 segments, 14 of 15 neighbours are NOT adjacent in IOVA
+
+contiguous in VA (says nothing about IOVA):
+  VA-contiguous run: va=0x100200000 len=32 MB (first iova=0x19c200000)
+
+rte_mem_virt2memseg(0x1021fdb80) -> page va=0x102000000 iova=0x11d000000
+
+rte_memzone_reserve_aligned("dma_ring", 3 MB, RTE_MEMZONE_IOVA_CONTIG):
+  OK: va=0x100cff000 iova=0x11d2ff000 len=3145728 page=2048K
+  same size without IOVA_CONTIG: OK
+[exit code 0]
+--- 3b. no -m (heap grows page by page), PA mode: the 3 MB IOVA_CONTIG zone, 5 tries
+  try 1:  FAILED: rte_errno=12 (Cannot allocate memory)
+  try 2:  FAILED: rte_errno=12 (Cannot allocate memory)
+  try 3:  FAILED: rte_errno=12 (Cannot allocate memory)
+  try 4:  FAILED: rte_errno=12 (Cannot allocate memory)
+  try 5:  FAILED: rte_errno=12 (Cannot allocate memory)
+--- 3c. same, --iova-mode=va: IOVA == VA, always contiguous
+$ ./memseg_walk -l 0 --no-pci --iova-mode=va --file-prefix=ch04-ms
+EAL: Multi-process socket /var/run/dpdk/ch04-ms/mp_socket
+EAL: Selected IOVA mode 'VA'
+IOVA mode: VA
+
+memseg lists (VA reserved, not memory):
+  list: base_va=0x100200000 page=  2048K socket=0 VA window= 65536 MB slots=32768 used=1
+
+memsegs (pages actually mapped):
+  seg 0: va=0x100200000 iova=0x100200000 len=2048K flags=0
+  ... 1 segments, 0 of 0 neighbours are NOT adjacent in IOVA
+
+contiguous in VA (says nothing about IOVA):
+  VA-contiguous run: va=0x100200000 len=2 MB (first iova=0x100200000)
+
+rte_mem_virt2memseg(0x1003fdb80) -> page va=0x100200000 iova=0x100200000
+
+rte_memzone_reserve_aligned("dma_ring", 3 MB, RTE_MEMZONE_IOVA_CONTIG):
+  OK: va=0x100500000 iova=0x100500000 len=3145728 page=2048K
+  same size without IOVA_CONTIG: OK
+[exit code 0]
+--- 3d. --no-huge: every 4 KB page is its own memseg
+$ ./memseg_walk -l 0 --no-pci --no-huge -m 32 --file-prefix=ch04-ms
+EAL: Multi-process socket /var/run/dpdk/ch04-ms/mp_socket
+EAL: Selected IOVA mode 'VA'
+IOVA mode: VA
+
+memseg lists (VA reserved, not memory):
+  list: base_va=0x100096000 page=     4K socket=0 VA window=    32 MB slots= 8192 used=8192
+
+memsegs (pages actually mapped):
+  seg 0: va=0x100096000 iova=0x100096000 len=   4K flags=0
+  seg 1: va=0x100097000 iova=0x100097000 len=   4K flags=0
+  seg 2: va=0x100098000 iova=0x100098000 len=   4K flags=0
+  seg 3: va=0x100099000 iova=0x100099000 len=   4K flags=0
+  seg 4: va=0x10009a000 iova=0x10009a000 len=   4K flags=0
+  seg 5: va=0x10009b000 iova=0x10009b000 len=   4K flags=0
+  seg 6: va=0x10009c000 iova=0x10009c000 len=   4K flags=0
+  seg 7: va=0x10009d000 iova=0x10009d000 len=   4K flags=0
+  ... 8192 segments, 0 of 8191 neighbours are NOT adjacent in IOVA
+
+contiguous in VA (says nothing about IOVA):
+  VA-contiguous run: va=0x100096000 len=32 MB (first iova=0x100096000)
+
+rte_mem_virt2memseg(0x102093b80) -> page va=0x102093000 iova=0x102093000
+
+rte_memzone_reserve_aligned("dma_ring", 3 MB, RTE_MEMZONE_IOVA_CONTIG):
+  OK: va=0x101d93000 iova=0x101d93000 len=3145728 page=4K
+  same size without IOVA_CONTIG: OK
+[exit code 0]
+
+=================== 4. memzones: reserve, lookup, EEXIST, ENOSPC, bounded ===================
+$ ./memzones -l 0 --no-pci --no-huge -m 64 --file-prefix=ch04-mz
+EAL: Multi-process socket /var/run/dpdk/ch04-mz/mp_socket
+EAL: Selected IOVA mode 'VA'
+memzone table size: 4
+
+reserve:
+  reserve(app_cfg, 4096)             -> "app_cfg" va=0x1040c5f80 len=4096 socket=0
+  reserve_aligned(rx_ring, 16K, 4K)  -> "rx_ring" va=0x1040c1000 len=16384 socket=0
+    rx_ring va % 4096 = 0, iova=0x1040c1000
+  reserve_bounded(stats, 300000, 1M) -> "stats" va=0x104077b80 len=300032 socket=0
+    first byte in MB #4160, last byte in MB #4160 -> does not cross
+
+lookup by name:
+  rte_memzone_lookup("rx_ring") = 0x100007048 (same descriptor)
+  rte_memzone_lookup("nope")    = (nil)
+
+errors:
+  reserve(app_cfg) again             -> NULL, rte_errno=17 EEXIST (File exists)
+  reserve(<32-character name>)       -> NULL, rte_errno=36 ENAMETOOLONG (File name too long)
+  reserve(extra1)  [4th entry]       -> "extra1" va=0x1040c5ec0 len=64 socket=0
+EAL: memzone_reserve_aligned_thread_unsafe(): Number of requested memzone segments exceeds maximum 4
+  reserve(extra2)  [5th entry]       -> NULL, rte_errno=28 ENOSPC (No space left on device)
+
+rte_memzone_walk:
+    [0] app_cfg        4096 bytes at 0x1040c5f80
+    [1] rx_ring       16384 bytes at 0x1040c1000
+    [2] stats        300032 bytes at 0x104077b80
+    [3] extra1           64 bytes at 0x1040c5ec0
+
+free app_cfg and reuse the name:
+  rte_memzone_free(app_cfg) = 0
+  reserve(app_cfg, 128)              -> "app_cfg" va=0x1040c5dc0 len=128 socket=0
+
+rte_memzone_dump(stdout) after freeing "stats":
+Zone 0: name:<app_cfg>, len:0x80, virt:0x1040c5dc0, socket_id:0, flags:0
+physical segments used:
+  addr: 0x1040c5000 iova: 0x1040c5000 len: 0x1000 pagesz: 0x1000
+Zone 1: name:<rx_ring>, len:0x4000, virt:0x1040c1000, socket_id:0, flags:0
+physical segments used:
+  addr: 0x1040c1000 iova: 0x1040c1000 len: 0x1000 pagesz: 0x1000
+  addr: 0x1040c2000 iova: 0x1040c2000 len: 0x1000 pagesz: 0x1000
+  addr: 0x1040c3000 iova: 0x1040c3000 len: 0x1000 pagesz: 0x1000
+  addr: 0x1040c4000 iova: 0x1040c4000 len: 0x1000 pagesz: 0x1000
+Zone 3: name:<extra1>, len:0x40, virt:0x1040c5ec0, socket_id:0, flags:0
+physical segments used:
+  addr: 0x1040c5000 iova: 0x1040c5000 len: 0x1000 pagesz: 0x1000
+Total Memory Zones size = 0M
+[exit code 0]
+
+=================== 5. heap_events (deep dive): mem events, validator, external heap ===================
+--- 5a. dynamic hugepage memory, nothing pinned
+$ ./heap_events -l 0 --no-pci --huge-unlink --file-prefix=ch04-ev
+EAL: Multi-process socket /var/run/dpdk/ch04-ev/mp_socket
+EAL: Selected IOVA mode 'PA'
+A. memory event callbacks
+  rte_mem_event_callback_register = 0
+  heap 0 size at start:                       2 MB
+  rte_zmalloc(5 MB):
+    [mem event] ALLOC addr=0x100400000 len=6144 KB
+  heap 0 size after 5 MB:                     8 MB
+  rte_free(5 MB):
+    [mem event] FREE  addr=0x100400000 len=6144 KB
+  heap 0 size after free:                     2 MB
+
+B. allocation validator, limit 16 MB on socket 0
+  rte_mem_alloc_validator_register = 0
+  rte_malloc(24 MB):
+    [validator] socket 0: growing to 28 MB would pass the 16 MB limit -> deny
+  -> NULL (denied or no memory)
+
+C. external heap on 4 MB of mmap()ed memory
+  rte_malloc_heap_create = 0
+  rte_malloc_heap_memory_add(4 MB, page 4K, no IOVAs):
+    [mem event] ALLOC addr=0x7f3067800000 len=4096 KB
+    = 0
+  heap socket id = 256, external = 1
+  rte_malloc_socket(1000, socket 256) = 0x7f3067bffc00, inside our mmap: yes
+  rte_malloc_virt2iova = 0xffffffffffffffff (RTE_BAD_IOVA: no IOVA given)
+  remove memory + destroy heap:
+    [mem event] FREE  addr=0x7f3067800000 len=4096 KB
+    = 0
+[exit code 0]
+--- 5b. -m 16 pins 16 MB: the 5 MB block fits, no events
+$ ./heap_events -l 0 --no-pci -m 16 --huge-unlink --file-prefix=ch04-ev
+EAL: Multi-process socket /var/run/dpdk/ch04-ev/mp_socket
+EAL: Selected IOVA mode 'PA'
+A. memory event callbacks
+  rte_mem_event_callback_register = 0
+  heap 0 size at start:                      16 MB
+  rte_zmalloc(5 MB):
+  heap 0 size after 5 MB:                    16 MB
+  rte_free(5 MB):
+  heap 0 size after free:                    16 MB
+
+B. allocation validator, limit 16 MB on socket 0
+  rte_mem_alloc_validator_register = 0
+  rte_malloc(24 MB):
+    [validator] socket 0: growing to 42 MB would pass the 16 MB limit -> deny
+  -> NULL (denied or no memory)
+
+C. external heap on 4 MB of mmap()ed memory
+  rte_malloc_heap_create = 0
+  rte_malloc_heap_memory_add(4 MB, page 4K, no IOVAs):
+    [mem event] ALLOC addr=0x7f6532200000 len=4096 KB
+    = 0
+  heap socket id = 256, external = 1
+  rte_malloc_socket(1000, socket 256) = 0x7f65325ffc00, inside our mmap: yes
+  rte_malloc_virt2iova = 0xffffffffffffffff (RTE_BAD_IOVA: no IOVA given)
+  remove memory + destroy heap:
+    [mem event] FREE  addr=0x7f6532200000 len=4096 KB
+    = 0
+[exit code 0]
+--- 5c. --no-huge: memory is not dynamic -> ENOTSUP
+$ ./heap_events -l 0 --no-pci --no-huge -m 64 --file-prefix=ch04-ev
+EAL: Multi-process socket /var/run/dpdk/ch04-ev/mp_socket
+EAL: Selected IOVA mode 'VA'
+A. memory event callbacks
+  rte_mem_event_callback_register = -1, rte_errno=Operation not supported
+  -> this memory mode is not dynamic: pages are never mapped/unmapped at run time
+  heap 0 size at start:                      64 MB
+  rte_zmalloc(5 MB):
+  heap 0 size after 5 MB:                    64 MB
+  rte_free(5 MB):
+  heap 0 size after free:                    64 MB
+
+B. allocation validator, limit 16 MB on socket 0
+  rte_mem_alloc_validator_register = -1, rte_errno=Operation not supported
+  rte_malloc(24 MB):
+  -> allocated
+
+C. external heap on 4 MB of mmap()ed memory
+  rte_malloc_heap_create = 0
+  rte_malloc_heap_memory_add(4 MB, page 4K, no IOVAs):
+    = 0
+  heap socket id = 256, external = 1
+  rte_malloc_socket(1000, socket 256) = 0x7fbfaefffc00, inside our mmap: yes
+  rte_malloc_virt2iova = 0xffffffffffffffff (RTE_BAD_IOVA: no IOVA given)
+  remove memory + destroy heap:
+    = 0
+[exit code 0]
+--- 5d. --legacy-mem: all memory mapped at init -> ENOTSUP
+$ ./heap_events -l 0 --no-pci --legacy-mem -m 16 --file-prefix=ch04-ev
+EAL: Multi-process socket /var/run/dpdk/ch04-ev/mp_socket
+EAL: Selected IOVA mode 'PA'
+A. memory event callbacks
+  rte_mem_event_callback_register = -1, rte_errno=Operation not supported
+  -> this memory mode is not dynamic: pages are never mapped/unmapped at run time
+  heap 0 size at start:                      16 MB
+  rte_zmalloc(5 MB):
+  heap 0 size after 5 MB:                    16 MB
+  rte_free(5 MB):
+  heap 0 size after free:                    16 MB
+
+B. allocation validator, limit 16 MB on socket 0
+  rte_mem_alloc_validator_register = -1, rte_errno=Operation not supported
+  rte_malloc(24 MB):
+  -> NULL (denied or no memory)
+
+C. external heap on 4 MB of mmap()ed memory
+  rte_malloc_heap_create = 0
+  rte_malloc_heap_memory_add(4 MB, page 4K, no IOVAs):
+    = 0
+  heap socket id = 256, external = 1
+  rte_malloc_socket(1000, socket 256) = 0x7f3f64bffc00, inside our mmap: yes
+  rte_malloc_virt2iova = 0xffffffffffffffff (RTE_BAD_IOVA: no IOVA given)
+  remove memory + destroy heap:
+    = 0
+[exit code 0]
+  hugepage files left by the legacy run (no --huge-unlink): 8
+
+=================== 6. extmem_dma (deep dive): rte_extmem_register + rte_dev_dma_map ===================
+$ ./extmem_dma -l 0 --no-pci --no-huge -m 128 --file-prefix=ch04-xdma --log-level=lib.vhost.*:warning --log-level=pmd.net.virtio.*:warning --vdev=net_vhost0,iface=$PWD/x.sock --vdev=net_null0 -- net_virtio_user0,path=$PWD/x.sock
+EAL: Multi-process socket /var/run/dpdk/ch04-xdma/mp_socket
+EAL: Selected IOVA mode 'VA'
+configure port 0 (creates the socket) = 0
+VIRTIO_DRIVER: virtio_user_dev_init_mac(): ($PWD/x.sock) No valid MAC in devargs or device, use random
+rte_dev_probe("net_virtio_user0...") = 0
+IOVA mode VA, 3 ports
+external region va=0x7f7563800000 len=2048 KB, iova used=0x7f7563800000
+
+step 0: rte_dev_dma_map BEFORE registering the memory
+  port 0 net_vhost0        driver=net_vhost        bus=vdev
+    not registered:                rte_dev_dma_map = -1  rte_errno=22 Invalid argument
+  port 1 net_null0         driver=net_null         bus=vdev
+    not registered:                rte_dev_dma_map = -1  rte_errno=22 Invalid argument
+  port 2 net_virtio_user0  driver=net_virtio_user  bus=vdev
+    not registered:                rte_dev_dma_map = -1  rte_errno=22 Invalid argument
+
+step 1: rte_extmem_register = 0, rte_mem_virt2memseg_list(va) = found (external list)
+
+step 2: rte_dev_dma_map AFTER registering
+  port 0
+    registered:                    rte_dev_dma_map =  0  rte_errno=0  (success)
+    len = 0:                       rte_dev_dma_map = -1  rte_errno=95 Operation not supported
+    undo:                          rte_dev_dma_unmap = 0
+  port 1
+    registered:                    rte_dev_dma_map =  0  rte_errno=0  (success)
+    len = 0:                       rte_dev_dma_map = -1  rte_errno=95 Operation not supported
+    undo:                          rte_dev_dma_unmap = 0
+  port 2
+    registered:                    rte_dev_dma_map =  0  rte_errno=0  (success)
+    len = 0:                       rte_dev_dma_map = -1  rte_errno=95 Operation not supported
+    undo:                          rte_dev_dma_unmap = 0
+
+step 3: rte_extmem_unregister = 0
+    after unregister:              rte_dev_dma_map = -1  rte_errno=22 Invalid argument
+EAL: Some interrupt handle is leaking an event FD: 18 (index 0)
+[exit code 0]
+
+=================== 7. startup_errors.sh: the startup-error catalogue -> errors.tsv ===================
+
+---- [E1] phase: 1 parse arguments
+$ timeout -s INT -k 5 10 ./hello_memory -l 7 --no-pci --no-huge -m 16 --file-prefix=ch04-err-l 
+  EAL: lcore 7 unavailable
+  EAL: No valid lcores in core list
+  EAL: invalid coremask or core-list parameter, please check specified cores are part of 0-3
+  EAL: Error parsing command line arguments.
+  rte_eal_init failed: Invalid argument
+
+---- [E2] phase: 1 parse arguments
+$ timeout -s INT -k 5 10 ./hello_memory -l 0 --no-pci --no-huge --memory=16 --file-prefix=ch04-err-opt 
+  ARGPARSE: unknown argument --memory=16!
+
+---- [E3] phase: 2 config and lock
+$ timeout -s INT -k 5 10 ./hello_memory -l 1 --no-pci -m 16 --file-prefix=ch04-err-dup 
+  EAL: Cannot create lock on '/var/run/dpdk/ch04-err-dup/config'. Is another primary process running?
+  EAL: Cannot init config
+  rte_eal_init failed: Success
+
+---- [E4] phase: 5 hugepage info
+$ timeout -k 5 15 unshare -m sh -c mount --make-rprivate / && mount --bind $SCR/fakesys/g /sys/kernel/mm/hugepages/hugepages-2048kB && mount --bind $SCR/fakesys/n /sys/devices/system/node/node0/hugepages/hugepages-2048kB && timeout -s INT -k 5 10 ./hello_memory -l 0 --no-pci --file-prefix=ch04-err-nofree 
+  EAL: Multi-process socket /var/run/dpdk/ch04-err-nofree/mp_socket
+  EAL: Selected IOVA mode 'PA'
+  EAL: No free 2048 kB hugepages reported on node 0
+  EAL: Cannot get hugepage information.
+  rte_eal_init failed: Permission denied
+
+---- [E5] phase: 6 memory init
+$ timeout -s INT -k 5 10 ./hello_memory -l 0 --no-pci -m 99999 --file-prefix=ch04-err-big 
+  EAL: Multi-process socket /var/run/dpdk/ch04-err-big/mp_socket
+  EAL: Selected IOVA mode 'PA'
+  EAL: Not enough memory available! Requested: 99999MB, available: 2048MB
+  EAL: Cannot init memory
+  rte_eal_init failed: Cannot allocate memory
+
+---- [E6] phase: 6 memory init
+$ timeout -s INT -k 5 10 ./hello_memory -l 0 --no-pci -m 128 --huge-dir $SCR/hugemnt --file-prefix=ch04-err-hd 
+  EAL: Multi-process socket /var/run/dpdk/ch04-err-hd/mp_socket
+  EAL: Selected IOVA mode 'PA'
+  EAL: Cannot init memory
+  rte_eal_init failed: Cannot allocate memory
+  (with --log-level=lib.eal:debug:)
+  EAL: alloc_seg(): mmap() failed: Cannot allocate memory
+  EAL: attempted to allocate 64 segments, but only 32 were allocated
+
+---- [E7] phase: 6 memory init
+$ timeout -s INT -k 5 10 ./hello_memory -l 0 --no-pci --numa-mem 0,32 --file-prefix=ch04-err-numa 
+  EAL: Multi-process socket /var/run/dpdk/ch04-err-numa/mp_socket
+  EAL: Selected IOVA mode 'PA'
+  EAL: Not enough memory available on socket 1! Requested: 32MB, available: 0MB
+  EAL: Cannot init memory
+  rte_eal_init failed: Cannot allocate memory
+
+---- [E8] phase: 4 IOVA mode
+$ timeout -s INT -k 5 10 ./hello_memory -l 0 --no-pci --no-huge -m 16 --iova-mode=pa --file-prefix=ch04-err-iova 
+  EAL: Multi-process socket /var/run/dpdk/ch04-err-iova/mp_socket
+  EAL: Cannot use IOVA as 'PA' since physical addresses are not available
+  rte_eal_init failed: Invalid argument
+
+---- [E9] phase: after init (rte_malloc_socket)
+$ ./hello_memory -l 0 --no-pci -m 16 --file-prefix=ch04-err-sock   (only the NUMA lines)
+    rte_malloc_socket(..., socket 1) = NULL  rte_errno=0 (not set by rte_malloc)
+
+==== errors.tsv (9 rows): id | phase | key line
+  E1  | 1 parse arguments             | EAL: lcore 7 unavailable
+  E2  | 1 parse arguments             | ARGPARSE: unknown argument --memory=16!
+  E3  | 2 config and lock             | EAL: Cannot create lock on '/var/run/dpdk/ch04-err-dup/config'. Is another primary process running?
+  E4  | 5 hugepage info               | EAL: No free 2048 kB hugepages reported on node 0
+  E5  | 6 memory init                 | EAL: Not enough memory available! Requested: 99999MB, available: 2048MB
+  E6  | 6 memory init                 | EAL: Cannot init memory
+  E7  | 6 memory init                 | EAL: Not enough memory available on socket 1! Requested: 32MB, available: 0MB
+  E8  | 4 IOVA mode                   | EAL: Cannot use IOVA as 'PA' since physical addresses are not available
+  E9  | after init (allocation)       | rte_malloc_socket(..., socket 1) = NULL  rte_errno=0 (not set by rte_malloc)
+hugepage files left by this script: 0
+
+=================== 8. exercise solutions ===================
+--- Exercise 1: overhead of 100 x 1 KB
+$ ./solutions/overhead -l 0 --no-pci --no-huge -m 64 --file-prefix=ch04-ex1
+EAL: Multi-process socket /var/run/dpdk/ch04-ex1/mp_socket
+EAL: Selected IOVA mode 'VA'
+100 x rte_malloc(1024): heap_allocsz grew by 115200 bytes
+  per object: 1152 bytes = 1024 usable + 128 overhead (12.5%)
+  alloc_count 1 -> 101, free elements 1 -> 1
+  neighbours are 1152 bytes apart
+[exit code 0]
+--- Exercise 2: -m is a floor, --numa-limit is a cap
+$ ./solutions/no_cap -l 0 --no-pci -m 32 --huge-unlink --file-prefix=ch04-ex2
+EAL: Multi-process socket /var/run/dpdk/ch04-ex2/mp_socket
+EAL: Selected IOVA mode 'PA'
+mapped at start: 32 MB
+rte_malloc(64 MB) = OK
+mapped now:      98 MB
+after rte_free:  32 MB (pages above the -m floor are returned)
+[exit code 0]
+$ ./solutions/no_cap -l 0 --no-pci -m 32 --numa-limit 32 --huge-unlink --file-prefix=ch04-ex2
+EAL: Multi-process socket /var/run/dpdk/ch04-ex2/mp_socket
+EAL: Selected IOVA mode 'PA'
+mapped at start: 32 MB
+rte_malloc(64 MB) = NULL
+mapped now:      32 MB
+after rte_free:  32 MB (pages above the -m floor are returned)
+[exit code 0]
+
+=================== done ===================
+hugepage files with prefix ch04-: 0
+runtime dirs /run/dpdk/ch04-*:     0

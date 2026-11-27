@@ -1,0 +1,1 @@
+{"device":"cpu","shape":[2048,2048],"ms":{"coalesced":24.08,"strided":83.09}}

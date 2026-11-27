@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part II Cheat Sheet</title>
+<meta name="description" content="Code-first summary of Part II: masked resets, State signatures, step1/step2 and callbacks, contact and constraint budgets, OverflowType bits, and batched Model fields with set_const.">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="../assets/course.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+  /* cheat-sheet layout: dense cards that stack on phones and do not split when printed */
+  .cs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 14px; margin: 1rem 0 1.4rem; }
+  .cs-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 12px 14px; min-width: 0; }
+  .cs-card > h3 { margin: 0 0 6px; font-size: .98rem; }
+  .cs-card > p { margin: .3rem 0; font-size: .93rem; }
+  .cs-card .code-block { margin: .5rem 0 .2rem; }
+  .cs-card ul { margin: .3rem 0; padding-left: 1.1em; font-size: .93rem; }
+  .cs-more { font-size: .85rem; color: var(--muted); margin: .4rem 0 0; }
+  .cs-table td, .cs-table th { font-size: .9rem; vertical-align: top; }
+  .cs-table code { white-space: nowrap; }
+  .cs-table td.wrap code { white-space: normal; }
+  .cs-pitfalls li { margin-bottom: .45rem; }
+  .cs-pitfalls li strong { color: var(--warn-ink); }
+  .cs-chapters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 6px 18px; padding-left: 0; list-style: none; }
+  .cs-chapters li a { font-weight: 600; }
+  .cs-print { margin-top: 12px; }
+  .cs-cell-p { background: var(--accent-2-soft); color: var(--accent-2-ink); font-weight: 700; text-align: center; }
+  .cs-cell-c { background: var(--accent-soft); color: var(--accent-ink); font-weight: 700; text-align: center; }
+  .cs-cell-n { background: var(--surface-2); color: var(--muted); text-align: center; }
+  .cs-cell-f { outline: 2px dashed var(--warn); outline-offset: -3px; }
+  .cs-yes { color: var(--ok); font-weight: 700; }
+  .cs-no { color: var(--danger-ink); font-weight: 700; }
+  .cs-maybe { color: var(--warn-ink); font-weight: 700; }
+
+  @media print {
+    body { font-size: 10pt; }
+    .hero-actions, .cs-print, .p-stuck { display: none !important; }
+    .cs-card, figure, .table-wrap, .code-block, .callout { break-inside: avoid; }
+    .sec > h2 { break-after: avoid; }
+    .cs-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .layout { padding: 0; }
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="icon-btn toc-toggle" type="button" aria-label="Table of contents">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">Cheat sheet 2 of 6</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Cheat sheet navigation">
+    <a href="cheatsheet-part1.html" class="prev" aria-label="Part I cheat sheet"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">Prev</span></a>
+    <a href="cheatsheet-part3.html" class="next" aria-label="Part III cheat sheet"><span class="lbl">Next</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol data-auto></ol>
+    <p class="toc-progress" aria-live="off"></p>
+  </aside>
+
+  <main id="main" class="content">
+    <header class="chapter-hero">
+      <p class="eyebrow">Reference · Part II cheat sheet</p>
+      <h1>Part II cheat sheet: Driving simulations</h1>
+      <p class="lede">Resets, snapshots, control, the sizing ladder, overflow bits and domain randomization. Dense, printable, and checked against mujoco-warp 4.0.1 and the chapters. Every block
+        links back to the section that teaches it.</p>
+      <div class="hero-meta">
+        <span class="badge level-intermediate">Intermediate</span>
+        <span>Chapters 8-10</span><span class="sep">·</span>
+        <span>Print: about 5 pages</span>
+      </div>
+      <div class="hero-actions cs-print">
+        <button class="btn btn-sm" type="button" onclick="window.print()">Print this sheet</button>
+        <a class="btn btn-sm btn-ghost" href="../index.html#reference">All reference pages</a>
+      </div>
+    </header>
+
+    <section class="recap" aria-labelledby="recap-h">
+      <h2 id="recap-h" data-toc="Chapters">Chapters on this sheet</h2>
+      <ul class="cs-chapters">
+        <li><a href="../chapters/08-resets-state-and-control.html">Ch 8 · Resets, State, Mocap and Control Loops</a></li>
+        <li><a href="../chapters/09-contacts-and-buffer-sizing.html">Ch 9 · Contacts, Constraint Budgets and Overflow</a></li>
+        <li><a href="../chapters/10-domain-randomization.html">Ch 10 · Domain Randomization with Batched Model Fields</a></li>
+      </ul>
+    </section>
+
+    <section class="sec" id="at-a-glance">
+      <h2><span class="sec-num">1</span>Part II at a glance</h2>
+      <p>Part II drives the worlds: reset some of them, snapshot and restore them, feed controls in, size the fixed
+        buffers that contacts and constraint rows live in, read the sticky overflow bits when a buffer runs out, and
+        give each world its own physics.</p>
+      <figure class="fig">
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 760 300" role="img" aria-labelledby="cs2-f1t cs2-f1d" style="min-width:600px">
+            <title id="cs2-f1t">The sizing ladder and the overflow bits</title>
+            <desc id="cs2-f1d">Left: one shared contact pool of naconmax slots, a CCD scratch block no larger than it, and per-world constraint tables of njmax rows. Right: the twelve OverflowType bits with their values, each lit when its buffer runs out.</desc>
+            <text x="12" y="22" class="s-label">Budgets (make_data / put_data keywords)</text>
+            <g class="hot" data-info="<code>naconmax = nconmax * nworld</code> unless you pass <code>naconmax</code>. One pool for all worlds: a busy world can starve the others. Full: BROADPHASE / NARROWPHASE in every world.">
+              <text x="12" y="48" class="s-small s-mono">contact pool: naconmax = nconmax × nworld</text>
+              <rect x="12" y="56" width="440" height="24" rx="4" class="s-box"/>
+              <rect x="14" y="58" width="60" height="20" class="s-w0"/><rect x="74" y="58" width="22" height="20" class="s-w1"/><rect x="96" y="58" width="90" height="20" class="s-w2"/><rect x="186" y="58" width="30" height="20" class="s-w3"/><rect x="216" y="58" width="150" height="20" class="s-w2"/>
+              <line x1="452" y1="50" x2="452" y2="86" class="s-danger-stroke" stroke-width="3"/>
+              <text x="210" y="98" class="s-small">world 2 uses most slots; world 3 has few</text>
+            </g>
+            <g class="hot" data-info="<code>nccdmax</code> / <code>naccdmax</code>: scratch rows for GJK/EPA and multi-contact. Must be &lt;= the contact budget (<code>ValueError</code> otherwise). Full: CCD.">
+              <text x="12" y="124" class="s-small s-mono">CCD scratch: naccdmax ≤ naconmax</text>
+              <rect x="12" y="130" width="220" height="16" rx="4" class="s-accent2-soft"/>
+            </g>
+            <g class="hot" data-info="<code>njmax</code>: a hard per-world cap on constraint rows; <code>d.efc</code> really has an <code>nworld</code> axis. Full: NEFC, rows dropped.">
+              <text x="12" y="172" class="s-small s-mono">efc rows: njmax per world (hard cap)</text>
+              <g>
+                <rect x="12" y="180" width="440" height="16" rx="3" class="s-box"/><rect x="14" y="182" width="200" height="12" class="s-w0"/>
+                <rect x="12" y="200" width="440" height="16" rx="3" class="s-box"/><rect x="14" y="202" width="96" height="12" class="s-w1"/>
+                <rect x="12" y="220" width="440" height="16" rx="3" class="s-box"/><rect x="14" y="222" width="436" height="12" class="s-w2"/>
+                <rect x="12" y="240" width="440" height="16" rx="3" class="s-box"/><rect x="14" y="242" width="40" height="12" class="s-w3"/>
+              </g>
+              <text x="458" y="233" class="s-small s-mono">w2 full → NEFC</text>
+            </g>
+            <g class="hot" data-info="<code>nvmax</code>: compacted awake DOFs on the sleep path, <code>0 &lt;= nvmax &lt;= nv</code>. Full: NVMAX (Ch 21).">
+              <text x="12" y="284" class="s-small s-mono">nvmax ≤ nv (sleep only)  ·  njmax_nnz (sparse J)</text>
+            </g>
+            <g class="hot" data-info="<code>d.overflow</code> is <code>(nworld,)</code> int, a bitmask of <code>mjw.OverflowType</code>. Bits are sticky: only <code>reset_data</code> clears them.">
+              <text x="560" y="22" class="s-label">d.overflow bits</text>
+              <g class="s-small s-mono">
+                <circle cx="566" cy="42" r="6" class="s-danger"/><text x="578" y="46">1 NEFC</text>
+                <circle cx="566" cy="62" r="6" class="s-surface s-line"/><text x="578" y="66">2 NJMAX_NNZ</text>
+                <circle cx="566" cy="82" r="6" class="s-danger"/><text x="578" y="86">4 BROADPHASE</text>
+                <circle cx="566" cy="102" r="6" class="s-danger"/><text x="578" y="106">8 NARROWPHASE</text>
+                <circle cx="566" cy="122" r="6" class="s-surface s-line"/><text x="578" y="126">16 CCD</text>
+                <circle cx="566" cy="142" r="6" class="s-surface s-line"/><text x="578" y="146">32 HFIELD</text>
+                <circle cx="566" cy="162" r="6" class="s-surface s-line"/><text x="578" y="166">64 CONTACT_MATCH</text>
+                <circle cx="566" cy="182" r="6" class="s-surface s-line"/><text x="578" y="186">128 NVMAX</text>
+                <circle cx="566" cy="202" r="6" class="s-surface s-line"/><text x="578" y="206">256 EPA_HORIZON</text>
+                <circle cx="566" cy="222" r="6" class="s-surface s-line"/><text x="578" y="226">512 ITERATIONS</text>
+                <circle cx="566" cy="242" r="6" class="s-surface s-line"/><text x="578" y="246">1024 LS_ITERATIONS</text>
+                <circle cx="566" cy="262" r="6" class="s-surface s-line"/><text x="578" y="266">2048 TACTILE</text>
+              </g>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a part."></div>
+        <figcaption><span class="fig-num">Figure 1.</span>The budgets and the twelve <code>OverflowType</code> bits of the 4.0.1 wheel (values verified with <code>list(mjw.OverflowType)</code>). Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#sizing-parameters">Ch 9 §5</a>, <a href="../chapters/09-contacts-and-buffer-sizing.html#overflow-detection">§7</a>. <span class="badge illustrative">Illustrative fill</span></figcaption>
+      </figure>
+    </section>
+
+    <section class="sec" id="resets">
+      <h2><span class="sec-num">2</span>Resets</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Masked reset</h3>
+          <div class="code-block"><pre><code class="language-python">mjw.reset_data(m, d)                  # every world
+done = wp.zeros(d.nworld, dtype=bool)
+mjw.reset_data(m, d, reset=done)      # only where done[w]
+mjw.forward(m, d)                     # derived data is stale</code></pre></div>
+          <p>Mask: shape <code>(nworld,)</code>, bool or any int dtype; anything else raises <code>ValueError</code>.
+            Writes <code>qpos ← qpos0</code>, mocap ← body pose, <code>eq_active ← eq_active0</code>; zeroes
+            <code>time</code>, <code>qvel</code>, <code>ctrl</code>, <code>act</code>, warmstart, applied forces, sensordata,
+            and clears <code>d.overflow</code> (<a href="../chapters/08-resets-state-and-control.html#reset-data">Ch 8 §1</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Keyframes, one per world</h3>
+          <div class="code-block"><pre><code class="language-python">mjw.reset_data_keyframe(m, d, 0)        # int: all worlds, must be valid
+keys = wp.array(np.array([0, 1, -1, 1], np.int32))
+mjw.reset_data_keyframe(m, d, keys)     # -1 (out of range): skip world
+mjw.forward(m, d)</code></pre></div>
+          <p><a href="../chapters/08-resets-state-and-control.html#keyframes">Ch 8 §2</a>; why <code>forward</code> after a reset: <a href="../chapters/08-resets-state-and-control.html#stale">§3</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="snapshots">
+      <h2><span class="sec-num">3</span>Snapshots and State signatures</h2>
+      <div class="code-block"><pre><code class="language-python">sig = int(mjw.State.PHYSICS | mjw.State.WARMSTART)
+buf = wp.zeros((d.nworld, mujoco.mj_stateSize(mjm, sig)), dtype=float)  # size is NOT checked
+mjw.get_state(m, d, buf, sig)            # Data -> buf, components in BIT order
+mjw.set_state(m, d, buf, sig)            # buf -> Data
+mjw.set_state(m, d, buf, sig, active)    # only where the bool mask active[w]</code></pre></div>
+      <div class="table-wrap"><table class="cs-table">
+        <thead><tr><th>Composite</th><th>Value</th><th>Bits</th><th>Use it for</th></tr></thead>
+        <tbody>
+          <tr><td><code>PHYSICS</code></td><td class="num">16414</td><td>QPOS 2, QVEL 4, ACT 8, HISTORY 16, PLASTIC 16384 (<strong>no TIME</strong>, despite the docstring)</td><td>MPC / CEM rollouts; add <code>TIME</code> (1) if anything reads <code>d.time</code></td></tr>
+          <tr><td><code>+ WARMSTART</code></td><td class="num">32</td><td><code>qacc_warmstart</code></td><td>bitwise replays (without it, replays differ in about the 8th digit)</td></tr>
+          <tr><td><code>FULLPHYSICS</code></td><td class="num">24607</td><td>TIME | PHYSICS | PLUGIN (PLUGIN unsupported, 0 floats)</td><td>physics plus clock</td></tr>
+          <tr><td><code>USER</code></td><td class="num">8128</td><td>CTRL, QFRC_APPLIED, XFRC_APPLIED, EQ_ACTIVE, MOCAP_POS, MOCAP_QUAT, USERDATA</td><td>the inputs you set</td></tr>
+          <tr><td><code>INTEGRATION</code></td><td class="num">32767</td><td>all 15 bits</td><td>everything</td></tr>
+        </tbody>
+      </table></div>
+      <p class="cs-more">Owner: <a href="../chapters/08-resets-state-and-control.html#state">Ch 8 §4</a>. Bitwise restarts on a GPU also need determinism: <a href="cheatsheet-part5.html#determinism">Part V sheet</a>.</p>
+    </section>
+
+    <section class="sec" id="control">
+      <h2><span class="sec-num">4</span>Control, mocap and equalities</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>step1 / policy / step2</h3>
+          <div class="code-block"><pre><code class="language-python">mjw.step1(m, d)        # position + velocity, sensors fresh
+policy(d.sensordata, d.ctrl)   # your kernel writes d.ctrl
+mjw.step2(m, d)        # actuation, solve, integrate</code></pre></div>
+          <p>Under RK4, <code>step2</code> integrates with Euler (<a href="../chapters/08-resets-state-and-control.html#step1-step2">Ch 8 §7</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Control callback (works inside a graph)</h3>
+          <div class="code-block"><pre><code class="language-python">def control(m, d):
+    wp.launch(pd_control, dim=d.nworld,
+              inputs=[d.sensordata, 0.0, 20.0, 2.0],
+              outputs=[d.ctrl])
+m.callback.control = control
+mjw.step(m, d)          # runs after sensor_vel, before actuation</code></pre></div>
+          <p>Python side effects run once at capture. Under RK4 it runs 4 times per step, 3 with stale sensors (<a href="../chapters/08-resets-state-and-control.html#callbacks">Ch 8 §9</a>). Catalogue of all 7 slots: <a href="cheatsheet-part6.html#extending">Part VI sheet</a>.</p>
+        </div>
+        <div class="cs-card">
+          <h3>Per-world inputs</h3>
+          <ul>
+            <li><code>d.mocap_pos (nworld, nmocap) vec3</code>, <code>d.mocap_quat</code>: read by kinematics (<a href="../chapters/08-resets-state-and-control.html#mocap">Ch 8 §5</a>).</li>
+            <li><code>d.eq_active (nworld, neq) bool</code>: switch equality rows per world (<a href="../chapters/08-resets-state-and-control.html#eq-active">Ch 8 §6</a>).</li>
+            <li><code>ctrlrange</code> clamps inside <code>_actuator_force</code>; <code>d.ctrl</code> keeps the raw value (<a href="../chapters/08-resets-state-and-control.html#ctrl-clamp">Ch 8 §8</a>).</li>
+          </ul>
+        </div>
+        <div class="cs-card">
+          <h3>Device-side auto-reset</h3>
+          <div class="code-block"><pre><code class="language-python">mjw.step(m, d)
+wp.launch(done_kernel, dim=d.nworld, ...)  # task done / timeout
+nonfinite_reset(m, d, done)               # NaN guard (my_env)
+mjw.reset_data(m, d, reset=done)
+wp.launch(randomize, dim=d.nworld, ...)   # in place
+mjw.forward(m, d)                         # unconditional: graph-safe</code></pre></div>
+          <p>MJWarp has no <code>mj_checkPos</code>/<code>mj_checkVel</code> and no auto-reset: add the guard (<a href="../chapters/08-resets-state-and-control.html#auto-reset">Ch 8 §10</a>). Worlds as parallel rollouts for MPC: <a href="../chapters/08-resets-state-and-control.html#mpc">§11</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="sizing">
+      <h2><span class="sec-num">5</span>The sizing ladder</h2>
+      <div class="table-wrap"><table class="cs-table">
+        <thead><tr><th>Keyword</th><th>Counts</th><th>Per</th><th>Default</th><th>Bit when full</th></tr></thead>
+        <tbody>
+          <tr><td><code>nconmax</code></td><td>contact slots</td><td>world, only to size the pool</td><td><code>_default_nconmax(mjm)</code></td><td>BROADPHASE / NARROWPHASE</td></tr>
+          <tr><td><code>naconmax</code></td><td>contact slots</td><td>all worlds (wins over nconmax)</td><td><code>nconmax * nworld</code></td><td>BROADPHASE / NARROWPHASE</td></tr>
+          <tr><td><code>nccdmax</code> / <code>naccdmax</code></td><td>GJK/EPA scratch rows</td><td>world / all</td><td>the contact budget; must be ≤ it</td><td>CCD</td></tr>
+          <tr><td><code>njmax</code></td><td>constraint rows</td><td>world (hard cap)</td><td><code>_default_njmax(mjm)</code></td><td>NEFC</td></tr>
+          <tr><td><code>njmax_nnz</code></td><td>non-zeros of sparse J</td><td>world</td><td>sparse: heuristic; dense: <code>njmax * nv</code></td><td>NJMAX_NNZ</td></tr>
+          <tr><td><code>nvmax</code></td><td>compacted awake DOFs</td><td>world</td><td><code>nv</code>; must be in [0, nv]</td><td>NVMAX</td></tr>
+        </tbody>
+      </table></div>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>The defaults (io.py, 4.0.1)</h3>
+          <div class="code-block"><pre><code class="language-python">nconmax = max(nv*0.35*(nhfield&gt;0)*10 + 45, 256*has_flex, 64*has_sdf, ncon)
+njmax   = max(nv*2.26*(nhfield&gt;0)*18 + 53, 512*has_flex, 256*has_sdf, nefc)
+# rounded up to the ladder 16, 24, 32, 48, 64, 96, 128, ... 8192
+LADDER = [(2 + k % 2) * 2 ** (k // 2 + 3) for k in range(19)]</code></pre></div>
+          <p>So every rigid model without heightfield, flex or SDF gets <strong>nconmax=48, njmax=64</strong>, a ball and
+            a humanoid alike. A 6-box tower needs 96 rows and overflows the default.</p>
+        </div>
+        <div class="cs-card">
+          <h3>Recipe</h3>
+          <ol>
+            <li>Roll out with generous budgets; record per world the max contacts (<code>np.bincount(contact.worldid)</code>) and the max <code>nefc</code>.</li>
+            <li>Add 25% (more if DR can make scenes denser).</li>
+            <li>Round up to the ladder.</li>
+            <li>Check <code>d.overflow.numpy().any()</code> in the real run.</li>
+          </ol>
+          <p>Rows per contact: <code>2(condim-1)</code> pyramidal, <code>condim</code> elliptic. Memory: dense
+            <code>efc.J</code> is <code>nworld × njmax_pad × nv_pad</code> floats (<code>njmax_pad = round_up(njmax, 16)</code>).
+            <a href="../chapters/09-contacts-and-buffer-sizing.html#sizing-recipe">Ch 9 §8</a>, <a href="../chapters/09-contacts-and-buffer-sizing.html#oversizing-cost">§9</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="overflow">
+      <h2><span class="sec-num">6</span>Overflow bits: decode and fix</h2>
+      <div class="code-block"><pre><code class="language-python">ov = d.overflow.numpy()                                   # (nworld,) int, sticky
+for w in np.nonzero(ov)[0]:
+    print(w, [b.name for b in mjw.OverflowType if ov[w] &amp; b])   # Python &gt;= 3.11: single bits only
+m.opt.warn_overflow = 0     # silence the printf (a recompile); the bits are still set</code></pre></div>
+      <div class="table-wrap"><table class="cs-table">
+        <thead><tr><th>Bit</th><th class="num">Value</th><th>Set in (4.0.1)</th><th>Means / fix</th></tr></thead>
+        <tbody>
+          <tr><td>NEFC</td><td class="num">1</td><td><code>forward.py</code> (end of step)</td><td>this world's <code>nefc &gt; njmax</code>; rows dropped. Raise <code>njmax</code>.</td></tr>
+          <tr><td>NJMAX_NNZ</td><td class="num">2</td><td><code>constraint.py</code></td><td>sparse J ran out of non-zeros. Raise <code>njmax_nnz</code>.</td></tr>
+          <tr><td>BROADPHASE</td><td class="num">4</td><td><code>forward.py</code>, <code>collision_flex.py</code></td><td>global <code>ncollision &gt; naconmax</code>: set in <em>every</em> world. Raise <code>nconmax</code>/<code>naconmax</code>.</td></tr>
+          <tr><td>NARROWPHASE</td><td class="num">8</td><td><code>forward.py</code>, <code>collision_flex.py</code></td><td>global <code>nacon &gt; naconmax</code>: every world. Raise the contact budget.</td></tr>
+          <tr><td>CCD</td><td class="num">16</td><td><code>collision_convex.py</code>, flex</td><td>GJK/EPA scratch exhausted. Raise <code>nccdmax</code> (Ch 17).</td></tr>
+          <tr><td>HFIELD</td><td class="num">32</td><td><code>collision_convex.py</code></td><td>50-slot prism candidate buffer full; coarser grid under big geoms (Ch 18).</td></tr>
+          <tr><td>CONTACT_MATCH</td><td class="num">64</td><td><code>sensor.py</code></td><td>contact sensor matches beyond <code>opt.contact_sensor_maxmatch</code> (64).</td></tr>
+          <tr><td>NVMAX</td><td class="num">128</td><td><code>island.py</code></td><td>awake DOFs &gt; <code>nvmax</code> (sleep path only, Ch 21).</td></tr>
+          <tr><td>EPA_HORIZON</td><td class="num">256</td><td><code>collision_gjk.py</code></td><td>EPA horizon longer than 24 edges (Ch 17).</td></tr>
+          <tr><td>ITERATIONS</td><td class="num">512</td><td><code>solver.py</code></td><td>solver hit <code>opt.iterations</code> before converging (Ch 20).</td></tr>
+          <tr><td>LS_ITERATIONS</td><td class="num">1024</td><td><code>solver.py</code></td><td>linesearch hit <code>opt.ls_iterations</code> (Ch 20).</td></tr>
+          <tr><td>TACTILE</td><td class="num">2048</td><td><code>sensor.py</code></td><td>tactile sensor collision pairs overflowed.</td></tr>
+        </tbody>
+      </table></div>
+      <p class="cs-more">Starvation in the shared pool: <a href="../chapters/09-contacts-and-buffer-sizing.html#starvation">Ch 9 §6</a>. Masking warnings: <a href="../chapters/09-contacts-and-buffer-sizing.html#warn-overflow">§10</a>. <code>my_env.describe_overflow(d)</code> is the running-project decoder.</p>
+    </section>
+
+    <section class="sec" id="contacts">
+      <h2><span class="sec-num">7</span>Reading contacts</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Pool, normal, rows</h3>
+          <ul>
+            <li><code>n = min(d.nacon.numpy()[0], d.naconmax)</code>, slice <code>[:n]</code>, filter by <code>contact.worldid</code>.</li>
+            <li><code>geom[0]</code> has the lower GeomType; <code>frame[0]</code> (the normal) points from geom[0] to geom[1] (<a href="../chapters/09-contacts-and-buffer-sizing.html#normal-convention">Ch 9 §3</a>).</li>
+            <li><code>contact.efc_address</code> gives the first row; not every contact is a constraint: check the ContactType bits (<a href="../chapters/09-contacts-and-buffer-sizing.html#contact-type">Ch 9 §11</a>).</li>
+          </ul>
+        </div>
+        <div class="cs-card">
+          <h3>Contact forces from rows</h3>
+          <div class="code-block"><pre><code class="language-python">ids = wp.array(np.arange(n, dtype=np.int32))
+f = wp.zeros(n, dtype=wp.spatial_vector)
+mjw.contact_force(m, d, ids, False, f)   # to_world_frame=False: contact frame</code></pre></div>
+          <p class="cs-more"><a href="../chapters/09-contacts-and-buffer-sizing.html#cones-rows-forces">Ch 9 §4</a></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="randomization">
+      <h2><span class="sec-num">8</span>Domain randomization</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Method 2: allocate, edit in place (graph friendly)</h3>
+          <div class="code-block"><pre><code class="language-python">m = mjw.put_model(mjm, batch_sizes={"geom_friction": nworld})
+fr = m.geom_friction.numpy()                 # (nworld, ngeom, 3)
+fr[:, :, 0] = np.linspace(0.1, 1.0, nworld)[:, None]
+m.geom_friction.assign(fr)                   # same device array</code></pre></div>
+          <p>Keys must be top-level <code>"*"</code> Model fields; <code>"opt.timestep"</code>, <code>geom_type</code> or <code>nbody</code> raise <code>ValueError</code>.</p>
+        </div>
+        <div class="cs-card">
+          <h3>Method 1: replace (the only way for <code>m.opt</code>)</h3>
+          <div class="code-block"><pre><code class="language-python">m.opt.gravity = wp.array(g_per_world, dtype=wp.vec3)  # (nworld,)
+m.opt.timestep = wp.array(np.full(nworld, 0.002), dtype=float)
+# replace BEFORE capturing a graph; after capture only assign</code></pre></div>
+          <p>12 <code>m.opt</code> arrays are <code>"*"</code>. Replaced arrays lose the <code>_is_batched</code> tag (<a href="../chapters/10-domain-randomization.html#opt-arrays">Ch 10 §9</a>).</p>
+        </div>
+      </div>
+      <div class="table-wrap"><table class="cs-table">
+        <thead><tr><th>You change</th><th>How</th><th>Then</th></tr></thead>
+        <tbody>
+          <tr><td>gravity, timestep, density, wind, viscosity</td><td>replace <code>m.opt.x</code></td><td>nothing (density/viscosity/wind must be non-zero in the XML so <code>has_fluid</code> is set)</td></tr>
+          <tr><td>friction, solref, solimp, margin, damping, gear, gain, colours</td><td><code>batch_sizes</code> + assign, or a kernel</td><td>nothing</td></tr>
+          <tr><td><code>geom_size</code></td><td>batch with <code>geom_rbound</code>, <code>geom_aabb</code></td><td><code>set_const(m, d, groups=mjw.SetConstGroup.FIXED)</code></td></tr>
+          <tr><td><code>body_mass</code> (+ inertia)</td><td>batch with <code>body_subtreemass</code>, <code>body_invweight0</code>, <code>dof_invweight0</code>, <code>actuator_acc0</code></td><td><code>set_const(m, d)</code> (ALL)</td></tr>
+          <tr><td>gear or ranges of muscles</td><td>batch <code>actuator_lengthrange</code> to nworld</td><td><code>set_length_range</code>, and INERT0 for acc0</td></tr>
+          <tr><td>qpos0 / cameras, lights, eq_data / inertia, armature</td><td>batch the field and its derived outputs</td><td>KIN0|INERT0 / KIN0 / INERT0</td></tr>
+        </tbody>
+      </table></div>
+      <div class="callout pitfall"><p class="callout-title">Pitfall: unbatched derived outputs</p>
+        <p>If you batch <code>body_mass</code> but not its derived outputs, <code>set_const</code> writes one shared row,
+          computed from world 0 for most outputs; geom bounds are written by every world in a race. Batch the
+          derived fields too, and keep <code>set_const</code> outside captured graphs
+          (<a href="../chapters/10-domain-randomization.html#derived-pitfall">Ch 10 §7</a>, <a href="../chapters/10-domain-randomization.html#set-const">§6</a>).</p></div>
+      <p class="cs-more">What may vary at all: numeric parameters yes; sizes, topology, types, discrete options and host flags no (<a href="../chapters/10-domain-randomization.html#what-batchable">Ch 10 §4</a>). Contact materials mix per contact with friction = max (<a href="../chapters/10-domain-randomization.html#contact-materials">§10</a>). Re-randomize on reset with an in-place kernel (<a href="../chapters/10-domain-randomization.html#rerandomize">§11</a>).</p>
+    </section>
+
+    <section class="sec" id="pitfalls">
+      <h2><span class="sec-num">9</span>Pitfalls</h2>
+      <ul class="cs-pitfalls">
+        <li><strong>Reading after a reset without <code>forward</code></strong> returns pre-reset <code>xpos</code>, sensors and contacts (<a href="../chapters/08-resets-state-and-control.html#stale">Ch 8 §3</a>).</li>
+        <li><strong><code>reset_data</code> zeroes <code>ctrl</code></strong>: write actions after the reset.</li>
+        <li><strong>Undersized state buffers</strong>: <code>get_state</code> does not check the size; allocate with <code>mj_stateSize</code>.</li>
+        <li><strong>PHYSICS has no TIME</strong>: <code>d.time</code> keeps its value after a restore.</li>
+        <li><strong>Overflow is silent physics</strong>: dropped contacts sink, dropped rows explode. The bits are sticky until <code>reset_data</code>.</li>
+        <li><strong><code>nconmax</code> is not a per-world guarantee</strong>: one busy world can starve the rest (<a href="../chapters/09-contacts-and-buffer-sizing.html#starvation">Ch 9 §6</a>).</li>
+        <li><strong>Mass DR without <code>set_const</code></strong> leaves <code>invweight0</code>/<code>acc0</code> at the XML mass; changing an actuator gear from or to zero is unsafe (<a href="../chapters/10-domain-randomization.html#set-const">Ch 10 §6</a>).</li>
+        <li><strong><code>set_length_range</code></strong> overwrites unlimited actuators with (0, 0) and needs a per-world <code>actuator_lengthrange</code> (<a href="../chapters/10-domain-randomization.html#length-range">Ch 10 §8</a>).</li>
+      </ul>
+    </section>
+
+    <section class="sec" id="more-help">
+      <h2><span class="sec-num">10</span>More help</h2>
+      <p class="stuck p-stuck">Stuck? See <a href="troubleshooting.html">Troubleshooting</a> (symptom, cause, fix,
+        owning chapter) or the <a href="course-map.html">course map</a>. Terms are defined in the
+        <a href="glossary.html">glossary</a>; public names and CLI flags are in
+        <a href="api-at-a-glance.html">API at a glance</a>.</p>
+      <p class="small muted">Other cheat sheets: <a href="cheatsheet-part1.html">Part I</a>, <a href="cheatsheet-part3.html">Part III</a>, <a href="cheatsheet-part4.html">Part IV</a>, <a href="cheatsheet-part5.html">Part V</a>, <a href="cheatsheet-part6.html">Part VI</a>.</p>
+    </section>
+
+    <footer class="chapter-footer">
+      <nav class="pager" aria-label="Reference pager">
+        <a class="prev" href="cheatsheet-part1.html"><span class="dir">Previous</span><span class="ttl">Part I cheat sheet</span></a>
+        <a class="index" href="../index.html"><span class="dir">All chapters</span><span class="ttl">Course home</span></a>
+        <a class="next" href="cheatsheet-part3.html"><span class="dir">Next</span><span class="ttl">Part III cheat sheet</span></a>
+      </nav>
+      <p class="site-footer">MuJoCo Warp course · mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1 · source commit 8f5b9f1</p>
+    </footer>
+  </main>
+</div>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/xml.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script defer src="../assets/course.js"></script>
+
+</body>
+</html>

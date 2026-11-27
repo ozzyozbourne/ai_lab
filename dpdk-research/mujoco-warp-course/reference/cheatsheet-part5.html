@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part V Cheat Sheet</title>
+<meta name="description" content="Code-first summary of Part V: efc rows and softness, CG/Newton knobs and their costs, sleep requirements, what m.opt.deterministic does in 4.0.1, and what flex models 4.0.1 accepts.">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="../assets/course.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+  /* cheat-sheet layout: dense cards that stack on phones and do not split when printed */
+  .cs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 14px; margin: 1rem 0 1.4rem; }
+  .cs-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 12px 14px; min-width: 0; }
+  .cs-card > h3 { margin: 0 0 6px; font-size: .98rem; }
+  .cs-card > p { margin: .3rem 0; font-size: .93rem; }
+  .cs-card .code-block { margin: .5rem 0 .2rem; }
+  .cs-card ul { margin: .3rem 0; padding-left: 1.1em; font-size: .93rem; }
+  .cs-more { font-size: .85rem; color: var(--muted); margin: .4rem 0 0; }
+  .cs-table td, .cs-table th { font-size: .9rem; vertical-align: top; }
+  .cs-table code { white-space: nowrap; }
+  .cs-table td.wrap code { white-space: normal; }
+  .cs-pitfalls li { margin-bottom: .45rem; }
+  .cs-pitfalls li strong { color: var(--warn-ink); }
+  .cs-chapters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 6px 18px; padding-left: 0; list-style: none; }
+  .cs-chapters li a { font-weight: 600; }
+  .cs-print { margin-top: 12px; }
+  .cs-cell-p { background: var(--accent-2-soft); color: var(--accent-2-ink); font-weight: 700; text-align: center; }
+  .cs-cell-c { background: var(--accent-soft); color: var(--accent-ink); font-weight: 700; text-align: center; }
+  .cs-cell-n { background: var(--surface-2); color: var(--muted); text-align: center; }
+  .cs-cell-f { outline: 2px dashed var(--warn); outline-offset: -3px; }
+  .cs-yes { color: var(--ok); font-weight: 700; }
+  .cs-no { color: var(--danger-ink); font-weight: 700; }
+  .cs-maybe { color: var(--warn-ink); font-weight: 700; }
+
+  @media print {
+    body { font-size: 10pt; }
+    .hero-actions, .cs-print, .p-stuck { display: none !important; }
+    .cs-card, figure, .table-wrap, .code-block, .callout { break-inside: avoid; }
+    .sec > h2 { break-after: avoid; }
+    .cs-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .layout { padding: 0; }
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="icon-btn toc-toggle" type="button" aria-label="Table of contents">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">Cheat sheet 5 of 6</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Cheat sheet navigation">
+    <a href="cheatsheet-part4.html" class="prev" aria-label="Part IV cheat sheet"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">Prev</span></a>
+    <a href="cheatsheet-part6.html" class="next" aria-label="Part VI cheat sheet"><span class="lbl">Next</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol data-auto></ol>
+    <p class="toc-progress" aria-live="off"></p>
+  </aside>
+
+  <main id="main" class="content">
+    <header class="chapter-hero">
+      <p class="eyebrow">Reference · Part V cheat sheet</p>
+      <h1>Part V cheat sheet: Constraints, solver and soft bodies</h1>
+      <p class="lede">Rows and softness, solver knobs, sleep requirements, the determinism matrix and flex limits. Dense, printable, and checked against mujoco-warp 4.0.1 and the chapters. Every block
+        links back to the section that teaches it.</p>
+      <div class="hero-meta">
+        <span class="badge level-expert">Expert</span>
+        <span>Chapters 19-23</span><span class="sep">·</span>
+        <span>Print: about 6 pages</span>
+      </div>
+      <div class="hero-actions cs-print">
+        <button class="btn btn-sm" type="button" onclick="window.print()">Print this sheet</button>
+        <a class="btn btn-sm btn-ghost" href="../index.html#reference">All reference pages</a>
+      </div>
+    </header>
+
+    <section class="recap" aria-labelledby="recap-h">
+      <h2 id="recap-h" data-toc="Chapters">Chapters on this sheet</h2>
+      <ul class="cs-chapters">
+        <li><a href="../chapters/19-constraints-as-optimization.html">Ch 19 · Constraints as Convex Optimization</a></li>
+        <li><a href="../chapters/20-solvers-cg-newton.html">Ch 20 · The Primal Solvers: CG, Newton and the Exact Linesearch</a></li>
+        <li><a href="../chapters/21-islands-and-sleep.html">Ch 21 · Islands and Sleeping</a></li>
+        <li><a href="../chapters/22-determinism-and-reproducibility.html">Ch 22 · Determinism and Reproducibility</a></li>
+        <li><a href="../chapters/23-soft-bodies-flex-discrete-integrator.html">Ch 23 · Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator</a></li>
+      </ul>
+    </section>
+
+    <div class="mw-breadcrumb" data-sleep data-here="st-make_constraint st-island st-solve"></div>
+
+    <section class="sec" id="at-a-glance">
+      <h2><span class="sec-num">1</span>Part V at a glance: one solve per world</h2>
+      <p>Per world, MJWarp minimizes a convex function of the acceleration:
+        <code>min_a ½(a - a_s)ᵀM(a - a_s) + Σ_i s_i(J_i a - aref_i)</code>. It is not an LCP: there is one minimizer,
+        and at the optimum <code>M q̈ = τ_smooth + Jᵀf</code> exactly (<a href="../chapters/19-constraints-as-optimization.html#gauss">Ch 19 §3</a>).</p>
+      <figure class="fig" data-anim>
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 760 260" role="img" aria-labelledby="cs5-f1t cs5-f1d" style="min-width:600px">
+            <title id="cs5-f1t">The solver loop</title>
+            <desc id="cs5-f1d">make_constraint reserves rows per world. solve starts from qacc_warmstart or qacc_smooth, then loops: exact linesearch, update constraint states, gradient and search direction, stopping tests, until every world is done or the iteration cap is hit. Optional noslip runs afterwards.</desc>
+            <defs><marker id="cs5-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <g class="hot" data-info="<code>make_constraint</code>: rows grouped equality | friction | limit | contact per world; each thread reserves rows with <code>wp.atomic_add(nefc_out, worldid, k)</code>, so contact blocks can come out in any order.">
+              <rect x="10" y="20" width="150" height="104" rx="10" class="s-box"/>
+              <text x="85" y="42" text-anchor="middle" class="s-label">make_constraint</text>
+              <rect x="22" y="54" width="30" height="16" style="fill:var(--efc-eq)"/><rect x="52" y="54" width="18" height="16" style="fill:var(--efc-friction)"/><rect x="70" y="54" width="18" height="16" style="fill:var(--efc-limit)"/><rect x="88" y="54" width="60" height="16" style="fill:var(--efc-contact)"/>
+              <text x="22" y="90" class="s-small">eq | friction | limit</text>
+              <text x="22" y="106" class="s-small">| contact, per world</text>
+            </g>
+            <path d="M162 72 H 200" class="s-accent-stroke" marker-end="url(#cs5-arrow)"/>
+            <g class="hot" data-info="Init: start from <code>qacc_warmstart</code> when warmstart is on and the world has rows, else <code>qacc_smooth</code>; build <code>Jaref</code>, <code>Ma</code>, states, <code>inertia_scale</code>.">
+              <rect x="204" y="40" width="120" height="64" rx="10" class="s-accent-soft"/>
+              <text x="264" y="66" text-anchor="middle" class="s-label">init</text>
+              <text x="264" y="86" text-anchor="middle" class="s-small s-mono">warmstart</text>
+            </g>
+            <path d="M326 72 H 372" class="s-accent-stroke" marker-end="url(#cs5-arrow)"/>
+            <g class="hot" data-info="One iteration: exact linesearch (a Newton probe from 0, then rounds of three probes), constraint state update (SATISFIED / QUADRATIC / CONE...), gradient <code>Ma - qfrc_smooth - qfrc_constraint</code> and direction (CG or Newton).">
+              <rect x="376" y="20" width="200" height="104" rx="12" class="s-box-2"/>
+              <text x="476" y="42" text-anchor="middle" class="s-label">iterate (per world)</text>
+              <text x="390" y="64" class="s-small s-mono">1 linesearch (exact)</text>
+              <text x="390" y="82" class="s-small s-mono">2 constraint states</text>
+              <text x="390" y="100" class="s-small s-mono">3 gradient, direction</text>
+              <text x="390" y="118" class="s-small s-mono">4 stopping tests</text>
+            </g>
+            <path d="M578 110 C 640 150 640 0 578 34" class="s-accent2-stroke anim-flow" marker-end="url(#cs5-arrow)"/>
+            <text x="636" y="80" class="s-small">capture_while</text>
+            <text x="636" y="96" class="s-small s-mono">(nsolving)</text>
+            <g class="hot" data-info="Four stopping tests scaled by 1/tr(M). The loop runs until the slowest world is done: watch the max of <code>solver_niter</code>. Hitting <code>opt.iterations</code> sets ITERATIONS.">
+              <path d="M476 126 V 170" class="s-accent-stroke" marker-end="url(#cs5-arrow)"/>
+              <rect x="376" y="174" width="200" height="70" rx="10" class="s-box"/>
+              <text x="476" y="198" text-anchor="middle" class="s-label">qacc, qfrc_constraint</text>
+              <text x="476" y="218" text-anchor="middle" class="s-small s-mono">efc.force, solver_niter</text>
+            </g>
+            <g class="hot" data-info="<code>opt.noslip_iterations &gt; 0</code>: a noslip pass after the solve removes the creep of soft friction; its sweeps add to <code>solver_niter</code>.">
+              <path d="M578 210 H 610" class="s-line s-dashed" marker-end="url(#cs5-arrow)"/>
+              <rect x="614" y="182" width="136" height="56" rx="10" class="s-box"/>
+              <text x="682" y="206" text-anchor="middle" class="s-label">noslip</text>
+              <text x="682" y="224" text-anchor="middle" class="s-small">optional</text>
+            </g>
+            <g class="hot" data-info="With sleep enabled, island discovery runs inside forward and the awake DOFs are solved in <code>nvmax_pad</code>-wide compact buffers (Ch 21).">
+              <rect x="10" y="160" width="300" height="84" rx="10" class="s-box"/>
+              <text x="22" y="182" class="s-label">sleep path (EnableBit.SLEEP)</text>
+              <text x="22" y="204" class="s-small">islands by lock-free DSU → asleep trees</text>
+              <text x="22" y="222" class="s-small">skip work; awake DOFs compacted ≤ nvmax</text>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle" type="button"></button></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a part."></div>
+        <figcaption><span class="fig-num">Figure 1.</span>Rows → init → iterate until every world is done (<a href="../chapters/20-solvers-cg-newton.html#solve-flow">Ch 20 §2</a>, <a href="../chapters/20-solvers-cg-newton.html#iteration">§4</a>). <span class="badge illustrative">Diagram</span></figcaption>
+      </figure>
+    </section>
+
+    <section class="sec" id="rows">
+      <h2><span class="sec-num">2</span>Rows and softness</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Rows per constraint</h3>
+          <div class="table-wrap"><table class="cs-table">
+            <thead><tr><th>Constraint</th><th>Rows</th></tr></thead>
+            <tbody>
+              <tr><td>contact, pyramidal</td><td><code>2(condim - 1)</code> independent rows <code>n ± μ t</code></td></tr>
+              <tr><td>contact, elliptic</td><td><code>condim</code> coupled rows (SATISFIED / CONE / QUADRATIC zones)</td></tr>
+              <tr><td>CONNECT / WELD</td><td>3 / 6</td></tr>
+              <tr><td>JOINT / TENDON equality</td><td>1 / 1</td></tr>
+              <tr><td>FLEX / FLEXSTRAIN</td><td>1 per edge / a block per cell</td></tr>
+              <tr><td>limit, friction loss</td><td>1 each</td></tr>
+            </tbody>
+          </table></div>
+          <p class="cs-more"><a href="../chapters/19-constraints-as-optimization.html#efc-layout">Ch 19 §4</a>, <a href="../chapters/19-constraints-as-optimization.html#friction">§9</a>, <a href="../chapters/19-constraints-as-optimization.html#equalities">§10</a></p>
+        </div>
+        <div class="cs-card">
+          <h3>From solref/solimp to D and aref</h3>
+          <div class="code-block"><pre><code class="language-python"># _contact_kbimp / _efc_row (constraint.py)
+k = 1 / (dmax**2 * timeconst**2 * dampratio**2)
+b = 2 / (dmax * timeconst)
+timeconst = max(timeconst, 2 * h)     # refsafe, unless DisableBit.REFSAFE
+d = impedance(pos, solimp)            # sigmoid in [dmin, dmax]
+D = d / ((1 - d) * w)                 # efc.D
+aref = -b * vel - k * d * pos         # efc.aref</code></pre></div>
+          <p><code>impratio</code> is stored as <code>opt.impratio_invsqrt</code> (<a href="../chapters/19-constraints-as-optimization.html#softness">Ch 19 §8</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Storage of J</h3>
+          <ul>
+            <li>Dense <code>(nworld, njmax_pad, nv_pad)</code> for <code>nv ≤ 32</code> under <code>jacobian=auto</code>.</li>
+            <li>Sparse CSR <code>(nworld, 1, njmax_nnz)</code> + <code>J_rownnz/J_rowadr/J_colind</code> above; forced dense is refused above nv 60.</li>
+            <li>Use <code>contact.efc_address</code> and <code>efc.id</code>, never assume an order (<a href="../chapters/19-constraints-as-optimization.html#sparse-j">Ch 19 §7</a>, <a href="../chapters/19-constraints-as-optimization.html#make-constraint">§6</a>).</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="solver-knobs">
+      <h2><span class="sec-num">3</span>Solver knobs</h2>
+      <div class="table-wrap"><table class="cs-table">
+        <thead><tr><th>Option</th><th>Default</th><th>Per world?</th><th>Change cost</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code>opt.solver</code></td><td>NEWTON (2)</td><td>no</td><td>recompile, new context arrays</td><td>CG (1) or NEWTON; PGS raises <code>NotImplementedError</code></td></tr>
+          <tr><td><code>opt.cone</code></td><td>PYRAMIDAL (0)</td><td>no</td><td>recompile; changes nefc</td><td>pyramidal or ELLIPTIC (1)</td></tr>
+          <tr><td><code>opt.iterations</code></td><td>100</td><td>no</td><td>no recompile; recapture</td><td>hard cap; ITERATIONS bit</td></tr>
+          <tr><td><code>opt.tolerance</code></td><td>max(MJCF, 1e-6)</td><td>yes</td><td>none</td><td>the four stopping tests</td></tr>
+          <tr><td><code>opt.ls_iterations</code></td><td>50</td><td>no</td><td>recompile of the linesearch</td><td>LS_ITERATIONS bit</td></tr>
+          <tr><td><code>opt.ls_tolerance</code></td><td>0.01</td><td>yes</td><td>none</td><td>scales the linesearch gradient tolerance</td></tr>
+          <tr><td><code>opt.noslip_iterations</code></td><td>0</td><td>no</td><td>recapture (0 ↔ &gt;0 adds launches)</td><td>noslip after the solve</td></tr>
+          <tr><td><code>opt.graph_conditional</code></td><td>True</td><td>no</td><td>recapture</td><td><code>capture_while</code> vs unrolled <code>iterations</code> copies</td></tr>
+          <tr><td><code>opt.run_qacc_smooth</code></td><td>True</td><td>no</td><td>recompile + recapture</td><td>False: experimental warmstarted Newton without M factorization</td></tr>
+          <tr><td><code>DisableBit.WARMSTART</code></td><td>off</td><td>no</td><td>recompile</td><td>start from <code>qacc_smooth</code></td></tr>
+        </tbody>
+      </table></div>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>CG vs Newton</h3>
+          <ul>
+            <li>CG: preconditioned with the factored M, Polak-Ribière β clamped at 0; many cheap iterations; benefits most from warmstart.</li>
+            <li>Newton: factors <code>H = M + JᵀDJ</code> per world (one tile up to nv 48, blocked 16×16 tiles up to 96, sparse beyond); few expensive iterations. Pyramidal Newton updates H by rank-1 terms for flipped rows.</li>
+            <li>Only QUADRATIC rows add to the Hessian.</li>
+          </ul>
+          <p class="cs-more"><a href="../chapters/20-solvers-cg-newton.html#cg">Ch 20 §5</a>, <a href="../chapters/20-solvers-cg-newton.html#newton">§6</a>, <a href="../chapters/20-solvers-cg-newton.html#incremental">§7</a>, <a href="../chapters/20-solvers-cg-newton.html#knobs">§10</a></p>
+        </div>
+        <div class="cs-card">
+          <h3>Measure convergence</h3>
+          <div class="code-block"><pre><code class="language-python">mjw.step(m, d)
+niter = d.solver_niter.numpy()        # (nworld,)
+print(niter.max(), np.percentile(niter, 95))
+hit = d.overflow.numpy() &amp; int(mjw.OverflowType.ITERATIONS)</code></pre></div>
+          <p>The loop waits for the slowest world: cap <code>iterations</code> near the converged count, not below it (<a href="../chapters/20-solvers-cg-newton.html#gpu-scale">Ch 20 §11</a>, <a href="../chapters/20-solvers-cg-newton.html#termination">§9</a>).</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="sleep">
+      <h2><span class="sec-num">4</span>Sleep requirements (4.0.1)</h2>
+      <div class="table-wrap"><table class="cs-table">
+        <thead><tr><th>Requirement</th><th>Otherwise</th></tr></thead>
+        <tbody>
+          <tr><td><code>&lt;flag sleep="enable"/&gt;</code> (<code>EnableBit.SLEEP</code>)</td><td>nothing sleeps; no island discovery in forward</td></tr>
+          <tr><td>do not set <code>&lt;flag island="disable"/&gt;</code></td><td>no error, nothing ever sleeps (and pass <code>nvmax</code> explicitly: the compact buffers are skipped)</td></tr>
+          <tr><td><code>solver="Newton"</code></td><td><code>ValueError</code> from <code>put_model</code></td></tr>
+          <tr><td>body <code>sleep</code> left at <code>auto</code></td><td><code>NotImplementedError</code> for init / never / allowed</td></tr>
+          <tr><td>no flex equality (<code>&lt;edge equality="true"/&gt;</code>)</td><td><code>NotImplementedError</code></td></tr>
+          <tr><td><code>0 ≤ nvmax ≤ nv</code></td><td><code>ValueError</code>; at run time awake DOFs &gt; nvmax set NVMAX</td></tr>
+        </tbody>
+      </table></div>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>States</h3>
+          <ul>
+            <li><code>tree_island</code>: island id per tree, <code>-1</code> for trees with no rows.</li>
+            <li><code>tree_asleep</code>: <code>-11 .. -1</code> awake countdown; <code>≥ 0</code> next tree in a sleep cycle. Ten still steps and a whole island at -1 make a cycle; <code>qvel</code>, <code>qacc</code> become exactly 0.</li>
+            <li>Actuated trees compile to AUTO_NEVER: a robot never sleeps.</li>
+          </ul>
+          <p class="cs-more"><a href="../chapters/21-islands-and-sleep.html#falling-asleep">Ch 21 §5</a>, <a href="../chapters/21-islands-and-sleep.html#requirements">§4</a></p>
+        </div>
+        <div class="cs-card">
+          <h3>Waking and starting asleep</h3>
+          <ul>
+            <li>User changes, contact with awake trees, active equalities and tendons wake a tree; waking one wakes its cycle (<a href="../chapters/21-islands-and-sleep.html#waking">Ch 21 §6</a>).</li>
+            <li>Start asleep: write <code>tree_asleep = arange(ntree)</code> into the host MjData before <code>put_data</code> (<a href="../chapters/21-islands-and-sleep.html#init-asleep">§7</a>).</li>
+            <li><code>mjw.island(m, d)</code> runs discovery on demand.</li>
+            <li>Pays for mostly resting clutter, not always-moving robots; measure on the GPU (<a href="../chapters/21-islands-and-sleep.html#when-it-helps">§10</a>).</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="determinism">
+      <h2><span class="sec-num">5</span>The determinism matrix</h2>
+      <p>Three sources of run-to-run noise on a GPU: contact slots (<code>atomic_add(nacon_out, 0, 1)</code>), efc rows
+        (<code>atomic_add(nefc_out, worldid, k)</code>) and float atomics. In 4.0.1 only <code>ATOMICS</code> does
+        anything: CONTACTS and CONSTRAINT call stubs whose body is <code>pass</code>.</p>
+      <div class="code-block"><pre><code class="language-python">m.opt.deterministic = mjw.DeterminismType.ATOMICS   # 4; True means ALL (7)
+m.opt.deterministic &amp;= ~mjw.DeterminismType.ATOMICS  # stored as a plain int
+# mjwarp-testspeed model.xml -o "opt.deterministic=ATOMICS"   (measure the cost)</code></pre></div>
+      <div class="table-wrap"><table class="cs-table">
+        <thead><tr><th>Scene</th><th>GPU, default</th><th>GPU, ATOMICS</th><th>Warp CPU</th><th>Test with</th></tr></thead>
+        <tbody>
+          <tr><td>no contacts, ≤ 1 active limit / friction-loss / equality row per world</td><td class="cs-no">no</td><td class="cs-yes">bitwise, same GPU model</td><td class="cs-yes">yes</td><td>bitwise compare</td></tr>
+          <tr><td>no contacts, several such rows</td><td class="cs-no">no</td><td class="cs-maybe">observed, not guaranteed (racy row order)</td><td class="cs-yes">yes</td><td>replay or canonical order</td></tr>
+          <tr><td>contacts</td><td class="cs-no">no</td><td class="cs-no">no (slot and row order)</td><td class="cs-yes">yes</td><td>replay technique: record collision + rows, compare up to order</td></tr>
+          <tr><td>restart from a snapshot</td><td colspan="3">needs <code>State.PHYSICS | State.WARMSTART</code> (without it a CPU replay was 0.45 mm off after 100 steps)</td><td>Ch 22 §7</td></tr>
+        </tbody>
+      </table></div>
+      <p class="cs-more">Chaos amplifies one ulp to centimetres (box stack: 6e-8 after 10 steps, 1.8 cm by step 50). Every check passes on CPU because Warp runs threads in order: test on the GPU you care about. <a href="../chapters/22-determinism-and-reproducibility.html#option">Ch 22 §3</a>, <a href="../chapters/22-determinism-and-reproducibility.html#contact-free">§4</a>, <a href="../chapters/22-determinism-and-reproducibility.html#replay">§6</a>, <a href="../chapters/22-determinism-and-reproducibility.html#snapshots">§7</a>, <a href="../chapters/22-determinism-and-reproducibility.html#decide">§9</a>.</p>
+    </section>
+
+    <section class="sec" id="flex">
+      <h2><span class="sec-num">6</span>Soft bodies and the DISCRETE integrator</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>What a flex is</h3>
+          <ul>
+            <li>Vertices (point masses on 3-slider bodies), edges and simplex elements; <code>flexcomp</code> builds them; <code>smooth.flex</code> computes <code>flexvert_xpos</code>, <code>flexedge_length</code>, <code>flexedge_J</code> (<a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#anatomy">Ch 23 §1</a>).</li>
+            <li>Shape kept by edge equalities (rows), elasticity (passive forces) or dim-1 edge springs; cloth elasticity needs <code>elastic2d</code> (<a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#elasticity">§2</a>).</li>
+            <li>Flex contacts are found after rigid ones; a flex side has <code>geom == -1</code> (<a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#collision">§5</a>).</li>
+          </ul>
+        </div>
+        <div class="cs-card">
+          <h3>DISCRETE</h3>
+          <p>Solves <code>(M + hD + h²K) a = f - hKv</code>: <code>eff_build</code> → <code>eff_shift</code> →
+            <code>eff_actuation</code> + <code>regularize_constraint</code> → <code>eff_solve</code> (PCG) → the
+            constraint solve in the same metric. Stable for stiff flexes, dissipative, about 3-4x Euler per step in
+            the CPU run (<a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#discrete">Ch 23 §7</a>, <a href="../chapters/19-constraints-as-optimization.html#discrete">Ch 19 §11</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Refused by 4.0.1</h3>
+          <ul>
+            <li>hfield, SDF or rigid flexes; quadratic interpolation;</li>
+            <li>self-collision and passive contact of interpolated flexes;</li>
+            <li>flex edge equalities with sleep;</li>
+            <li>SNH or passive contact without DISCRETE; elasticity under IMPLICIT/IMPLICITFAST;</li>
+            <li>edge stiffness or noslip under DISCRETE; Newton with general attachments.</li>
+          </ul>
+          <p class="cs-more">Errors come from <code>put_model</code> or <code>forward.py::check_discrete</code> (<a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#refusals">Ch 23 §8</a>).</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="pitfalls">
+      <h2><span class="sec-num">7</span>Pitfalls</h2>
+      <ul class="cs-pitfalls">
+        <li><strong>Row overflow does not raise</strong>: <code>nefc</code> keeps counting past <code>njmax</code>, rows are dropped, NEFC is set (<a href="../chapters/19-constraints-as-optimization.html#make-constraint">Ch 19 §6</a>).</li>
+        <li><strong>Row order means nothing</strong>: read rows through <code>efc.id</code> / <code>contact.efc_address</code>.</li>
+        <li><strong>Lowering <code>iterations</code> below convergence</strong> changes the answer; check the ITERATIONS bit.</li>
+        <li><strong>Changing <code>ls_iterations</code>, <code>solver</code> or <code>cone</code></strong> compiles new kernels; graphs need a recapture.</li>
+        <li><strong>4.0.1 never picks the better start</strong> between warmstart and <code>qacc_smooth</code> (<a href="../chapters/20-solvers-cg-newton.html#warmstart">Ch 20 §12</a>).</li>
+        <li><strong>Elliptic cones creep</strong> under soft friction; <code>noslip_iterations</code> removes it at a cost (<a href="../chapters/20-solvers-cg-newton.html#noslip">Ch 20 §13</a>).</li>
+        <li><strong><code>island="disable"</code> with sleep</strong> silently disables sleep.</li>
+        <li><strong><code>deterministic=True</code></strong> is ATOMICS in practice; it costs record buffers and sorts: debugging and regression tests only (<a href="../chapters/22-determinism-and-reproducibility.html#cost">Ch 22 §8</a>).</li>
+      </ul>
+      <p class="cs-more">Part V checkpoint, cloth on a box stack under a throughput budget: <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#checkpoint">Ch 23 §10</a>. Background maths: <a href="math-toolkit.html">math toolkit</a> and <a href="../chapters/19-constraints-as-optimization.html#math-toolkit">Ch 19 §2</a>.</p>
+    </section>
+
+    <section class="sec" id="more-help">
+      <h2><span class="sec-num">8</span>More help</h2>
+      <p class="stuck p-stuck">Stuck? See <a href="troubleshooting.html">Troubleshooting</a> (symptom, cause, fix,
+        owning chapter) or the <a href="course-map.html">course map</a>. Terms are defined in the
+        <a href="glossary.html">glossary</a>; public names and CLI flags are in
+        <a href="api-at-a-glance.html">API at a glance</a>.</p>
+      <p class="small muted">Other cheat sheets: <a href="cheatsheet-part1.html">Part I</a>, <a href="cheatsheet-part2.html">Part II</a>, <a href="cheatsheet-part3.html">Part III</a>, <a href="cheatsheet-part4.html">Part IV</a>, <a href="cheatsheet-part6.html">Part VI</a>.</p>
+    </section>
+
+    <footer class="chapter-footer">
+      <nav class="pager" aria-label="Reference pager">
+        <a class="prev" href="cheatsheet-part4.html"><span class="dir">Previous</span><span class="ttl">Part IV cheat sheet</span></a>
+        <a class="index" href="../index.html"><span class="dir">All chapters</span><span class="ttl">Course home</span></a>
+        <a class="next" href="cheatsheet-part6.html"><span class="dir">Next</span><span class="ttl">Part VI cheat sheet</span></a>
+      </nav>
+      <p class="site-footer">MuJoCo Warp course · mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1 · source commit 8f5b9f1</p>
+    </footer>
+  </main>
+</div>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/xml.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script defer src="../assets/course.js"></script>
+
+</body>
+</html>

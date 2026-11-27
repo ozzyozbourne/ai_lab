@@ -1,0 +1,1199 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting</title>
+<meta name="description" content="Symptom, cause, fix and owning chapter for every MJWarp problem the course runs into: Colab and GPU setup, JIT pauses, unsupported features, overflow, NaNs, CUDA graphs, rendering and silent wrong results.">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="../assets/course.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+
+.ts-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 0 .8rem; }
+.ts-tools input { flex: 1 1 220px; min-width: 0; font: inherit; padding: 9px 12px; border-radius: 10px;
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); }
+.ts-tools .count { font-size: .85rem; color: var(--muted); }
+.ts-filter { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 1.2rem; }
+.ts-filter .seg { flex-wrap: wrap; }
+.ts { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 14px 16px 10px;
+  margin: 0 0 14px; scroll-margin-top: calc(var(--topbar-h) + 16px); }
+.ts:target, .ts.flash { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+.ts-sym { font-size: 1.02rem; margin: 0 0 6px; line-height: 1.4; overflow-wrap: anywhere; }
+.ts-sym a.self { color: inherit; text-decoration: none; }
+.ts-sym a.self:hover { text-decoration: underline; }
+.ts-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.ts-tag { font: 600 .7rem var(--font-mono); padding: 2px 7px; border-radius: 999px; letter-spacing: .02em; }
+.ts-tag.t-danger { background: var(--danger-soft); color: var(--danger-ink); }
+.ts-tag.t-warn { background: var(--warn-soft); color: var(--warn-ink); }
+.ts-tag.t-info { background: var(--accent-2-soft); color: var(--accent-2-ink); }
+.ts-tag.t-gpu { background: var(--purple-soft); color: var(--purple); }
+.ts-body { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 6px 12px; margin: 0; }
+.ts-body dt { font-weight: 700; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding-top: 3px; }
+.ts-body dd { margin: 0; overflow-wrap: anywhere; }
+.ts-body dd .code-block { margin: 8px 0 4px; }
+.ts-owner { font-size: .86rem; color: var(--muted); margin: 8px 0 0; }
+.ts[hidden] { display: none; }
+.ts-empty { color: var(--muted); display: none; }
+.cat-count { font-size: .8rem; font-weight: 500; color: var(--muted); margin-left: 6px; }
+@media (max-width: 520px) { .ts-body { grid-template-columns: minmax(0, 1fr); } .ts-body dt { padding-top: 0; } }
+/* triage */
+.tri .node rect { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1.5; }
+.tri .q rect { fill: var(--surface-2); }
+.tri .leaf rect { fill: color-mix(in srgb, var(--accent) 14%, var(--surface)); stroke: var(--accent); }
+.tri .leaf.bad rect { fill: color-mix(in srgb, var(--danger) 12%, var(--surface)); stroke: var(--danger); }
+.tri .leaf.warnc rect { fill: color-mix(in srgb, var(--warn) 14%, var(--surface)); stroke: var(--warn); }
+.tri .edge { fill: none; stroke: var(--muted); stroke-width: 1.6; }
+.tri .elab { font-size: 11px; fill: var(--muted); font-weight: 600; }
+.tri a:hover rect, .tri a:focus rect { stroke-width: 3; }
+/* overflow decoder */
+.bitgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; margin: 10px 0; }
+.bitgrid button { display: flex; align-items: center; gap: 8px; justify-content: flex-start; font: 600 .76rem var(--font-mono);
+  padding: 7px 9px; border-radius: 9px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; text-align: left; }
+.bitgrid button .led { width: 12px; height: 12px; border-radius: 50%; background: var(--surface-3); border: 1px solid var(--border-strong); flex: none; }
+.bitgrid button[aria-pressed="true"] { border-color: var(--danger); background: var(--danger-soft); }
+.bitgrid button[aria-pressed="true"] .led { background: var(--danger); border-color: var(--danger); box-shadow: 0 0 8px var(--danger); }
+.bitgrid button .bv { margin-left: auto; color: var(--muted); font-weight: 500; }
+.dec-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.dec-row input { width: 130px; font: 600 1rem var(--font-mono); padding: 7px 10px; border-radius: 9px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); }
+.dec-out { margin-top: 10px; }
+.dec-out table td:first-child { white-space: nowrap; }
+
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="icon-btn toc-toggle" type="button" aria-label="Table of contents">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">Troubleshooting</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Reference navigation">
+    <a href="../index.html" class="prev" aria-label="Previous: Course home"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">Prev</span></a>
+    <a href="course-map.html" class="next" aria-label="Next: Course map"><span class="lbl">Next</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol data-auto></ol>
+    <p class="toc-progress" aria-live="off"></p>
+  </aside>
+
+  <main id="main" class="content">
+    <header class="chapter-hero">
+      <p class="eyebrow">Reference · Troubleshooting</p>
+      <h1>Troubleshooting MJWarp</h1>
+      <p class="lede">Something is wrong: an exception, a pause, a crash, or worse, numbers that look fine and are not. Each entry gives the symptom you see, the cause, the fix, and the chapter section that owns the topic. Everything was collected from the pitfall and warning boxes of the 30 chapters and the Colab setup, and checked against mujoco-warp 4.0.1 (source tree 8f5b9f1).</p>
+      <div class="hero-meta"><span class="badge level-beginner">All levels</span><span>95 entries in 8 groups</span><span class="sep">·</span><span>mujoco-warp 4.0.1 · warp-lang 1.19.0</span></div>
+      <h2 class="sr-only">On this page</h2>
+      <ul class="learn-list">
+        <li>A triage chart: from &quot;what do I see?&quot; to the right group of entries.</li>
+        <li>A filter by kind (raises, silent, crash, slow, GPU only, setup) and a search box over every entry.</li>
+        <li>An overflow decoder: type the value of <code>d.overflow</code>, get the bits and the knob to turn.</li>
+      </ul>
+    </header>
+    <section class="sec" id="triage">
+      <h2><span class="sec-num">0</span>Start here: what do you see?</h2>
+      <p>Four questions sort almost every problem. Click a box to jump to its group; hover, tap or tab to read why.</p>
+      <figure class="fig" data-anim>
+        <div class="fig-frame scroll-x">
+<svg class="tri" viewBox="0 0 760 480" role="img" aria-labelledby="tri-t tri-d" style="min-width:640px">
+<title id="tri-t">Triage chart</title>
+<desc id="tri-d">A decision chart. Does Warp see the GPU? No leads to setup. Did an exception happen? At put_model leads to unsupported features; around a capture or a CLI leads to graphs and rendering. No exception but a crash leads to NaNs and crashes. Slow leads to the slow group. Slow leads to the slow group. Wrong numbers: check d.overflow, then the silent group.</desc>
+<defs><marker id="tri-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+<path class="edge anim-flow" d="M150 52 H210" marker-end="url(#tri-ar)"/>
+<path class="edge anim-flow" d="M90 74 V126" marker-end="url(#tri-ar)"/>
+<path class="edge anim-flow" d="M150 148 H210" marker-end="url(#tri-ar)"/>
+<path class="edge anim-flow delay-1" d="M90 170 V222" marker-end="url(#tri-ar)"/>
+<path class="edge anim-flow delay-1" d="M150 244 H210" marker-end="url(#tri-ar)"/>
+<path class="edge anim-flow delay-2" d="M90 266 V318" marker-end="url(#tri-ar)"/>
+<path class="edge anim-flow delay-2" d="M150 340 H210" marker-end="url(#tri-ar)"/>
+<path class="edge anim-flow delay-3" d="M400 148 H448" marker-end="url(#tri-ar)"/>
+<path class="edge" d="M330 170 V184 H580 V196" marker-end="url(#tri-ar)"/>
+<text x="160" y="44" class="elab">no</text><text x="96" y="104" class="elab">yes</text>
+<text x="160" y="140" class="elab">yes</text><text x="96" y="200" class="elab">no</text>
+<text x="160" y="236" class="elab">yes</text><text x="96" y="296" class="elab">no</text>
+<text x="160" y="332" class="elab">yes</text>
+<text x="404" y="140" class="elab">capture</text>
+<path class="edge" d="M330 126 V108 H674 V122" marker-end="url(#tri-ar)"/><text x="500" y="102" class="elab">Renderer / CLI</text>
+<text x="338" y="180" class="elab">at put_model</text>
+<g class="node q hot" data-info="&lt;strong&gt;Does Warp see the GPU?&lt;/strong&gt; Check &lt;code&gt;wp.get_cuda_device_count() &amp;gt; 0&lt;/code&gt; (the setup cell prints the device). If not, Warp silently runs on CPU."><rect x="30" y="30" width="120" height="44" rx="10"/><text x="90" y="49" text-anchor="middle" class="s-label">GPU visible?</text><text x="90" y="65" text-anchor="middle" class="s-small">ON_GPU</text></g>
+<a href="#setup"><g class="node leaf warnc hot" data-info="&lt;strong&gt;Setup&lt;/strong&gt;: runtime type, driver R580+ vs the +cu12 wheel, package names, restart after reinstalling Warp."><rect x="214" y="30" width="186" height="44" rx="10"/><text x="307" y="49" text-anchor="middle" class="s-label">1 Setup</text><text x="307" y="65" text-anchor="middle" class="s-small">driver, wheel, packages</text></g></a>
+<g class="node q hot" data-info="&lt;strong&gt;Did Python raise?&lt;/strong&gt; Read where: &lt;code&gt;put_model&lt;/code&gt; refuses unsupported features before anything is copied; capture and CLI errors are graph or rendering problems."><rect x="30" y="126" width="120" height="44" rx="10"/><text x="90" y="145" text-anchor="middle" class="s-label">Exception?</text><text x="90" y="161" text-anchor="middle" class="s-small">read the traceback</text></g>
+<g class="node q hot" data-info="Where was it raised?"><rect x="214" y="126" width="186" height="44" rx="10"/><text x="307" y="145" text-anchor="middle" class="s-label">Where?</text><text x="307" y="161" text-anchor="middle" class="s-small">put_model, capture, CLI</text></g>
+<a href="#graphs"><g class="node leaf bad hot" data-info="&lt;strong&gt;CUDA graphs&lt;/strong&gt; (host reads inside a capture, CUDA &amp;lt; 12.4, CUDA-only APIs on CPU) and &lt;strong&gt;rendering&lt;/strong&gt; (Renderer ImportError, mjwarp-record flags)."><rect x="452" y="126" width="140" height="44" rx="10"/><text x="522" y="145" text-anchor="middle" class="s-label">7 Graphs</text><text x="522" y="161" text-anchor="middle" class="s-small">capture, replay</text></g></a>
+<a href="#rendering"><g class="node leaf bad hot" data-info="&lt;strong&gt;Rendering&lt;/strong&gt;: MUJOCO_GL before import, viewer on Colab, mjwarp-record needs a GPU, &lt;code&gt;--render_seg true&lt;/code&gt; for segmentation."><rect x="604" y="126" width="140" height="44" rx="10"/><text x="674" y="145" text-anchor="middle" class="s-label">8 Rendering</text><text x="674" y="161" text-anchor="middle" class="s-small">viewer, record</text></g></a>
+<a href="#unsupported"><g class="node leaf bad hot" data-info="&lt;strong&gt;Unsupported features&lt;/strong&gt;: NotImplementedError from put_model (PGS, PID actuators, plugins, flex + hfield ...)."><rect x="452" y="200" width="292" height="40" rx="10"/><text x="598" y="225" text-anchor="middle" class="s-label">3 Unsupported features</text></g></a>
+<g class="node q hot" data-info="&lt;strong&gt;Did the process die?&lt;/strong&gt; A segfault (exit 139) on CPU, a hang, or NaNs that never go away."><rect x="30" y="222" width="120" height="44" rx="10"/><text x="90" y="241" text-anchor="middle" class="s-label">Crash / NaN?</text><text x="90" y="257" text-anchor="middle" class="s-small">exit 139, hang</text></g>
+<a href="#nans"><g class="node leaf bad hot" data-info="&lt;strong&gt;NaNs and crashes&lt;/strong&gt;: no NaN checks in MJWarp, out-of-bounds writes (state buffers, flex fields), SLEEP without islands, tile deadlocks."><rect x="214" y="222" width="186" height="44" rx="10"/><text x="307" y="241" text-anchor="middle" class="s-label">5 NaNs and crashes</text><text x="307" y="257" text-anchor="middle" class="s-small">debug mode helps</text></g></a>
+<g class="node q hot" data-info="&lt;strong&gt;Is it fast enough?&lt;/strong&gt; Slow first step, pauses after a change, slow training loops."><rect x="30" y="318" width="120" height="44" rx="10"/><text x="90" y="337" text-anchor="middle" class="s-label">Slow?</text><text x="90" y="353" text-anchor="middle" class="s-small">pauses, low FPS</text></g>
+<a href="#slow"><g class="node leaf hot" data-info="&lt;strong&gt;Slow&lt;/strong&gt;: JIT on the first call, recompiles after integer options change, host reads in the loop, one slow world."><rect x="214" y="318" width="186" height="44" rx="10"/><text x="307" y="337" text-anchor="middle" class="s-label">2 Slow</text><text x="307" y="353" text-anchor="middle" class="s-small">JIT, recompiles, sync</text></g></a>
+<g class="node q hot" data-info="&lt;strong&gt;Runs, but the numbers are wrong?&lt;/strong&gt; Objects fall through floors, a randomized field is ignored, results differ from C MuJoCo."><rect x="30" y="414" width="120" height="44" rx="10"/><text x="90" y="433" text-anchor="middle" class="s-label">Wrong numbers</text><text x="90" y="449" text-anchor="middle" class="s-small">no error at all</text></g>
+<a href="#overflow"><g class="node leaf warnc hot" data-info="&lt;strong&gt;Check d.overflow first.&lt;/strong&gt; Dropped contacts and rows are the most common silent failure."><rect x="214" y="414" width="186" height="44" rx="10"/><text x="307" y="433" text-anchor="middle" class="s-label">4 d.overflow</text><text x="307" y="449" text-anchor="middle" class="s-small">dropped contacts / rows</text></g></a>
+<a href="#silent"><g class="node leaf warnc hot" data-info="&lt;strong&gt;Silent wrong results&lt;/strong&gt;: forward not called, replaced arrays, CPU .numpy() views, flags decided at put_model, float32."><rect x="452" y="414" width="292" height="44" rx="10"/><text x="598" y="433" text-anchor="middle" class="s-label">6 Silent wrong results</text><text x="598" y="449" text-anchor="middle" class="s-small">forward, replace vs assign, views, flags</text></g></a>
+<path class="edge anim-flow delay-3" d="M90 362 V410" marker-end="url(#tri-ar)"/>
+<path class="edge anim-flow delay-3" d="M150 436 H210" marker-end="url(#tri-ar)"/>
+<path class="edge anim-flow delay-4" d="M400 436 H448" marker-end="url(#tri-ar)"/>
+<text x="96" y="392" class="elab">no</text><text x="408" y="428" class="elab">all 0</text>
+</svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="badge illustrative">Illustrative</span></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a box; click a green, orange or red box to jump to its group."></div>
+        <figcaption><span class="fig-num">Figure 1.</span>Triage. Orange boxes are the silent failures: the code runs and nothing warns you. The groups: <a href="#setup">Install, GPU and Colab setup</a> · <a href="#slow">Slow, pausing or recompiling</a> · <a href="#unsupported">Errors from put_model: unsupported features</a> · <a href="#overflow">Contacts and buffer overflow</a> · <a href="#nans">NaNs, blow-ups and crashes</a> · <a href="#silent">Wrong numbers without an error</a> · <a href="#graphs">CUDA graph capture and replay</a> · <a href="#rendering">Rendering, viewer and recording</a>.</figcaption>
+      </figure>
+      <div class="ts-tools">
+        <label class="sr-only" for="ts-q">Search the entries</label>
+        <input id="ts-q" type="search" placeholder="Search symptoms, e.g. overflow, graph, NaN, render_seg" autocomplete="off">
+        <span class="count" id="ts-count" aria-live="polite"></span>
+      </div>
+      <div class="ts-filter" role="group" aria-label="Filter by kind">
+        <div class="seg" id="ts-kind">
+          <button type="button" aria-pressed="true" data-k="">All</button>
+          <button type="button" aria-pressed="false" data-k="error">Raises</button>
+          <button type="button" aria-pressed="false" data-k="silent">Silent</button>
+          <button type="button" aria-pressed="false" data-k="crash">Crash</button>
+          <button type="button" aria-pressed="false" data-k="slow">Slow</button>
+          <button type="button" aria-pressed="false" data-k="gpu">GPU only</button>
+          <button type="button" aria-pressed="false" data-k="colab">Setup</button>
+        </div>
+      </div>
+      <p class="ts-empty" id="ts-empty">No entry matches. Try a shorter word, or the <a href="glossary.html">glossary</a>.</p>
+      <div class="callout tip"><p class="callout-title">Three habits that prevent most entries</p><p>Check <code>d.overflow</code> after every run with contacts. Call <code>mjw.forward</code> after writing state. Write into arrays (<code>fill_</code>, <code>assign</code>, kernels) instead of replacing them, and set integer options before the first step and before any capture.</p></div>
+    </section>
+    <section class="sec ts-cat" id="setup">
+      <h2><span class="sec-num">1</span>Install, GPU and Colab setup<span class="cat-count">8</span></h2>
+      <p>Problems that show up in the first two cells of a notebook. Every course notebook starts with <code>!nvidia-smi</code> and the standard setup cell (driver check, pinned install, imports, <code>ON_GPU</code>, <code>GRAPH_COND</code>); <a href="../chapters/01-what-is-mujoco-warp.html#colab-setup" title="What Is MuJoCo Warp?: Setting up Colab, line by line">Ch 1 §5</a> explains it line by line.</p>
+      <article class="ts" id="gpu-not-visible" data-tags="colab">
+        <h3 class="ts-sym"><a class="self" href="#gpu-not-visible">"No NVIDIA GPU visible", or <code>ON_GPU</code> is <code>False</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-info">Setup</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The Colab runtime has no GPU (or no <code>nvidia-smi</code>). Warp then picks its CPU device: <strong>everything still runs, only far slower, and nothing raises</strong>.</dd>
+          <dt>Fix</dt><dd>Runtime &gt; Change runtime type &gt; GPU, then run the first cells again. Check in code with <code>wp.get_cuda_device_count() &gt; 0</code>, which is how every course script sets <code>ON_GPU</code> and picks its budget (<code>NWORLD = 4096 if ON_GPU else 8</code>). On CPU all examples still work with the small budgets: that is how the course is verified.<div class="code-block"><pre><code class="language-python">import warp as wp
+wp.init()
+print(wp.get_device(), "| CUDA devices:", wp.get_cuda_device_count())</code></pre></div></dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#colab-setup" title="What Is MuJoCo Warp?: Setting up Colab, line by line">Ch 1 §5</a> · also <a href="../chapters/04-warp-and-the-gpu.html#devices" title="NVIDIA Warp and How a GPU Runs Your Kernel: Devices: where your data lives">Ch 4 §1</a></p>
+      </article>
+      <article class="ts" id="driver-cuda-mismatch" data-tags="colab gpu">
+        <h3 class="ts-sym"><a class="self" href="#driver-cuda-mismatch">"WARNING: Warp sees no GPU" although <code>nvidia-smi</code> shows one</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-info">Setup</span><span class="ts-tag t-gpu">GPU only</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Warp could not load the CUDA driver for its build. <code>warp-lang==1.19.0</code> from PyPI is built with CUDA 13 and needs an <strong>R580 or newer</strong> driver. The usual cause is a CUDA 13 Warp on an older driver, for example after installing <code>warp-lang</code> by hand. (The CUDA Version in the <code>nvidia-smi</code> header is the newest CUDA the driver supports, not what is installed.)</dd>
+          <dt>Fix</dt><dd>Reinstall with the setup cell: it reads the driver major from <code>nvidia-smi --query-gpu=driver_version,name</code> and installs NVIDIA's <code>+cu12</code> release wheel of the same Warp version when the driver is older than 580. Then Runtime &gt; Restart session: an imported Warp cannot be swapped inside a running Python process.<div class="code-block"><pre><code class="language-python">WARP = ("warp-lang==1.19.0" if major &gt;= 580 else
+        "https://github.com/NVIDIA/warp/releases/download/v1.19.0/"
+        "warp_lang-1.19.0+cu12-py3-none-manylinux_2_28_x86_64.whl")</code></pre></div></dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#colab-setup" title="What Is MuJoCo Warp?: Setting up Colab, line by line">Ch 1 §5</a></p>
+      </article>
+      <article class="ts" id="cuda-warning-on-cpu" data-tags="colab">
+        <h3 class="ts-sym"><a class="self" href="#cuda-warning-on-cpu"><code>Warp CUDA warning: Could not find or load the NVIDIA CUDA driver</code> on a CPU machine</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-info">Setup</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Warp prints this to stderr at import when there is no NVIDIA driver at all.</dd>
+          <dt>Fix</dt><dd>Nothing to fix on a CPU-only box: it is expected, and it is not part of any example's expected output. On a GPU runtime it means the driver did not load; see <a href="#driver-cuda-mismatch">the previous entry</a>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#colab-setup" title="What Is MuJoCo Warp?: Setting up Colab, line by line">Ch 1 §5</a> · also <a href="../chapters/04-warp-and-the-gpu.html#devices" title="NVIDIA Warp and How a GPU Runs Your Kernel: Devices: where your data lives">Ch 4 §1</a></p>
+      </article>
+      <article class="ts" id="package-names" data-tags="error colab">
+        <h3 class="ts-sym"><a class="self" href="#package-names"><code>PackageNotFoundError</code> for <code>md.version("mujoco")</code>, or a broken <code>import mujoco</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span><span class="ts-tag t-info">Setup</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The distribution is called <code>mujoco-core</code>; the import name is still <code>mujoco</code>. Installing the <code>mujoco</code> distribution on top puts a second copy of the same package into site-packages.</dd>
+          <dt>Fix</dt><dd>Ask for <code>md.version("mujoco-core")</code>. Never <code>pip install mujoco</code> next to it. If it happened, uninstall both and rerun the setup cell.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#colab-setup" title="What Is MuJoCo Warp?: Setting up Colab, line by line">Ch 1 §5</a></p>
+      </article>
+      <article class="ts" id="viewer-extra-missing" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#viewer-extra-missing"><code>ImportError: mujoco.viewer requires 'glfw' to be installed.</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>mujoco-warp was installed without the <code>[viewer]</code> extra. <code>viewer.py</code> imports <code>mujoco.viewer</code> at the top, and the extra is what pulls <code>mujoco-core[rendering]</code> (glfw, PyOpenGL) and pillow.</dd>
+          <dt>Fix</dt><dd><code>pip install "mujoco-warp[viewer]==4.0.1" "mujoco-core[rendering]==4.0.1"</code>, as the setup cell does. <code>--viewer viser</code> needs the extra too (plus <code>mjviser&gt;=0.0.13</code>).</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It): The command-line tools: mjwarp-viewer and mjwarp-record">Ch 5 §9</a> · also <a href="../chapters/01-what-is-mujoco-warp.html#colab-setup" title="What Is MuJoCo Warp?: Setting up Colab, line by line">Ch 1 §5</a></p>
+      </article>
+      <article class="ts" id="jax-install" data-tags="colab">
+        <h3 class="ts-sym"><a class="self" href="#jax-install">JAX is CPU-only or broken after <code>pip install jax</code> on Colab</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-info">Setup</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Colab ships a matched jax + jaxlib + CUDA plugin; installing jax on top can replace one of them.</dd>
+          <dt>Fix</dt><dd>Use the preinstalled JAX. If you imported JAX before setting its environment variables, restart the runtime.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/28-interop-torch-and-jax.html#jax-bridge" title="Interop with PyTorch and JAX: The JAX bridge: mjw.step as a JAX op">Ch 28 §4</a></p>
+      </article>
+      <article class="ts" id="log-spam" data-tags="colab">
+        <h3 class="ts-sym"><a class="self" href="#log-spam">Hundreds of <code>Module ... load</code> lines on the first step</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-info">Setup</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Warp 1.19 logs at INFO by default: one line per kernel module it compiles or loads.</dd>
+          <dt>Fix</dt><dd>Set the log level right after <code>import warp</code>, as every course script does.<div class="code-block"><pre><code class="language-python">import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw</code></pre></div></dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#colab-setup" title="What Is MuJoCo Warp?: Setting up Colab, line by line">Ch 1 §5</a> · also <a href="../chapters/04-warp-and-the-gpu.html#jit" title="NVIDIA Warp and How a GPU Runs Your Kernel: JIT compilation and the kernel cache">Ch 4 §8</a></p>
+      </article>
+      <article class="ts" id="cpp-keyword" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#cpp-keyword"><code>error: expected member name or ';'</code> when a kernel compiles</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Warp copies kernel parameter names into the generated C++ argument struct. A parameter named <code>case</code>, <code>default</code>, <code>new</code>, <code>class</code>, ... is a C++ keyword.</dd>
+          <dt>Fix</dt><dd>Rename the parameter.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/04-warp-and-the-gpu.html#kernels" title="NVIDIA Warp and How a GPU Runs Your Kernel: Kernels and threads">Ch 4 §3</a></p>
+      </article>
+    </section>
+    <section class="sec ts-cat" id="slow">
+      <h2><span class="sec-num">2</span>Slow, pausing or recompiling<span class="cat-count">7</span></h2>
+      <p>Speed problems. Rule of the course: CPU numbers are for checking that a script works; rank settings with your own GPU numbers from the notebook.</p>
+      <article class="ts" id="slow-first-step" data-tags="slow">
+        <h3 class="ts-sym"><a class="self" href="#slow-first-step">The first <code>mjw.step</code> takes a long time; later calls are fast</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-info">Slow</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>JIT compilation: Warp compiles each kernel module the first time it is needed and stores the binary in the kernel cache (<code>wp.config.kernel_cache_dir</code>). A new Colab runtime starts with an empty cache, so the first step compiles again.</dd>
+          <dt>Fix</dt><dd>Expected. Time a warm-up call separately and never include it in a benchmark. To force a cold start for a measurement, point <code>wp.config.kernel_cache_dir</code> somewhere new before <code>wp.init()</code> (what <code>ex6_jit_timing.py --cold</code> does).</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#colab-setup" title="What Is MuJoCo Warp?: Setting up Colab, line by line">Ch 1 §5</a> · also <a href="../chapters/04-warp-and-the-gpu.html#jit" title="NVIDIA Warp and How a GPU Runs Your Kernel: JIT compilation and the kernel cache">Ch 4 §8</a>, <a href="../chapters/25-profiling-benchmarking-tuning.html#measure" title="Profiling, Benchmarking and Tuning for Throughput: What a throughput number means">Ch 25 §1</a></p>
+      </article>
+      <article class="ts" id="recompile-pause" data-tags="slow">
+        <h3 class="ts-sym"><a class="self" href="#recompile-pause">A pause of seconds after changing an option, then fast again</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-info">Slow</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Some options are compile-time constants of kernels: they go into a kernel factory (<code>@cache_kernel</code>) or through <code>wp.static</code>. A new value builds a new kernel on first use. Measured in Ch 24: <code>ls_iterations</code> and <code>warn_overflow</code> load new modules; switching <code>solver</code>, <code>broadphase</code>, the integrator or some <code>disableflags</code> bits can too, when they lead to kernels not loaded yet.</dd>
+          <dt>Fix</dt><dd>Set integer options once, before the first step and before any capture. Array options (<code>timestep</code>, <code>gravity</code>, <code>tolerance</code>, ...) never recompile: write them with <code>fill_</code> / <code>assign</code>. Full list: the knob board.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/24-cuda-graphs.html#knob-board" title="CUDA Graphs: Capture, Replay and What Gets Baked: The knob board: live, recompile or recapture">Ch 24 §4</a> · also <a href="../chapters/07-pipeline-tour.html#disable-flags" title="A Guided Tour of step and forward: Disable flags: switching stages off">Ch 7 §7</a>, <a href="../chapters/09-contacts-and-buffer-sizing.html#warn-overflow" title="Contacts, Constraint Budgets and Overflow: Silencing warnings without losing the bits">Ch 9 §10</a>, <a href="../chapters/20-solvers-cg-newton.html#linesearch" title="The Primal Solvers: CG, Newton and the Exact Linesearch: The exact linesearch">Ch 20 §8</a>, <a href="../chapters/13-integrators.html#advance" title="Time Integration: Euler, RK4, Implicit and Discrete: One step = forward + integrate">Ch 13 §1</a></p>
+      </article>
+      <article class="ts" id="host-reads-in-loop" data-tags="slow gpu">
+        <h3 class="ts-sym"><a class="self" href="#host-reads-in-loop">A training loop is much slower than <code>mjwarp-testspeed</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-info">Slow</span><span class="ts-tag t-gpu">GPU only</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Host reads. On a GPU, <code>.numpy()</code> waits for every queued kernel and then copies; <code>get_data_into</code> does about 140 such copies for one world. One call per step can cost more than the physics.</dd>
+          <dt>Fix</dt><dd>Keep data on the device: read batched arrays only for logging, or use them from a kernel or from PyTorch (zero-copy). Use <code>get_data_into</code> only to look at a world. Also compare like with like: testspeed applies keyframe ctrl plus noise; rerun it with <code>--noise_std 0</code> and the same nworld and sizes.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/04-warp-and-the-gpu.html#arrays" title="NVIDIA Warp and How a GPU Runs Your Kernel: Arrays: wp.array, dtypes and shapes">Ch 4 §2</a> · also <a href="../chapters/05-first-simulation.html#get-data-into" title="Your First MJWarp Simulation (and How to See It): Getting one world back: get_data_into">Ch 5 §6</a>, <a href="../chapters/28-interop-torch-and-jax.html#zero-copy" title="Interop with PyTorch and JAX: Zero-copy: one buffer, several views">Ch 28 §1</a>, <a href="../chapters/25-profiling-benchmarking-tuning.html#testspeed" title="Profiling, Benchmarking and Tuning for Throughput: mjwarp-testspeed: the measurement tool">Ch 25 §4</a></p>
+      </article>
+      <article class="ts" id="one-slow-world" data-tags="slow gpu">
+        <h3 class="ts-sym"><a class="self" href="#one-slow-world">Mean solver iterations is small, but the batch is still slow</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-info">Slow</span><span class="ts-tag t-gpu">GPU only</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>With <code>capture_while</code> the solver loop runs until its slowest world is done: one stuck world at 100 iterations makes every world pay for 100 iterations.</dd>
+          <dt>Fix</dt><dd>Look at <code>d.solver_niter.numpy().max()</code>, not the mean. Lower <code>m.opt.iterations</code> or find the stuck world.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/20-solvers-cg-newton.html#knobs" title="The Primal Solvers: CG, Newton and the Exact Linesearch: The solver knobs and what they cost">Ch 20 §10</a> · also <a href="../chapters/24-cuda-graphs.html#conditional" title="CUDA Graphs: Capture, Replay and What Gets Baked: Conditional nodes: loops and branches that run on the device">Ch 24 §5</a></p>
+      </article>
+      <article class="ts" id="newton-memory" data-tags="error gpu">
+        <h3 class="ts-sym"><a class="self" href="#newton-memory">Out of memory at large <code>nv</code> and <code>nworld</code> with the Newton solver</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span><span class="ts-tag t-gpu">GPU only</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Newton allocates its Hessian as <code>(nworld, nv_pad, nv_pad)</code> float32 per solve, plus a second buffer of the same size when <code>nv &gt; 48</code> on the incremental path. At nv 120 that is 128 KB per world: 512 MB for 4096 worlds.</dd>
+          <dt>Fix</dt><dd>Use fewer worlds, or the CG solver (<code>m.opt.solver = mjw.SolverType.CG</code> before the first step and before capture), which has no H at all.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/20-solvers-cg-newton.html#newton" title="The Primal Solvers: CG, Newton and the Exact Linesearch: Newton: H = M + J^\top D J and its Cholesky">Ch 20 §6</a> · also <a href="../chapters/20-solvers-cg-newton.html#knobs" title="The Primal Solvers: CG, Newton and the Exact Linesearch: The solver knobs and what they cost">Ch 20 §10</a></p>
+      </article>
+      <article class="ts" id="testspeed-gpu-only" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#testspeed-gpu-only"><code>ValueError: testspeed available for gpu only</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>testspeed._main</code> checks the device before loading the model.</dd>
+          <dt>Fix</dt><dd>Run <code>mjwarp-testspeed</code> on a GPU. On CPU, time a hand-made loop instead (as Ch 25's examples do), and treat the number as a CPU number.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/25-profiling-benchmarking-tuning.html#testspeed" title="Profiling, Benchmarking and Tuning for Throughput: mjwarp-testspeed: the measurement tool">Ch 25 §4</a></p>
+      </article>
+      <article class="ts" id="cpu-rankings" data-tags="slow">
+        <h3 class="ts-sym"><a class="self" href="#cpu-rankings">Setting A beats B on CPU, but not on the GPU</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-info">Slow</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>On CPU, Warp runs kernel threads one after another and every launch costs Python time, so rankings can flip.</dd>
+          <dt>Fix</dt><dd>Use CPU runs to check correctness only; rank settings with GPU numbers at the nworld you will train with, with graphs on in both runs.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/25-profiling-benchmarking-tuning.html#measure" title="Profiling, Benchmarking and Tuning for Throughput: What a throughput number means">Ch 25 §1</a> · also <a href="../chapters/25-profiling-benchmarking-tuning.html#tuning" title="Profiling, Benchmarking and Tuning for Throughput: A tuning checklist, and a worked study">Ch 25 §8</a></p>
+      </article>
+    </section>
+    <section class="sec ts-cat" id="unsupported">
+      <h2><span class="sec-num">3</span>Errors from <code>put_model</code>: unsupported features<span class="cat-count">7</span></h2>
+      <p><code>put_model</code> checks every feature your <code>MjModel</code> uses against MJWarp's own enums and raises before anything is copied to the device. The full searchable list is the &quot;supported?&quot; explorer on <a href="api-at-a-glance.html">API at a glance</a>.</p>
+      <article class="ts" id="not-supported" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#not-supported"><code>NotImplementedError: mjSOL_PGS is unsupported.</code> or <code>['mjGAIN_PID'] not supported.</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>A scalar option (integrator, cone, solver) or an enum-typed array value (actuator gain/bias/dyn/trn types, equality, geom, sensor and wrap types, sleep policies) that MJWarp does not implement. The two message formats: scalar options say <code>X is unsupported.</code>, arrays list the offending values. Known gaps in 4.0.1: the PGS solver, PID actuators, SO3 transmission and bias, distance and flexvert equalities.</dd>
+          <dt>Fix</dt><dd>Change the model: <code>solver="Newton"</code> or <code>"CG"</code>, another actuator type, etc. You can derive the whole list from the enums (Example 1.7).</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#not-supported" title="What Is MuJoCo Warp?: What MJWarp does not do (yet)">Ch 1 §7</a> · also <a href="../chapters/05-first-simulation.html#put-model" title="Your First MJWarp Simulation (and How to See It): put_model in one picture">Ch 5 §2</a></p>
+      </article>
+      <article class="ts" id="plugins" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#plugins"><code>NotImplementedError: Body plugins not supported.</code> (also Actuator, Sensor)</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Only SDF geometry plugins exist on the Warp side.</dd>
+          <dt>Fix</dt><dd>Remove the plugin, or for SDF geoms register a Warp SDF (next category).</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#not-supported" title="What Is MuJoCo Warp?: What MJWarp does not do (yet)">Ch 1 §7</a> · also <a href="../chapters/18-heightfields-and-sdfs.html#sdf-plugins" title="Collision IV: Heightfields, SDFs and User SDF Plugins: User SDF plugins: from MJCF to a Warp function">Ch 18 §8</a></p>
+      </article>
+      <article class="ts" id="flex-hfield" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#flex-hfield"><code>NotImplementedError: Flex-HField collision is not implemented.</code> (also Flex-SDF, Rigid flexes)</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>put_model</code> rejects any model with a flex plus a heightfield geom, a flex plus an SDF geom, or a rigid flex (<code>flexcomp rigid="true"</code>), even if they could never touch and even with <code>contype="0" conaffinity="0"</code>.</dd>
+          <dt>Fix</dt><dd>Keep soft bodies and terrain in separate models; soft bodies on terrain are not possible in 4.0.1. Other flex refusals: <code>dof=quadratic</code>, self-collision or passive contact of interpolated flexes, flex equalities with sleeping.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#collision" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator: Flex collision">Ch 23 §5</a> · also <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#refusals" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator: What mujoco-warp 4.0.1 refuses">Ch 23 §8</a>, <a href="../chapters/18-heightfields-and-sdfs.html#hfield-spec" title="Collision IV: Heightfields, SDFs and User SDF Plugins: Building terrain with MjSpec, and sizing buffers for it">Ch 18 §5</a></p>
+      </article>
+      <article class="ts" id="flex-implicit" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#flex-implicit"><code>ValueError: flex elasticity is no longer integrated implicitly under integrator='implicit' and 'implicitfast' ...</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>check_discrete</code>, called at the top of every <code>_forward</code>, refuses flex stiffness with the implicit integrators.</dd>
+          <dt>Fix</dt><dd>Use <code>integrator="discrete"</code>, or Euler with a small timestep. (<code>noslip</code> is in turn not implemented for the discrete integrator.)</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/13-integrators.html#implicitfast" title="Time Integration: Euler, RK4, Implicit and Discrete: IMPLICITFAST: implicit in velocity, symmetric">Ch 13 §5</a> · also <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#discrete" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator: The DISCRETE integrator and the effective metric">Ch 23 §7</a></p>
+      </article>
+      <article class="ts" id="no-float64" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#no-float64">I need float64 / results must match C MuJoCo bit for bit</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Everything on the device is float32; there is no float64 mode. <code>put_model</code> also raises the solver tolerance to at least 1e-6.</dd>
+          <dt>Fix</dt><dd>Compare against C MuJoCo with tolerances (about 1e-6 per step for stable systems) and compare statistics for long or chaotic rollouts. See <a href="#float32-vs-c">float32 vs C</a>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#not-supported" title="What Is MuJoCo Warp?: What MJWarp does not do (yet)">Ch 1 §7</a> · also <a href="../chapters/05-first-simulation.html#accuracy" title="Your First MJWarp Simulation (and How to See It): Accuracy: float32, chaos, and the clock">Ch 5 §7</a></p>
+      </article>
+      <article class="ts" id="sdf-registered-late" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#sdf-registered-late">An SDF model loads, but <code>nacon</code> stays 0</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The Warp SDF functions (<code>user_sdf</code> / <code>user_sdf_grad</code>, or <code>register_sdf_plugins(mjw)</code>) were patched in after the first <code>put_model</code>, <code>forward</code>, <code>step</code> or <code>collision</code> of the process. Later has no effect.</dd>
+          <dt>Fix</dt><dd>Register at the top of a fresh process. In a notebook: <code>%%writefile</code> + <code>!python file.py</code>, or restart the runtime and patch in the first cell. The CLI tools register mujoco.sdf.* plugins automatically for XML models (not <code>.mjb</code>).</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/18-heightfields-and-sdfs.html#fresh-process" title="Collision IV: Heightfields, SDFs and User SDF Plugins: The fresh-process rule">Ch 18 §9</a> · also <a href="../chapters/18-heightfields-and-sdfs.html#sdf-plugins" title="Collision IV: Heightfields, SDFs and User SDF Plugins: User SDF plugins: from MJCF to a Warp function">Ch 18 §8</a></p>
+      </article>
+      <article class="ts" id="sdf-dist" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#sdf-dist">SDF contacts report about half the penetration depth</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>On the SDF path the reported <code>dist</code> is max(A, B) at the final point, not the penetration depth: for a flat overlap of depth h the best value is -h/2.</dd>
+          <dt>Fix</dt><dd>Do not compare SDF <code>dist</code> with primitive or convex colliders, which report the full depth.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/18-heightfields-and-sdfs.html#sdf-narrowphase" title="Collision IV: Heightfields, SDFs and User SDF Plugins: The SDF narrowphase: Halton starts and gradient descent">Ch 18 §7</a></p>
+      </article>
+    </section>
+    <section class="sec ts-cat" id="overflow">
+      <h2><span class="sec-num">4</span>Contacts and buffer overflow<span class="cat-count">14</span></h2>
+      <p>MJWarp allocates every buffer once, in <code>make_data</code>. When one runs out, the kernel drops the extra work, sets a bit in <code>d.overflow</code> and keeps going. Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html" title="Contacts, Constraint Budgets and Overflow">Ch 9</a>.</p>
+      <div class="widget" id="decoder">
+        <p class="widget-title">Overflow decoder <span class="badge illustrative">Computed in your browser</span></p>
+        <div class="dec-row">
+          <label for="dec-v">d.overflow value of one world</label>
+          <input id="dec-v" type="text" inputmode="numeric" value="9" aria-describedby="dec-help">
+          <button class="btn btn-sm" type="button" id="dec-clear">Clear</button>
+          <button class="btn btn-sm" type="button" id="dec-ex">Example from Ch 9</button>
+        </div>
+        <p class="small muted" id="dec-help">Type an integer (for example 9, or 0x408), or toggle the bits. Bits come from <code>types.py::OverflowType</code> in the 4.0.1 wheel (12 bits, ALL = 4095).</p>
+        <div class="bitgrid" id="dec-bits"></div>
+        <div class="dec-out" id="dec-out" aria-live="polite"></div>
+      </div>
+      <article class="ts" id="overflow-silent" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#overflow-silent">Boxes sink into or fall through the floor; towers collapse; no exception</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>A buffer overflowed and contacts or constraint rows were dropped. <strong>Overflow is silent</strong>: the only signals are a <code>wp.printf</code> line from the device and the bits in <code>d.overflow</code>.</dd>
+          <dt>Fix</dt><dd>Check <code>d.overflow</code> after the run (the bits are sticky until <code>reset_data</code>), decode it with the widget below or with <code>describe_overflow(d)</code> from <code>my_env.py</code>, and size the buffers with the Ch 9 recipe.<div class="code-block"><pre><code class="language-python">import mujoco_warp as mjw
+bits = d.overflow.numpy()
+for w in range(len(bits)):
+    names = [b.name for b in mjw.OverflowType if bits[w] &amp; b]
+    if names:
+        print(f"world {w}:", " | ".join(names))</code></pre></div></dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#starvation" title="Contacts, Constraint Budgets and Overflow: Starvation: a shared pool is not fair">Ch 9 §6</a> · also <a href="../chapters/09-contacts-and-buffer-sizing.html#overflow-detection" title="Contacts, Constraint Budgets and Overflow: Detecting and decoding overflow">Ch 9 §7</a>, <a href="../chapters/09-contacts-and-buffer-sizing.html#sizing-recipe" title="Contacts, Constraint Budgets and Overflow: A sizing recipe">Ch 9 §8</a></p>
+      </article>
+      <article class="ts" id="overflow-after-forward" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#overflow-after-forward"><code>d.overflow</code> is 0 after <code>mjw.forward</code>, but contacts are missing</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The NEFC, BROADPHASE and NARROWPHASE checks live in the <code>_next_time</code> kernel at the end of the integrator: <code>step</code> reports them, <code>forward</code> and <code>collision</code> do not. (Bits set inside collision, such as CCD, HFIELD and EPA_HORIZON, can appear after forward.)</dd>
+          <dt>Fix</dt><dd>After a bare forward or collision, compare the counters yourself: <code>d.nacon.numpy()[0]</code> against <code>d.naconmax</code>, <code>d.ncollision.numpy()[0]</code> against <code>d.naconmax</code>, <code>d.nefc</code> against <code>d.njmax</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#where-contacts-come-from" title="Contacts, Constraint Budgets and Overflow: Where contacts come from">Ch 9 §1</a> · also <a href="../chapters/15-geometry-toolkit-and-broadphase.html#funnel" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase: The two-stage funnel">Ch 15 §2</a></p>
+      </article>
+      <article class="ts" id="nconmax-per-world" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#nconmax-per-world"><code>nconmax</code> looked big enough per world, but one world still lost contacts</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>nconmax</code> only multiplies into the size of one shared pool (<code>naconmax</code>): "one world may have more than nconmax contacts". <code>njmax</code> is the opposite: no world may have more than <code>njmax</code> constraints. BROADPHASE and NARROWPHASE compare global counters, so they light in every world at once, even worlds with no contacts.</dd>
+          <dt>Fix</dt><dd>Size the pool from the total over all worlds at the worst moment (<code>naconmax</code>), and <code>njmax</code> from the worst single world.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#sizing-parameters" title="Contacts, Constraint Budgets and Overflow: Sizing parameters and their defaults">Ch 9 §5</a> · also <a href="../chapters/09-contacts-and-buffer-sizing.html#contact-pool" title="Contacts, Constraint Budgets and Overflow: The Contact struct and the shared pool">Ch 9 §2</a>, <a href="../chapters/09-contacts-and-buffer-sizing.html#overflow-detection" title="Contacts, Constraint Budgets and Overflow: Detecting and decoding overflow">Ch 9 §7</a></p>
+      </article>
+      <article class="ts" id="sensor-contact-slots" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#sensor-contact-slots">Overflow appeared after adding distance or collision sensors</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Collision sensors are written into the same contact pool and count against <code>naconmax</code>.</dd>
+          <dt>Fix</dt><dd>Add their slots to the contact budget and check <code>d.overflow</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/14-sensors-delays-inverse-dynamics.html#rays-collisions" title="Sensors, Delays and Inverse Dynamics: Sensors built on rays and collisions">Ch 14 §5</a></p>
+      </article>
+      <article class="ts" id="flex-overflow" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#flex-overflow">NARROWPHASE is set in a cloth scene while <code>nacon</code> stays well below <code>naconmax</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The flex candidate arrays are <code>naconmax</code> long and hold every hit before de-duplication.</dd>
+          <dt>Fix</dt><dd>Size flex scenes from the overflow bit, not from <code>nacon</code>: the Ch 23 checkpoint needed <code>nconmax = 192</code> where the Ch 9 recipe gave 48.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#collision" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator: Flex collision">Ch 23 §5</a></p>
+      </article>
+      <article class="ts" id="ccd-overflow" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#ccd-overflow"><code>CCD overflow - please increase naccdmax beyond ...</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Convex collision scratch rows ran out. One CCD row can produce up to 4 contacts; every box-box pair in contact takes a row, and with MULTICCD so does every face/face pair of boxes, cylinders and meshes.</dd>
+          <dt>Fix</dt><dd>Count pairs that penetrate or take multi-contact, not contacts, and size per world with <code>nccdmax</code> (plus a safety factor) so it follows nworld.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/17-convex-collision-gjk-epa.html#kernels-scratch" title="Convex Shapes with GJK, EPA and Multi-Contact: The kernels and their scratch memory">Ch 17 §7</a></p>
+      </article>
+      <article class="ts" id="hfield-overflow" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#hfield-overflow"><code>height field collision overflow ... please adjust resolution</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Too many heightfield prisms for one geom pair; the warning is printed once per pair.</dd>
+          <dt>Fix</dt><dd>Decrease the number of hfield rows and columns, or the size of the colliding geom.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/18-heightfields-and-sdfs.html#hfield-overflow" title="Collision IV: Heightfields, SDFs and User SDF Plugins: HFIELD overflow: when the grid is too fine">Ch 18 §4</a></p>
+      </article>
+      <article class="ts" id="ls-iterations-warning" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#ls-iterations-warning"><code>linesearch iterations limit reached - please increase ls_iterations beyond 20</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The Newton linesearch hit <code>ls_iterations</code> in some step and set the LS_ITERATIONS bit. It is a warning: the step completes. Device prints are flushed late, which is why the line appears after your own output.</dd>
+          <dt>Fix</dt><dd>Usually harmless. To silence only this print: <code>m.opt.warn_overflow &amp;= ~mjw.OverflowType.LS_ITERATIONS</code>, once, before the first step (it recompiles). Raising <code>ls_iterations</code> also recompiles.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It): The command-line tools: mjwarp-viewer and mjwarp-record">Ch 5 §9</a> · also <a href="../chapters/09-contacts-and-buffer-sizing.html#warn-overflow" title="Contacts, Constraint Budgets and Overflow: Silencing warnings without losing the bits">Ch 9 §10</a>, <a href="../chapters/20-solvers-cg-newton.html#linesearch" title="The Primal Solvers: CG, Newton and the Exact Linesearch: The exact linesearch">Ch 20 §8</a></p>
+      </article>
+      <article class="ts" id="contacts-differ-from-c" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#contacts-differ-from-c">My test compares <code>nacon</code> with <code>mjd.ncon</code> and fails</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Contact counts differ from MuJoCo C on heightfields (4 vs up to 6 or more) and on SDF pairs; box-box and convex multi-contact also generate their own sets.</dd>
+          <dt>Fix</dt><dd>Compare physical outcomes (rest heights, forces, trajectories within a tolerance), and size buffers from MJWarp's own counts.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/18-heightfields-and-sdfs.html#four-contacts" title="Collision IV: Heightfields, SDFs and User SDF Plugins: Four contacts, not six: the selection rule and MuJoCo C">Ch 18 §3</a></p>
+      </article>
+      <article class="ts" id="no-contact-resting" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#no-contact-resting">No contact on the first step for an object placed exactly on the floor</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>A corner at distance 0 is not a contact (<code>0 &lt; 0 + 0</code> is false). Gravity closes the gap within one step.</dd>
+          <dt>Fix</dt><dd>Harmless in a simulation; when you call <code>mjw.collision</code> on a hand-placed pose, place the object 0.5 to 1 mm into its support.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/16-primitive-narrowphase.html#write-contact" title="Collision II: Geom Types and Primitive Colliders: write_contact: detected, active, margin and gap">Ch 16 §5</a></p>
+      </article>
+      <article class="ts" id="contype-edit" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#contype-edit">Editing <code>m.geom_contype</code> after <code>put_model</code> changes nothing</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>No rigid broadphase or narrowphase kernel reads the bitmasks at run time: they were folded into <code>nxn_pairid</code> once.</dd>
+          <dt>Fix</dt><dd>Edit the <code>mujoco.MjModel</code> (or the MJCF) and call <code>mjw.put_model</code> again. Note that an explicit <code>&lt;pair&gt;</code> re-enables pairs that the masks and exclusions would drop.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/15-geometry-toolkit-and-broadphase.html#prefilter" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase: Static pre-filtering in put_model">Ch 15 §3</a> · also <a href="../chapters/15-geometry-toolkit-and-broadphase.html#lab" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase: Lab: your own filter kernel, and explicit pairs">Ch 15 §10</a></p>
+      </article>
+      <article class="ts" id="sap-distance-sensor" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#sap-distance-sensor">A distance sensor between far-apart geoms reads its cutoff with SAP</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The sweep-and-prune broadphase only visits neighbouring pairs, so the sensor override never runs on a far pair.</dd>
+          <dt>Fix</dt><dd>Use the NXN broadphase for such scenes, or keep sensor pairs close.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/15-geometry-toolkit-and-broadphase.html#sap" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase: Sweep and prune">Ch 15 §6</a> · also <a href="../chapters/15-geometry-toolkit-and-broadphase.html#choosing" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase: Choosing and switching the broadphase">Ch 15 §7</a></p>
+      </article>
+      <article class="ts" id="multiccd-wobble" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#multiccd-wobble">Cylinders or meshes wobble or slowly spin on a surface</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>MULTICCD was disabled for speed: those pairs then get one contact each.</dd>
+          <dt>Fix</dt><dd>Re-enable it, or measure the stability of the scene before trading it for throughput.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/17-convex-collision-gjk-epa.html#multicontact" title="Convex Shapes with GJK, EPA and Multi-Contact: Multi-contact: from one witness pair to four contacts">Ch 17 §6</a></p>
+      </article>
+      <article class="ts" id="nvmax-overflow" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#nvmax-overflow">NVMAX is set with sleeping on</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>More DOFs were awake at once in some world than <code>nvmax</code> allows.</dd>
+          <dt>Fix</dt><dd>Size <code>nvmax</code> for the worst world at the worst moment (start-up, resets); measure the peak with <code>d.nv_awake</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/21-islands-and-sleep.html#compact" title="Islands and Sleeping: The compacted solve and nvmax">Ch 21 §8</a></p>
+      </article>
+    </section>
+    <section class="sec ts-cat" id="nans">
+      <h2><span class="sec-num">5</span>NaNs, blow-ups and crashes<span class="cat-count">8</span></h2>
+      <p>MJWarp has no safety net of its own and does not bounds-check arrays in normal mode. While you develop a kernel, <code>wp.config.mode = "debug"</code> (set before the first launch) compiles bounds checks into every array access.</p>
+      <article class="ts" id="nan-forever" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#nan-forever">One world shows NaN and stays NaN; the learner is poisoned</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>C MuJoCo's <code>mj_checkPos</code> / <code>mj_checkVel</code> / <code>mj_checkAcc</code> reset a simulation that produced NaN or huge values. MJWarp has no equivalent and no auto-reset (the DisableBit comment lists AUTORESET as unsupported).</dd>
+          <dt>Fix</dt><dd>Add a non-finite guard to your done mask and reset those worlds on the device (<code>nonfinite_reset(m, d, done)</code> in <code>my_env.py</code>), then <code>mjw.reset_data(m, d, reset=done)</code>.<div class="code-block"><pre><code class="language-python">mjw.step(m, d)
+wp.launch(done_kernel, ...)          # landed / timeout
+nonfinite_reset(m, d, done)          # NaN guard: only ever sets done[w] = True
+mjw.reset_data(m, d, reset=done)
+wp.launch(randomize_velocity, ...)   # after reset_data, before forward
+mjw.forward(m, d)                    # fresh observations</code></pre></div></dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/08-resets-state-and-control.html#auto-reset" title="Resets, State, Mocap and Control Loops: Device-side auto-reset and a NaN guard">Ch 8 §10</a> · also <a href="../chapters/01-what-is-mujoco-warp.html#not-supported" title="What Is MuJoCo Warp?: What MJWarp does not do (yet)">Ch 1 §7</a></p>
+      </article>
+      <article class="ts" id="stiff-explodes" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#stiff-explodes">A stiff spring or contact explodes, or ignores a tiny <code>timeconst</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Explicit integration of a spring that is too stiff for the step size blows up. MuJoCo protects contacts: <code>timeconst</code> is clamped to at least <code>2 * timestep</code> unless REFSAFE is disabled or the integrator is discrete.</dd>
+          <dt>Fix</dt><dd>Use a smaller timestep, or a softer <code>solref</code> (larger timeconst). For stiff joint damping, <code>implicitfast</code> treats damping implicitly at about Euler's cost.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#penalty-floor" title="Rigid-Body Physics from Scratch: A bouncing ball on a spring-damper floor">Ch 3 §3</a> · also <a href="../chapters/03-rigid-body-physics-primer.html#euler" title="Rigid-Body Physics from Scratch: Explicit vs semi-implicit Euler">Ch 3 §2</a>, <a href="../chapters/02-mujoco-essentials.html#geoms-contacts" title="MuJoCo Essentials for MJWarp Users: Geoms and contacts: soft by design">Ch 2 §4</a>, <a href="../chapters/13-integrators.html#choosing" title="Time Integration: Euler, RK4, Implicit and Discrete: Choosing an integrator">Ch 13 §9</a></p>
+      </article>
+      <article class="ts" id="state-buffer" data-tags="crash">
+        <h3 class="ts-sym"><a class="self" href="#state-buffer">Crash or corrupted memory after <code>get_state</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Crash</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>get_state</code> does not check the buffer size: an undersized buffer is written out of bounds (CPU: process crash; GPU: silent corruption).</dd>
+          <dt>Fix</dt><dd>Always allocate the buffer from <code>mj_stateSize</code> and assert the shape (the <code>snapshot</code> / <code>restore</code> helpers in <code>my_env.py</code> do).<div class="code-block"><pre><code class="language-python">buf = wp.zeros((d.nworld, mujoco.mj_stateSize(mjm, sig)), dtype=float)
+assert buf.shape == (d.nworld, mujoco.mj_stateSize(mjm, sig))</code></pre></div></dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/08-resets-state-and-control.html#state" title="Resets, State, Mocap and Control Loops: Snapshots: get_state, set_state and State signatures">Ch 8 §4</a> · also <a href="../chapters/29-gradients-and-system-identification.html#cem" title="Gradients, Sampling-Based Optimization and Parallel System Identification: Sampling-based optimization: the cross-entropy method">Ch 29 §6</a></p>
+      </article>
+      <article class="ts" id="flex-fields-oob" data-tags="crash">
+        <h3 class="ts-sym"><a class="self" href="#flex-fields-oob">Segfault (exit 139) in a custom contact kernel</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Crash</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>d.contact.flex</code>, <code>elem</code> and <code>vert</code> have shape <code>(0,)</code> when <code>m.nflex == 0</code>; writing them is an out-of-bounds write.</dd>
+          <dt>Fix</dt><dd>Never write those fields without a flex. Develop with <code>wp.config.mode = "debug"</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#contact-pool" title="Contacts, Constraint Budgets and Overflow: The Contact struct and the shared pool">Ch 9 §2</a> · also <a href="../chapters/26-custom-kernels-and-extending.html#user-contacts" title="Writing Custom Kernels and Extending MJWarp: User-populated contacts: run_collision_detection=False">Ch 26 §6</a></p>
+      </article>
+      <article class="ts" id="sleep-island-segfault" data-tags="crash">
+        <h3 class="ts-sym"><a class="self" href="#sleep-island-segfault">Segfault on the first step with SLEEP enabled and <code>island="disable"</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Crash</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>In 4.0.1 the compacted solver buffers are allocated only when sleep is enabled (false when islands are disabled) or <code>nvmax</code> is given, but the solver tests only the SLEEP bit.</dd>
+          <dt>Fix</dt><dd>Drop the SLEEP flag when you disable islands, or pass <code>nvmax</code> to <code>make_data</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/21-islands-and-sleep.html#requirements" title="Islands and Sleeping: The sleep requirements in 4.0.1">Ch 21 §4</a></p>
+      </article>
+      <article class="ts" id="length-range-oob" data-tags="crash">
+        <h3 class="ts-sym"><a class="self" href="#length-range-oob">Garbage or a crash after <code>set_length_range</code> with many worlds</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Crash</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>It launches over <code>(nworld, nu)</code> and writes <code>actuator_lengthrange[worldid, ...]</code> without the round-robin wrap, so an unbatched output is written past its end.</dd>
+          <dt>Fix</dt><dd>Batch <code>actuator_lengthrange</code> to nworld first (Example 10.12).</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/10-domain-randomization.html#length-range" title="Domain Randomization with Batched Model Fields: set_length_range: actuator length ranges after DR">Ch 10 §8</a></p>
+      </article>
+      <article class="ts" id="tile-deadlock" data-tags="gpu crash">
+        <h3 class="ts-sym"><a class="self" href="#tile-deadlock">A tiled kernel hangs on the GPU but runs on CPU</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-gpu">GPU only</span><span class="ts-tag t-danger">Crash</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Tile operations are collectives: if some lanes return early or skip a <code>tile_*</code> call inside a divergent branch, the block deadlocks. On CPU there is one lane, so it runs.</dd>
+          <dt>Fix</dt><dd>Call tile functions unconditionally; put per-lane work in ordinary strided loops with a uniform trip count.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/26-custom-kernels-and-extending.html#tiles" title="Writing Custom Kernels and Extending MJWarp: Tiles: a block of threads per world">Ch 26 §8</a></p>
+      </article>
+      <article class="ts" id="rays-flex-crash" data-tags="crash">
+        <h3 class="ts-sym"><a class="self" href="#rays-flex-crash"><code>rays(..., rc=rc)</code> returns wrong hits in worlds &gt; 0 or crashes</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Crash</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>With a flex in the model, the BVH stride per world is <code>bvh_ngeom + bvh_nflexgeom</code>, but <code>rays</code> uses <code>bvh_ngeom</code> (4.0.1 and still at 8f5b9f1).</dd>
+          <dt>Fix</dt><dd>Use <code>rc=None</code> (brute force) for scenes with flexes; rendering is not affected.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#bvh" title="Rays, Lidar and Batch Rendering for Thousands of Worlds: The scene BVH: one tree, every world">Ch 27 §3</a></p>
+      </article>
+    </section>
+    <section class="sec ts-cat" id="silent">
+      <h2><span class="sec-num">6</span>Wrong numbers without an error<span class="cat-count">33</span></h2>
+      <p>The hardest bugs: everything runs, and the result is wrong. Most of them come from four habits: writing state without running forward, replacing arrays instead of writing into them, trusting CPU aliasing, and Python-level flags decided at <code>put_model</code> time.</p>
+      <article class="ts" id="float32-vs-c" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#float32-vs-c">MJWarp and C MuJoCo trajectories differ</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>MJWarp computes in float32, C in float64. For stable systems the difference stays around 1e-6 per step (Example 5.6: 7e-7 in qpos after 60 steps). Chaotic systems (a tumbling robot, a pile of objects, a long humanoid rollout) amplify any difference exponentially: after a few seconds neither run &quot;is right&quot;.</dd>
+          <dt>Fix</dt><dd>Compare short horizons with tolerances, and statistics (energy, success rates, distributions over many worlds) for long ones.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/05-first-simulation.html#accuracy" title="Your First MJWarp Simulation (and How to See It): Accuracy: float32, chaos, and the clock">Ch 5 §7</a> · also <a href="../chapters/22-determinism-and-reproducibility.html#chaos" title="Determinism and Reproducibility: Contact scenes and the chaos amplifier">Ch 22 §5</a></p>
+      </article>
+      <article class="ts" id="float32-time" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#float32-time"><code>d.time == 1.0</code> never becomes true, or an interval sensor fires one step late</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>d.time</code> is float32 and gets <code>timestep</code> added once per step: after 11 steps of 0.01 it reads 0.109999985; after a million steps the clock is off by 135 s.</dd>
+          <dt>Fix</dt><dd>Count steps with an integer, or compare with a tolerance of half a timestep; reset the clock with <code>reset_data</code> for long episodes; avoid sensor periods that are exact multiples of dt on the edge.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/05-first-simulation.html#accuracy" title="Your First MJWarp Simulation (and How to See It): Accuracy: float32, chaos, and the clock">Ch 5 §7</a> · also <a href="../chapters/14-sensors-delays-inverse-dynamics.html#cutoff-interval" title="Sensors, Delays and Inverse Dynamics: Cutoff and interval sampling">Ch 14 §6</a></p>
+      </article>
+      <article class="ts" id="stale-derived" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#stale-derived">I wrote <code>qpos</code>, but <code>xpos</code>, contacts or sensors did not change</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Derived quantities are computed by the pipeline, not by the write.</dd>
+          <dt>Fix</dt><dd>Call <code>mjw.forward(m, d)</code> after writing state and before reading derived quantities (or rendering).</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/02-mujoco-essentials.html#sim-loop" title="MuJoCo Essentials for MJWarp Users: The simulation loop">Ch 2 §9</a> · also <a href="../chapters/27-rays-lidar-and-batch-rendering.html#pipeline" title="Rays, Lidar and Batch Rendering for Thousands of Worlds: The four-call render pipeline">Ch 27 §4</a></p>
+      </article>
+      <article class="ts" id="stale-factor" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#stale-factor"><code>qacc</code> is wrong by a lot after calling stages by hand</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>fwd_position(factorize=False)</code> + <code>fwd_acceleration()</code> solves with the factor <code>qLD</code> of an old qpos: no exception, no NaN.</dd>
+          <dt>Fix</dt><dd>Exactly one factorization per new qpos: <code>fwd_position()</code> + <code>fwd_acceleration()</code>, or <code>fwd_position(factorize=False)</code> + <code>fwd_acceleration(factorize=True)</code>. After anything that changes <code>d.M</code>, call <code>factor_m</code> before <code>solve_m</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#factorization" title="Equations of Motion, Kinematics and the Mass Matrix: factor_m, solve_m, mul_m, jac, and the stale factor">Ch 11 §9</a> · also <a href="../chapters/07-pipeline-tour.html#factorize" title="A Guided Tour of step and forward: One pitfall: the factorize pairing">Ch 7 §3</a></p>
+      </article>
+      <article class="ts" id="float-into-option" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#float-into-option"><code>RuntimeError: ... argument 'opt_timestep' expects an array ... but passed value has type float</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>m.opt.timestep = 0.005</code> replaced the Warp array with a Python float. An existing graph silently keeps reading the old array.</dd>
+          <dt>Fix</dt><dd>Write into the array.<div class="code-block"><pre><code class="language-python">m.opt.timestep.fill_(0.005)        # or m.opt.timestep.assign([0.005])</code></pre></div></dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/05-first-simulation.html#option" title="Your First MJWarp Simulation (and How to See It): Option: arrays vs Python ints">Ch 5 §3</a> · also <a href="../chapters/24-cuda-graphs.html#knob-board" title="CUDA Graphs: Capture, Replay and What Gets Baked: The knob board: live, recompile or recapture">Ch 24 §4</a></p>
+      </article>
+      <article class="ts" id="replace-vs-assign" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#replace-vs-assign">A change to a Data or Model field has no effect</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The field was replaced with a new array (<code>d.qpos = wp.array(...)</code>) instead of written. Kernels and captured graphs hold the old pointer; a replaced Model array also loses its <code>_is_batched</code> tag.</dd>
+          <dt>Fix</dt><dd>After <code>make_data</code>, write with <code>assign</code>, <code>wp.copy</code>, <code>fill_</code>, <code>zero_</code> or a kernel. Replace Model arrays (to batch them) only before capture, keeping dtype and trailing shape.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/06-batched-data-layout.html#replace-vs-assign" title="Many Worlds: The Batched Data Layout: Identity matters: replace vs assign">Ch 6 §5</a> · also <a href="../chapters/06-batched-data-layout.html#spec-strings" title="Many Worlds: The Batched Data Layout: Spec strings and mark_batched">Ch 6 §9</a>, <a href="../chapters/10-domain-randomization.html#batching-rule" title="Domain Randomization with Batched Model Fields: The batching rule and the two ways to use it">Ch 10 §2</a>, <a href="../chapters/29-gradients-and-system-identification.html#choosing" title="Gradients, Sampling-Based Optimization and Parallel System Identification: Choosing a method, and running it fast">Ch 29 §8</a></p>
+      </article>
+      <article class="ts" id="assign-shape" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#assign-shape"><code>assign</code> accepted a wrongly shaped source</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>wp.copy</code> is a flat byte copy: it refuses a larger source but silently accepts a smaller one and never compares shapes. An <code>(nworld - 1, nv)</code> source leaves the last world untouched.</dd>
+          <dt>Fix</dt><dd>Assert the source shape yourself before <code>assign</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/06-batched-data-layout.html#writing-inputs" title="Many Worlds: The Batched Data Layout: Writing per-world inputs">Ch 6 §4</a></p>
+      </article>
+      <article class="ts" id="numpy-view-cpu" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#numpy-view-cpu">Stored arrays all show the last step (CPU), or a subtraction gives 0</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>On Warp's CPU device <code>.numpy()</code> returns a zero-copy view of device memory; on a GPU it returns a fresh copy. Code that relies on either behaviour is wrong on the other device.</dd>
+          <dt>Fix</dt><dd>Call <code>.copy()</code> on every host array you keep across steps.<div class="code-block"><pre><code class="language-python">zs.append(d.qpos.numpy()[:, 2].copy())</code></pre></div></dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/06-batched-data-layout.html#host-reads" title="Many Worlds: The Batched Data Layout: Host reads and plotting many worlds">Ch 6 §10</a> · also <a href="../chapters/12-forces-actuators-tendons.html#muscles" title="Forces: Passive, Springs, Bias, Actuators and Tendons: Muscles">Ch 12 §9</a>, <a href="../chapters/04-warp-and-the-gpu.html#arrays" title="NVIDIA Warp and How a GPU Runs Your Kernel: Arrays: wp.array, dtypes and shapes">Ch 4 §2</a></p>
+      </article>
+      <article class="ts" id="has-fluid" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#has-fluid">Per-world density, viscosity or wind is ignored</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>put_model</code> decides once: <code>m.has_fluid = bool(wind.any() or density &gt; 0 or viscosity &gt; 0)</code> from the XML. With all three zero the fluid pass never runs.</dd>
+          <dt>Fix</dt><dd>Put a non-zero density, viscosity or wind in the XML of any model you randomize them on. (The inertia-box fluid model has no buoyancy term.)</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/10-domain-randomization.html#simple-dr" title="Domain Randomization with Batched Model Fields: Simple DR first: fields with no derived constants">Ch 10 §3</a> · also <a href="../chapters/06-batched-data-layout.html#exercises" title="Many Worlds: The Batched Data Layout: Exercises">Ch 6 §13</a></p>
+      </article>
+      <article class="ts" id="surfacevel-flag" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#surfacevel-flag">Per-world conveyor speeds (<code>geom_surfacevel</code>) do nothing</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>m.flg_surfacevel</code> is a Python bool copied from the MjModel; the surface-velocity code is skipped when it is False.</dd>
+          <dt>Fix</dt><dd>Give at least one geom a nonzero <code>surfacevel</code> in the MJCF, or set <code>m.flg_surfacevel = True</code> after <code>put_model</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/16-primitive-narrowphase.html#surfacevel" title="Collision II: Geom Types and Primitive Colliders: Surface velocity: conveyor belts">Ch 16 §9</a></p>
+      </article>
+      <article class="ts" id="friction-max" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#friction-max">Randomizing one geom's friction has no effect</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Contact friction is the element-wise maximum of the two geoms' frictions (unless one has a higher priority). A floor at 1.0 dominates a box randomized below it.</dd>
+          <dt>Fix</dt><dd>Randomize both geoms of the pair, or use priority / explicit pairs.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/10-domain-randomization.html#simple-dr" title="Domain Randomization with Batched Model Fields: Simple DR first: fields with no derived constants">Ch 10 §3</a> · also <a href="../chapters/10-domain-randomization.html#contact-materials" title="Domain Randomization with Batched Model Fields: Contact materials per world">Ch 10 §10</a></p>
+      </article>
+      <article class="ts" id="mass-size" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#mass-size">Bigger randomized geoms keep the XML mass; subtree masses are identical across worlds</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>MJWarp never recomputes <code>body_mass</code> / <code>body_inertia</code> from sizes, and <code>set_const</code> writes one shared row into an unbatched output.</dd>
+          <dt>Fix</dt><dd>Scale mass by s³ and inertia by s⁵ yourself, batch every derived output (<code>body_subtreemass</code>, ...) to nworld, then call <code>set_const</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/10-domain-randomization.html#derived-pitfall" title="Domain Randomization with Batched Model Fields: The derived-field pitfall, and the fix">Ch 10 §7</a> · also <a href="../chapters/10-domain-randomization.html#derived-constants" title="Domain Randomization with Batched Model Fields: Derived constants in plain language">Ch 10 §5</a>, <a href="../chapters/30-capstone-rl-at-scale.html#env" title="Capstone: GPU-Native Reinforcement Learning at Scale: Implementing CartpoleEnv">Ch 30 §4</a></p>
+      </article>
+      <article class="ts" id="impratio" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#impratio">There is no <code>m.opt.impratio</code> to randomize</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>MJWarp stores <code>m.opt.impratio_invsqrt = 1/sqrt(impratio)</code>, batched per world.</dd>
+          <dt>Fix</dt><dd>Write <code>impratio_invsqrt</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/19-constraints-as-optimization.html#softness" title="Constraints as Convex Optimization: Softness: from solref and solimp to D and aref">Ch 19 §8</a></p>
+      </article>
+      <article class="ts" id="springref-degrees" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#springref-degrees">Hinge spring forces are off (e.g. by about 2 N)</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>MJCF reads hinge <code>springref</code>, <code>ref</code> and <code>range</code> in degrees unless <code>&lt;compiler angle="radian"/&gt;</code>.</dd>
+          <dt>Fix</dt><dd>Set <code>angle="radian"</code> or give degrees.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/12-forces-actuators-tendons.html#passive" title="Forces: Passive, Springs, Bias, Actuators and Tendons: Passive forces: springs and dampers">Ch 12 §2</a></p>
+      </article>
+      <article class="ts" id="ctrl-index" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#ctrl-index">Policy actions drive the wrong actuators on a MuJoCo 4 model</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>ctrl[i]</code> drives actuator i only when every actuator has <code>ctrlnum = 1</code>.</dd>
+          <dt>Fix</dt><dd>Find an actuator's slots with <code>actuator_ctrladr</code>; size action spaces from <code>m.nu</code>, not <code>m.nactuator</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/12-forces-actuators-tendons.html#mujoco4-actuators" title="Forces: Passive, Springs, Bias, Actuators and Tendons: Actuators in MuJoCo 4: controls, DC motors, and what 4.0.1 rejects">Ch 12 §8</a></p>
+      </article>
+      <article class="ts" id="rne-post" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#rne-post"><code>cacc</code>, <code>cfrc_int</code> or <code>cfrc_ext</code> look wrong or stale</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>They hold post-solve values only when <code>m.opt.run_rne_postconstraint</code> is set (default False) or a sensor needs it; otherwise <code>cfrc_ext</code> keeps whatever was in it.</dd>
+          <dt>Fix</dt><dd>Set <code>m.opt.run_rne_postconstraint = True</code> before you read them.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#joints" title="Equations of Motion, Kinematics and the Mass Matrix: Joint math in kinematics, and what kinematics writes">Ch 11 §4</a> · also <a href="../chapters/12-forces-actuators-tendons.html#postconstraint" title="Forces: Passive, Springs, Bias, Actuators and Tendons: After the solver: rne_postconstraint">Ch 12 §5</a></p>
+      </article>
+      <article class="ts" id="xfrc-convention" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#xfrc-convention">A force applied with <code>xfrc_applied</code> acts as a torque</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>xfrc_applied</code> is (force, torque) at the body's centre of mass, while the <code>c*</code> spatial vectors are (rotation, translation).</dd>
+          <dt>Fix</dt><dd>Put the force in slots 0-2 of <code>xfrc_applied</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#spatial" title="Equations of Motion, Kinematics and the Mass Matrix: Spatial algebra: 6-vectors and the com frame">Ch 11 §3</a></p>
+      </article>
+      <article class="ts" id="quat-order" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#quat-order">Orientations are rotated about the wrong axis</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>MuJoCo quaternions are (w, x, y, z); SciPy's <code>as_quat()</code> and Warp's built-ins (<code>wp.quat_rotate</code>, <code>wp.transform</code>, ...) use (x, y, z, w).</dd>
+          <dt>Fix</dt><dd><code>np.roll(q_xyzw, 1)</code> from SciPy (or <code>scalar_first=True</code>); use MJWarp's <code>math</code> helpers or reorder with <code>wp.quat(q[1], q[2], q[3], q[0])</code> before a Warp built-in. See the <a href="math-toolkit.html#quaternions">math toolkit</a>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/02-mujoco-essentials.html#joints-coordinates" title="MuJoCo Essentials for MJWarp Users: Joints, coordinates and quaternions">Ch 2 §3</a> · also <a href="../chapters/04-warp-and-the-gpu.html#quat-storage" title="NVIDIA Warp and How a GPU Runs Your Kernel: The wp.quat storage pitfall">Ch 4 §6</a></p>
+      </article>
+      <article class="ts" id="free-joint-angvel" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#free-joint-angvel">Free-body angular velocity looks rotated</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>qvel[0:3]</code> of a free joint is world-frame linear velocity, <code>qvel[3:6]</code> is angular velocity in the body frame.</dd>
+          <dt>Fix</dt><dd>Rotate with <code>xmat</code> to get world-frame angular velocity.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#rigid-state" title="Rigid-Body Physics from Scratch: A rigid body: six degrees of freedom">Ch 3 §4</a> · also <a href="../chapters/13-integrators.html#quaternions" title="Time Integration: Euler, RK4, Implicit and Discrete: Positions on a sphere: integrating orientation">Ch 13 §2</a></p>
+      </article>
+      <article class="ts" id="mocap-reset" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#mocap-reset">Mocap targets jump back after a reset</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>reset_data</code> sets <code>mocap_pos</code> / <code>mocap_quat</code> back to the model (or keyframe) values.</dd>
+          <dt>Fix</dt><dd>Run your target kernel again after every reset, before the next step.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/08-resets-state-and-control.html#mocap" title="Resets, State, Mocap and Control Loops: Mocap bodies: one target per world">Ch 8 §5</a></p>
+      </article>
+      <article class="ts" id="keyframe-dtype" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#keyframe-dtype"><code>expects an array with dtype=int32</code> from <code>reset_data_keyframe</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The keyframe array must be int32 (<code>wp.array(np.array([...]))</code> gives int64 on Linux); only the array form treats an out-of-range id as &quot;skip&quot;.</dd>
+          <dt>Fix</dt><dd><code>wp.array(ids, dtype=int)</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/08-resets-state-and-control.html#keyframes" title="Resets, State, Mocap and Control Loops: reset_data_keyframe: a different start per world">Ch 8 §2</a></p>
+      </article>
+      <article class="ts" id="callback-runs-4x" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#callback-runs-4x">The control callback runs four times per step / sees odd states</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Under RK4 the callback runs once per stage; stages 2-4 see intermediate qpos/qvel while <code>sensordata</code> still holds stage-1 values. <code>step1</code>/<code>step2</code> integrate with Euler when the model uses RK4.</dd>
+          <dt>Fix</dt><dd>Keep callbacks cheap, side-effect-free functions of the state; with RK4 and a controller, set ctrl before <code>mjw.step</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/08-resets-state-and-control.html#step1-step2" title="Resets, State, Mocap and Control Loops: Control in the loop: step1, your policy, step2">Ch 8 §7</a> · also <a href="../chapters/13-integrators.html#rk4" title="Time Integration: Euler, RK4, Implicit and Discrete: RK4: four forwards per step">Ch 13 §4</a></p>
+      </article>
+      <article class="ts" id="njmax-zero" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#njmax-zero">Nothing moves with <code>njmax=0</code> (4.0.1)</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>With <code>njmax == 0</code> the 4.0.1 solver returns early without filling <code>d.efc.Ma</code>, which the Euler damping solve (and IMPLICITFAST, IMPLICIT) uses.</dd>
+          <dt>Fix</dt><dd>Never pass <code>njmax=0</code> to <code>make_data</code> with these integrators.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/13-integrators.html#euler" title="Time Integration: Euler, RK4, Implicit and Discrete: EULER: semi-implicit, with implicit damping">Ch 13 §3</a></p>
+      </article>
+      <article class="ts" id="delay-buffer" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#delay-buffer">A long actuator or sensor delay acts like a shorter one</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The delay buffer holds <code>nsample</code> samples; reads before the oldest sample return the oldest value. <code>read_sensor</code> also subtracts the delay for you.</dd>
+          <dt>Fix</dt><dd>Size <code>nsample</code> from the largest delay (incl. randomized ones); pass the time at which you want the delayed reading.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/14-sensors-delays-inverse-dynamics.html#delays" title="Sensors, Delays and Inverse Dynamics: Delays: history ring buffers">Ch 14 §8</a></p>
+      </article>
+      <article class="ts" id="ray-own-body" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#ray-own-body">A rangefinder on a world-body camera reads -1</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Rays exclude the body that carries the site or camera: body 0 excludes every static geom, the floor included.</dd>
+          <dt>Fix</dt><dd>Mount the sensor on a separate static body.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/14-sensors-delays-inverse-dynamics.html#rays-collisions" title="Sensors, Delays and Inverse Dynamics: Sensors built on rays and collisions">Ch 14 §5</a></p>
+      </article>
+      <article class="ts" id="obs-stale" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#obs-stale">Observations and sensors disagree by one step</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Sensors are computed inside forward at the start of <code>mjw.step</code>, so after a step they describe the state before the integrator moved it.</dd>
+          <dt>Fix</dt><dd>Pack observations after a forward, or from sensors only.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/26-custom-kernels-and-extending.html#rl-kernels" title="Writing Custom Kernels and Extending MJWarp: RL-style kernels: reward, observation and done, in one graph">Ch 26 §2</a></p>
+      </article>
+      <article class="ts" id="callback-raw-ctrl" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#callback-raw-ctrl">A force callback sees unclamped ctrl</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The actuator kernel clamps ctrl into a local variable; <code>d.ctrl</code> is not modified (and with delays the kernel used the delayed ctrl).</dd>
+          <dt>Fix</dt><dd>Clamp with <code>m.actuator_ctrlrange</code> in your kernel.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/26-custom-kernels-and-extending.html#force-callbacks" title="Writing Custom Kernels and Extending MJWarp: Force callbacks: passive and the actuator trio">Ch 26 §4</a> · also <a href="../chapters/08-resets-state-and-control.html#ctrl-clamp" title="Resets, State, Mocap and Control Loops: ctrlrange clamps on read; d.ctrl is never changed">Ch 8 §8</a></p>
+      </article>
+      <article class="ts" id="cpu-determinism" data-tags="gpu silent">
+        <h3 class="ts-sym"><a class="self" href="#cpu-determinism">Reproducibility tests pass on CPU and fail on the GPU</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-gpu">GPU only</span><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Float atomics sum in arbitrary order on a GPU, so low bits change; contact order also changes. CPU runs are deterministic either way.</dd>
+          <dt>Fix</dt><dd>Run reproducibility tests on the GPU; select contacts by <code>contact.worldid</code> and compare buffers in canonical order; <code>m.opt.deterministic</code> helps only partly in 4.0.1 (only its ATOMICS bit has an effect; the CONTACTS and CONSTRAINT sorts are empty stubs), so for bitwise replays use the replay technique and measure the cost.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/22-determinism-and-reproducibility.html#sources" title="Determinism and Reproducibility: Three sources of run-to-run noise">Ch 22 §1</a> · also <a href="../chapters/22-determinism-and-reproducibility.html#contact-order" title="Determinism and Reproducibility: Contact slots and constraint rows: order without meaning">Ch 22 §2</a>, <a href="../chapters/22-determinism-and-reproducibility.html#option" title="Determinism and Reproducibility: m.opt.deterministic: what each bit does in 4.0.1">Ch 22 §3</a>, <a href="../chapters/22-determinism-and-reproducibility.html#replay" title="Determinism and Reproducibility: Testing reproducibility: the replay technique">Ch 22 §6</a></p>
+      </article>
+      <article class="ts" id="flex-contact-classify" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#flex-contact-classify">Rigid contacts carry stale <code>flex</code> ids</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>In 4.0.1 rigid colliders never reset <code>flex/elem/vert</code> of a reused slot.</dd>
+          <dt>Fix</dt><dd>A side is a flex exactly when <code>contact.geom</code> is -1 on that side.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#collision" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator: Flex collision">Ch 23 §5</a></p>
+      </article>
+      <article class="ts" id="cloth-no-forces" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#cloth-no-forces">A cloth falls away from its pins</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>For a dim=2 flex, <code>elastic2d</code> defaults to <code>"none"</code>: <code>young</code> and <code>thickness</code> alone give no forces.</dd>
+          <dt>Fix</dt><dd>Set <code>elastic2d="stretch"</code>, <code>"bend"</code> or <code>"both"</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#anatomy" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator: What a flex is">Ch 23 §1</a></p>
+      </article>
+      <article class="ts" id="stale-gradients" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#stale-gradients">Gradients grow every iteration</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>tape.zero()</code> was forgotten, or not captured inside the graph before the backward.</dd>
+          <dt>Fix</dt><dd>Zero the tape every iteration (inside the graph when you capture).</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/29-gradients-and-system-identification.html#tape" title="Gradients, Sampling-Based Optimization and Parallel System Identification: wp.Tape on a two-line kernel">Ch 29 §2</a></p>
+      </article>
+      <article class="ts" id="interop-alias" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#interop-alias">A tensor kept from MJWarp changes by itself; JAX results depend on earlier calls</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>wp.to_torch</code> views alias live memory. A JAX op that closes over <code>d</code> is not pure: time, warmstart, ctrl and contacts persist between calls.</dd>
+          <dt>Fix</dt><dd>Clone what you keep; pass hidden state in and out explicitly.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/28-interop-torch-and-jax.html#zero-copy" title="Interop with PyTorch and JAX: Zero-copy: one buffer, several views">Ch 28 §1</a> · also <a href="../chapters/28-interop-torch-and-jax.html#jax-bridge" title="Interop with PyTorch and JAX: The JAX bridge: mjw.step as a JAX op">Ch 28 §4</a></p>
+      </article>
+      <article class="ts" id="rl-terminates" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#rl-terminates">The agent learns to end episodes immediately</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Negative per-step rewards make early termination the best policy.</dd>
+          <dt>Fix</dt><dd>Keep per-step rewards non-negative in states you want, or add an explicit failure penalty.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/30-capstone-rl-at-scale.html#task" title="Capstone: GPU-Native Reinforcement Learning at Scale: The warm-up task: balance a cartpole">Ch 30 §2</a></p>
+      </article>
+    </section>
+    <section class="sec ts-cat" id="graphs">
+      <h2><span class="sec-num">7</span>CUDA graph capture and replay<span class="cat-count">8</span></h2>
+      <p>A CUDA graph records launches once and replays them; conditional nodes loop on device. Owner: <a href="../chapters/24-cuda-graphs.html" title="CUDA Graphs: Capture, Replay and What Gets Baked">Ch 24</a>. The three verdicts for any change: <strong>live</strong> (array, read at replay), <strong>recapture</strong> (Python value baked into the recording), <strong>recompile + recapture</strong> (a kernel constant).</p>
+      <article class="ts" id="graph-host-read" data-tags="error gpu">
+        <h3 class="ts-sym"><a class="self" href="#graph-host-read">Capture fails, or hangs, around <code>.numpy()</code> / <code>print(arr)</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span><span class="ts-tag t-gpu">GPU only</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>A device-to-host copy needs the device to finish, which is impossible while the stream is being recorded.</dd>
+          <dt>Fix</dt><dd>No <code>.numpy()</code>, <code>.item()</code> or prints of arrays inside <code>wp.ScopedCapture()</code>. Read results after <code>wp.capture_launch</code>; <code>wp.printf</code> inside kernels is fine.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/24-cuda-graphs.html#pattern" title="CUDA Graphs: Capture, Replay and What Gets Baked: The canonical pattern: warm up, capture, replay">Ch 24 §2</a></p>
+      </article>
+      <article class="ts" id="graph-conditional" data-tags="error gpu">
+        <h3 class="ts-sym"><a class="self" href="#graph-conditional">Capture fails on an old driver, with a <code>CUDA version &lt; 12.4 detected</code> warning</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span><span class="ts-tag t-gpu">GPU only</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Conditional nodes (<code>capture_while</code> in the solver) need CUDA 12.4+ in both toolkit and driver. <code>put_model</code> only warns and still sets <code>graph_conditional = True</code>.</dd>
+          <dt>Fix</dt><dd>Set the flag before capturing (it is itself a baked knob); the setup cell's <code>GRAPH_COND</code> tells you which case you are in. Consider lowering <code>m.opt.iterations</code>, because the fallback unrolls the iterations.<div class="code-block"><pre><code class="language-python">if not wp.is_conditional_graph_supported():
+    m.opt.graph_conditional = False      # before wp.ScopedCapture()</code></pre></div></dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/24-cuda-graphs.html#toolkit" title="CUDA Graphs: Capture, Replay and What Gets Baked: CUDA 12.4 and the fallback">Ch 24 §6</a> · also <a href="../chapters/01-what-is-mujoco-warp.html#colab-setup" title="What Is MuJoCo Warp?: Setting up Colab, line by line">Ch 1 §5</a></p>
+      </article>
+      <article class="ts" id="graph-stale-knob" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#graph-stale-knob">Changing <code>m.opt.iterations</code>, <code>integrator</code>, <code>solver</code>, flags or callbacks has no effect on replay</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Integer and bool options and callbacks are read by Python while recording; the graph replays what was recorded.</dd>
+          <dt>Fix</dt><dd>Recapture after any change to an integer option, a flag or a callback. Array options are live.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/24-cuda-graphs.html#knob-board" title="CUDA Graphs: Capture, Replay and What Gets Baked: The knob board: live, recompile or recapture">Ch 24 §4</a> · also <a href="../chapters/13-integrators.html#advance" title="Time Integration: Euler, RK4, Implicit and Discrete: One step = forward + integrate">Ch 13 §1</a>, <a href="../chapters/07-pipeline-tour.html#disable-flags" title="A Guided Tour of step and forward: Disable flags: switching stages off">Ch 7 §7</a>, <a href="../chapters/26-custom-kernels-and-extending.html#callbacks" title="Writing Custom Kernels and Extending MJWarp: The callback catalogue: seven sockets in the pipeline">Ch 26 §3</a></p>
+      </article>
+      <article class="ts" id="graph-replaced-array" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#graph-replaced-array">A randomized field is ignored after capture</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>A graph stores the pointers of the arrays it read: a replaced array is never seen.</dd>
+          <dt>Fix</dt><dd>Replace arrays before capture; afterwards only write into them.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/10-domain-randomization.html#batching-rule" title="Domain Randomization with Batched Model Fields: The batching rule and the two ways to use it">Ch 10 §2</a> · also <a href="../chapters/06-batched-data-layout.html#replace-vs-assign" title="Many Worlds: The Batched Data Layout: Identity matters: replace vs assign">Ch 6 §5</a>, <a href="../chapters/29-gradients-and-system-identification.html#choosing" title="Gradients, Sampling-Based Optimization and Parallel System Identification: Choosing a method, and running it fast">Ch 29 §8</a></p>
+      </article>
+      <article class="ts" id="graph-python-side-effects" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#graph-python-side-effects">A counter, print or Python <code>if</code> inside a callback runs only once</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Callbacks run on the host during capture; only their kernel launches are recorded.</dd>
+          <dt>Fix</dt><dd>Keep all decisions inside kernels.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/08-resets-state-and-control.html#callbacks" title="Resets, State, Mocap and Control Loops: Callbacks: code that runs inside the step">Ch 8 §9</a> · also <a href="../chapters/26-custom-kernels-and-extending.html#callbacks" title="Writing Custom Kernels and Extending MJWarp: The callback catalogue: seven sockets in the pipeline">Ch 26 §3</a></p>
+      </article>
+      <article class="ts" id="graph-alloc" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#graph-alloc">Results of a captured helper are never updated</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The helper allocated its output during capture; the replay writes into memory Python never sees again. Inside a conditional node body you cannot allocate at all.</dd>
+          <dt>Fix</dt><dd>Allocate outputs before capturing and pass them in.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/24-cuda-graphs.html#own-kernels" title="CUDA Graphs: Capture, Replay and What Gets Baked: One graph per control step: substeps and your own kernels">Ch 24 §8</a> · also <a href="../chapters/24-cuda-graphs.html#pattern" title="CUDA Graphs: Capture, Replay and What Gets Baked: The canonical pattern: warm up, capture, replay">Ch 24 §2</a></p>
+      </article>
+      <article class="ts" id="graph-mass-dr" data-tags="gpu">
+        <h3 class="ts-sym"><a class="self" href="#graph-mass-dr">Mass randomization with <code>set_const</code> inside a graph</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-gpu">GPU only</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>set_const</code> clones arrays and relaunches over every world; capturing it on a GPU is unverified in this course.</dd>
+          <dt>Fix</dt><dd>Keep mass DR eager, at rollout boundaries; in-place fields (friction, damping, gains, gravity) can be re-drawn inside the graph.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/10-domain-randomization.html#rerandomize" title="Domain Randomization with Batched Model Fields: Re-randomize on the device at every episode reset">Ch 10 §11</a> · also <a href="../chapters/30-capstone-rl-at-scale.html#evaluation" title="Capstone: GPU-Native Reinforcement Learning at Scale: Evaluation under randomized physics">Ch 30 §9</a></p>
+      </article>
+      <article class="ts" id="not-a-cuda-device" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#not-a-cuda-device"><code>RuntimeError: Device cpu is not a CUDA device</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Something called a CUDA-only API on CPU: <code>mjwarp-record</code> (<code>wp.get_stream()</code> in <code>cli.unroll</code>) or an <code>EventTracer</code> scope (<code>wp.Event(enable_timing=True)</code>).</dd>
+          <dt>Fix</dt><dd>Run the CLI on a GPU, or the same loop by hand on CPU; pass <code>enabled=ON_GPU</code> to the tracer.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It): The command-line tools: mjwarp-viewer and mjwarp-record">Ch 5 §9</a> · also <a href="../chapters/07-pipeline-tour.html#instrumentation" title="A Guided Tour of step and forward: Where the time goes: timing stages, event_scope and EventTracer">Ch 7 §9</a>, <a href="../chapters/25-profiling-benchmarking-tuning.html#event-trace" title="Profiling, Benchmarking and Tuning for Throughput: The profiling workflow: event_scope and EventTracer">Ch 25 §3</a></p>
+      </article>
+    </section>
+    <section class="sec ts-cat" id="rendering">
+      <h2><span class="sec-num">8</span>Rendering, viewer and recording<span class="cat-count">10</span></h2>
+      <p>Two render paths: copy one world to the host and use <code>mujoco.Renderer</code> (OpenGL), or ray-trace every world on the device with the batch renderer. <a href="../chapters/05-first-simulation.html#seeing-it" title="Your First MJWarp Simulation (and How to See It): Seeing it: two render paths">Ch 5 §8</a> compares them; <a href="../chapters/27-rays-lidar-and-batch-rendering.html" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27</a> owns the batch renderer.</p>
+      <article class="ts" id="renderer-importerror" data-tags="error colab">
+        <h3 class="ts-sym"><a class="self" href="#renderer-importerror"><code>ImportError</code> when constructing <code>mujoco.Renderer</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span><span class="ts-tag t-info">Setup</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>No PyOpenGL, or <code>MUJOCO_GL=egl</code> without an EGL library. The backend must be chosen <em>before</em> <code>import mujoco</code>; if mujoco was imported with another backend, the choice is fixed until a restart.</dd>
+          <dt>Fix</dt><dd>In rendering notebooks the setup cell sets <code>MUJOCO_GL=egl</code> first. Catch <code>Exception</code> and fall back to the MJWarp batch renderer (Examples 2.12, 5.9).<div class="code-block"><pre><code class="language-python">import os
+os.environ.setdefault("MUJOCO_GL", "egl")   # before "import mujoco"
+import mujoco</code></pre></div></dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/02-mujoco-essentials.html#rendering" title="MuJoCo Essentials for MJWarp Users: Seeing a frame">Ch 2 §12</a> · also <a href="../chapters/05-first-simulation.html#seeing-it" title="Your First MJWarp Simulation (and How to See It): Seeing it: two render paths">Ch 5 §8</a></p>
+      </article>
+      <article class="ts" id="viewer-colab" data-tags="colab">
+        <h3 class="ts-sym"><a class="self" href="#viewer-colab"><code>mjwarp-viewer</code> does not open on Colab</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-info">Setup</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The native viewer (<code>mujoco.viewer.launch_passive</code>) needs a display; Colab has none.</dd>
+          <dt>Fix</dt><dd>On Colab, record instead: <code>mjwarp-record</code> (GIF/WebP) or the batch renderer + <code>mediapy</code>. <code>--viewer viser</code> runs in a browser, but on Colab it would need a tunnel (unverified). Locally with a display the native viewer works; on CPU it prints <code>Running Warp unoptimized on CPU.</code></dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/05-first-simulation.html#seeing-it" title="Your First MJWarp Simulation (and How to See It): Seeing it: two render paths">Ch 5 §8</a> · also <a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It): The command-line tools: mjwarp-viewer and mjwarp-record">Ch 5 §9</a></p>
+      </article>
+      <article class="ts" id="record-gpu-only" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#record-gpu-only"><code>mjwarp-record</code> fails on CPU</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>It is a GPU-only CLI: <code>cli.unroll</code> wraps every step in <code>wp.ScopedStream(wp.get_stream())</code>.</dd>
+          <dt>Fix</dt><dd>Run it on a GPU; on CPU, run the same loop by hand (Example 5.11).</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It): The command-line tools: mjwarp-viewer and mjwarp-record">Ch 5 §9</a></p>
+      </article>
+      <article class="ts" id="record-video-flag" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#record-video-flag"><code>mjwarp-record ... --video humanoid.mp4</code> stops with an unknown flag</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>The usage line in <code>record.py</code>'s docstring is wrong: there is no <code>--video</code> flag, and only <code>.gif</code> / <code>.webp</code> are accepted (<code>ValueError: Unsupported video format</code>, raised after the rollout).</dd>
+          <dt>Fix</dt><dd><code>--output humanoid.gif</code> (or <code>.webp</code>).</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It): The command-line tools: mjwarp-viewer and mjwarp-record">Ch 5 §9</a></p>
+      </article>
+      <article class="ts" id="record-segmentation" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#record-segmentation"><code>ValueError: Segmentation channel requested for recording, but segmentation rendering is disabled.</code></a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>--channel segmentation</code> needs the render context to render segmentation, and <code>--render_seg</code> defaults to <code>false</code>. Depth works without a flag because <code>--render_depth</code> defaults to <code>true</code>. Both channels need <code>--render_mode warp</code> (otherwise: <code>... channel recording is only supported under the 'warp' rendering mode.</code>).</dd>
+          <dt>Fix</dt><dd>Pass <code>--render_seg true</code> together with <code>--render_mode warp</code>.<div class="code-block"><pre><code class="language-bash">mjwarp-record model.xml --output seg.gif --render_mode warp --channel segmentation --render_seg true</code></pre></div></dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It): The command-line tools: mjwarp-viewer and mjwarp-record">Ch 5 §9</a> · also <a href="../chapters/27-rays-lidar-and-batch-rendering.html#depth-seg" title="Rays, Lidar and Batch Rendering for Thousands of Worlds: Depth and segmentation in practice">Ch 27 §11</a></p>
+      </article>
+      <article class="ts" id="batch-render-shapes" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#batch-render-shapes">Batch-rendered images are 1x1, garbled, transposed or stale</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>cam_res</code> is (width, height) but images come out (nworld, height, width); the <code>get_*</code> kernels trust your output shape. Without <code>cam_res</code> and <code>render_rgb</code> the camera's MJCF attributes decide. The BVH must be refit before every render, after the poses are computed.</dd>
+          <dt>Fix</dt><dd>Every frame: <code>step</code>/<code>forward</code> &rarr; (write hand-set cameras) &rarr; <code>refit_bvh</code> &rarr; <code>render</code> &rarr; <code>get_rgb(rc, camera_index, rgb_out)</code> with an <code>(nworld, H, W)</code> output. Check <code>rc.rgb_adr.numpy()[cam] &gt;= 0</code>. The model needs at least one camera.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/05-first-simulation.html#seeing-it" title="Your First MJWarp Simulation (and How to See It): Seeing it: two render paths">Ch 5 §8</a> · also <a href="../chapters/27-rays-lidar-and-batch-rendering.html#pipeline" title="Rays, Lidar and Batch Rendering for Thousands of Worlds: The four-call render pipeline">Ch 27 §4</a>, <a href="../chapters/27-rays-lidar-and-batch-rendering.html#threads" title="Rays, Lidar and Batch Rendering for Thousands of Worlds: One thread per (world, ray): mapping and output buffers">Ch 27 §8</a></p>
+      </article>
+      <article class="ts" id="camera-overwritten" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#camera-overwritten">A camera position I set is ignored</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd><code>camlight</code> recomputes <code>cam_xpos</code> / <code>cam_xmat</code> in every forward/step.</dd>
+          <dt>Fix</dt><dd>Write hand-set cameras after step/forward and before <code>refit_bvh</code> / <code>render</code>, every frame.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#camera-modes" title="Rays, Lidar and Batch Rendering for Thousands of Worlds: Camera and light modes, and the ordering rule">Ch 27 §7</a></p>
+      </article>
+      <article class="ts" id="lidar-misses-geoms" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#lidar-misses-geoms">A lidar does not see collision-only geoms</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>With <code>rc=</code>, only geoms in the BVH can be hit, and the BVH holds only <code>enabled_geom_groups</code> (default [0, 1, 2]), separate from the ray <code>geomgroup</code> mask.</dd>
+          <dt>Fix</dt><dd>Add the group to <code>enabled_geom_groups</code>, or use <code>rc=None</code>.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#filters" title="Rays, Lidar and Batch Rendering for Thousands of Worlds: What a ray may hit: _ray_eliminate">Ch 27 §2</a></p>
+      </article>
+      <article class="ts" id="contrib-shadows" data-tags="silent">
+        <h3 class="ts-sym"><a class="self" href="#contrib-shadows"><code>contrib/render.py --shadows</code> changes nothing</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-warn">Silent</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>It passes arguments to <code>create_render_context</code> positionally; the 8th parameter is <code>use_fast_math</code>, not <code>use_shadows</code>.</dd>
+          <dt>Fix</dt><dd>Call <code>create_render_context</code> with keyword arguments.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#options" title="Rays, Lidar and Batch Rendering for Thousands of Worlds: Every option of create_render_context">Ch 27 §5</a></p>
+      </article>
+      <article class="ts" id="private-api-break" data-tags="error">
+        <h3 class="ts-sym"><a class="self" href="#private-api-break">Code that imports <code>mujoco_warp._src</code> breaks after an upgrade</a></h3>
+        <div class="ts-tags"><span class="ts-tag t-danger">Raises</span></div>
+        <dl class="ts-body">
+          <dt>Cause</dt><dd>Everything under <code>_src</code> is private: names and signatures change between releases (e.g. <code>plane_cylinder</code>).</dd>
+          <dt>Fix</dt><dd>Pin the version, import from <code>_src</code> in one module of your own, and cover each reused function with a test.</dd>
+        </dl>
+        <p class="ts-owner">Owner: <a href="../chapters/26-custom-kernels-and-extending.html#reuse-test" title="Writing Custom Kernels and Extending MJWarp: Reusing MJWarp internals, and testing your kernels like MJWarp does">Ch 26 §10</a> · also <a href="../chapters/16-primitive-narrowphase.html#own-kernel" title="Collision II: Geom Types and Primitive Colliders: Calling a core collider from your own kernel">Ch 16 §10</a></p>
+      </article>
+    </section>
+    <section class="sec" id="summary">
+      <h2><span class="sec-num">9</span>Still stuck?</h2>
+      <ul>
+        <li>Narrow it down on CPU with a tiny <code>nworld</code> and <code>wp.config.mode = "debug"</code> (bounds checks), then check the same script on the GPU.</li>
+        <li>Compare one world with C MuJoCo (<code>get_data_into</code> + <code>mujoco.mj_step</code>) using a tolerance.</li>
+        <li>Look up the term in the <a href="glossary.html">glossary</a>, the function in <a href="api-at-a-glance.html">API at a glance</a>, and the file in the <a href="repo-tour.html">repository tour</a>.</li>
+      </ul>
+      <div class="cards">
+        <a class="card" href="course-map.html"><span class="card-num">MAP</span><h3>Course map</h3><p>Which chapter owns what, and what to read first.</p></a>
+        <a class="card" href="glossary.html"><span class="card-num">TERMS</span><h3>Glossary</h3><p>One-line definitions of every term.</p></a>
+        <a class="card" href="../chapters/09-contacts-and-buffer-sizing.html#sizing-recipe"><span class="card-num">Ch 9</span><h3>The sizing recipe</h3><p>How big to make nconmax and njmax.</p></a>
+      </div>
+      <p class="stuck">See also the <a href="course-map.html">course map</a> and the <a href="math-toolkit.html">math toolkit</a>.</p>
+    </section>
+
+    <footer class="chapter-footer">
+      <nav class="pager" aria-label="Reference pager">
+        <a class="prev" href="repo-tour.html"><span class="dir">Previous</span><span class="ttl">Repository tour</span></a>
+        <a class="index" href="../index.html"><span class="dir">All chapters</span><span class="ttl">Course home</span></a>
+        <a class="next" href="course-map.html"><span class="dir">Next</span><span class="ttl">Course map</span></a>
+      </nav>
+      <p class="site-footer">MuJoCo Warp course · mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1 · source tree at commit 8f5b9f1</p>
+    </footer>
+  </main>
+</div>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script defer src="../assets/course.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  MW.onReady(function () {
+
+    // ---- search + kind filter ----
+    var q = MW.$("#ts-q"), count = MW.$("#ts-count"), empty = MW.$("#ts-empty");
+    var items = MW.$$(".ts"), kind = "";
+    items.forEach(function (it) { it._txt = it.textContent.toLowerCase(); });
+    function apply() {
+      var s = (q.value || "").trim().toLowerCase(), n = 0;
+      items.forEach(function (it) {
+        var ok = (!s || it._txt.indexOf(s) >= 0) && (!kind || (" " + it.getAttribute("data-tags") + " ").indexOf(" " + kind + " ") >= 0);
+        it.hidden = !ok; if (ok) n++;
+      });
+      MW.$$(".ts-cat").forEach(function (sec) {
+        var vis = MW.$$(".ts", sec).filter(function (x) { return !x.hidden; }).length;
+        var c = MW.$(".cat-count", sec); if (c) c.textContent = (s || kind) ? vis + " of " + MW.$$(".ts", sec).length : MW.$$(".ts", sec).length;
+      });
+      count.textContent = (s || kind) ? n + " of " + items.length + " entries" : items.length + " entries";
+      empty.style.display = n ? "none" : "block";
+    }
+    q.addEventListener("input", apply);
+    MW.$$("#ts-kind button").forEach(function (b) {
+      b.addEventListener("click", function () {
+        kind = b.getAttribute("data-k");
+        MW.$$("#ts-kind button").forEach(function (o) { o.setAttribute("aria-pressed", o === b ? "true" : "false"); });
+        apply();
+      });
+    });
+    apply();
+    // flash target entry when arriving by link
+    function flash() {
+      var id = decodeURIComponent(location.hash.slice(1)); if (!id) return;
+      var el = document.getElementById(id);
+      if (el && el.classList.contains("ts")) { el.hidden = false; el.classList.add("flash"); setTimeout(function () { el.classList.remove("flash"); }, 1600); }
+    }
+    window.addEventListener("hashchange", flash); flash();
+
+    // ---- overflow decoder ----
+    var BITS = [{n:"NEFC",v:1,m:"nefc > njmax in this world: constraint rows dropped",f:"raise <code>njmax</code> in make_data",o:"Ch 9 §7",oh:"../chapters/09-contacts-and-buffer-sizing.html#overflow-detection"},{n:"NJMAX_NNZ",v:2,m:"sparse constraint Jacobian ran out of non-zeros",f:"raise <code>njmax_nnz</code>",o:"Ch 9 §5",oh:"../chapters/09-contacts-and-buffer-sizing.html#sizing-parameters"},{n:"BROADPHASE",v:4,m:"ncollision > naconmax (global): candidate pairs dropped; set in every world",f:"raise <code>nconmax</code> / <code>naconmax</code>",o:"Ch 9 §7",oh:"../chapters/09-contacts-and-buffer-sizing.html#overflow-detection"},{n:"NARROWPHASE",v:8,m:"nacon > naconmax (global): contacts dropped; set in every world",f:"raise <code>nconmax</code> / <code>naconmax</code>",o:"Ch 9 §8",oh:"../chapters/09-contacts-and-buffer-sizing.html#sizing-recipe"},{n:"CCD",v:16,m:"convex collision scratch rows past naccdmax",f:"raise <code>nccdmax</code> / <code>naccdmax</code>",o:"Ch 17 §7",oh:"../chapters/17-convex-collision-gjk-epa.html#kernels-scratch"},{n:"HFIELD",v:32,m:"too many heightfield prisms for one pair",f:"fewer hfield rows/cols or a smaller colliding geom",o:"Ch 18 §4",oh:"../chapters/18-heightfields-and-sdfs.html#hfield-overflow"},{n:"CONTACT_MATCH",v:64,m:"contact sensor matches past the limit",f:"raise <code>m.opt.contact_sensor_maxmatch</code> (default 64)",o:"Ch 14 §2",oh:"../chapters/14-sensors-delays-inverse-dynamics.html#catalogue"},{n:"NVMAX",v:128,m:"more awake DOFs than nvmax (sleep)",f:"raise <code>nvmax</code>",o:"Ch 21 §8",oh:"../chapters/21-islands-and-sleep.html#compact"},{n:"EPA_HORIZON",v:256,m:"EPA horizon buffer full (fixed size, no make_data knob)",f:"rare; inspect the convex pair",o:"Ch 17 §5",oh:"../chapters/17-convex-collision-gjk-epa.html#epa"},{n:"ITERATIONS",v:512,m:"solver hit opt.iterations without converging",f:"raise <code>iterations</code> or find the stuck world",o:"Ch 20 §9",oh:"../chapters/20-solvers-cg-newton.html#termination"},{n:"LS_ITERATIONS",v:1024,m:"linesearch hit opt.ls_iterations",f:"usually harmless; <code>ls_iterations</code> (recompiles)",o:"Ch 20 §8",oh:"../chapters/20-solvers-cg-newton.html#linesearch"},{n:"TACTILE",v:2048,m:"tactile sensor collision pairs overflow",f:"fewer contacting geoms per tactile sensor",o:"Ch 14 §2",oh:"../chapters/14-sensors-delays-inverse-dynamics.html#catalogue"}];
+    var grid = MW.$("#dec-bits"), inp = MW.$("#dec-v"), outEl = MW.$("#dec-out");
+    BITS.forEach(function (b) {
+      var bt = document.createElement("button"); bt.type = "button"; bt.setAttribute("aria-pressed", "false");
+      bt.innerHTML = '<span class="led" aria-hidden="true"></span>' + b.n + '<span class="bv">' + b.v + '</span>';
+      bt.title = b.m;
+      bt.addEventListener("click", function () { var v = parse() ^ b.v; inp.value = String(v); render(v); });
+      grid.appendChild(bt); b.el = bt;
+    });
+    function parse() {
+      var s = (inp.value || "").trim().toLowerCase(), v = 0;
+      if (/^0x[0-9a-f]+$/.test(s)) v = parseInt(s, 16); else if (/^\d+$/.test(s)) v = parseInt(s, 10); else v = NaN;
+      return v;
+    }
+    function render(v) {
+      if (isNaN(v)) { outEl.innerHTML = '<p class="small">Not an integer.</p>'; BITS.forEach(function (b) { b.el.setAttribute("aria-pressed", "false"); }); return; }
+      var on = BITS.filter(function (b) { return v & b.v; });
+      BITS.forEach(function (b) { b.el.setAttribute("aria-pressed", (v & b.v) ? "true" : "false"); });
+      var extra = v & ~4095;
+      if (!on.length) { outEl.innerHTML = '<p><strong>NONE</strong>: no buffer ran out' + (extra ? ' (but bits above ALL = 4095 are set: not an OverflowType value)' : '') + '. Remember that the bits are sticky until <code>reset_data</code>, so 0 means &quot;never since the last reset&quot;.</p>'; return; }
+      var rows = on.map(function (b) { return "<tr><td><code>" + b.n + "</code></td><td>" + b.m + "</td><td>" + b.f + '</td><td><a href="' + b.oh + '">' + b.o + "</a></td></tr>"; }).join("");
+      outEl.innerHTML = "<p><code>" + v + "</code> = " + on.map(function (b) { return b.n; }).join(" | ") + (extra ? " (plus unknown bits " + extra + ")" : "") + '</p><div class="table-wrap"><table><thead><tr><th>Bit</th><th>Meaning</th><th>Fix</th><th>Read</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+    }
+    inp.addEventListener("input", function () { render(parse()); });
+    MW.$("#dec-clear").addEventListener("click", function () { inp.value = "0"; render(0); });
+    MW.$("#dec-ex").addEventListener("click", function () { inp.value = "9"; render(9); });
+    render(parse());
+
+  });
+});
+</script>
+</body>
+</html>

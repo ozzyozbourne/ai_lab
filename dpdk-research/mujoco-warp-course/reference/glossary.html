@@ -1,0 +1,1264 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glossary</title>
+<meta name="description" content="One-line definitions of every term used in the MuJoCo Warp course, grouped by topic, each linked to the chapter section that owns it.">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="../assets/course.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+
+.gl-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 0 1.2rem; }
+.gl-tools input { flex: 1 1 220px; min-width: 0; font: inherit; padding: 9px 12px; border-radius: 10px;
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); }
+.gl-tools .count { font-size: .85rem; color: var(--muted); }
+.gl-list { margin: 0; padding: 0; }
+.gl-entry { padding: 12px 0 12px; border-top: 1px solid var(--border); scroll-margin-top: calc(var(--topbar-h) + 16px); }
+.gl-entry:target, .gl-entry.flash { background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 8px; padding-left: 10px; padding-right: 10px; }
+.gl-entry dt { font-weight: 700; margin: 0 0 3px; }
+.gl-entry dt a.self { color: inherit; text-decoration: none; }
+.gl-entry dt a.self:hover::after { content: " #"; color: var(--muted); font-weight: 400; }
+.gl-entry dd { margin: 0; }
+.gl-entry .where { display: block; margin-top: 4px; font-size: .86rem; color: var(--muted); }
+.gl-entry .where a { white-space: nowrap; }
+.gl-alias { display: block; height: 0; scroll-margin-top: calc(var(--topbar-h) + 16px); }
+.gl-empty { display: none; color: var(--muted); }
+.az { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 1rem; }
+.az a { font: 600 .8rem var(--font-mono); padding: 3px 7px; border: 1px solid var(--border); border-radius: 6px; text-decoration: none; }
+.fam-hit rect { transition: fill .15s; }
+
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="icon-btn toc-toggle" type="button" aria-label="Table of contents">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">Reference · Glossary</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Reference navigation">
+    <a href="../index.html" class="prev" aria-label="Previous: Course home"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">Prev</span></a>
+    <a href="api-at-a-glance.html" class="next" aria-label="Next: API at a glance"><span class="lbl">Next</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol data-auto></ol>
+    <p class="toc-progress" aria-live="off"></p>
+  </aside>
+
+  <main id="main" class="content">
+    <header class="chapter-hero">
+      <p class="eyebrow">Reference · Glossary</p>
+      <h1>Glossary</h1>
+      <p class="lede">One-line definitions of the 260 terms the course uses. Every entry links to the chapter section that teaches it; chapter pages link here when you tap a dotted term.</p>
+      <div class="hero-meta"><span class="badge illustrative">Reference</span><span>Search below, or jump by family</span><span class="sep">·</span><span>Definitions match mujoco-warp 4.0.1 (source at 8f5b9f1)</span></div>
+      <h2 class="sr-only">On this page</h2>
+      <ul class="learn-list">
+            <li>Plain-language definitions grouped into nine families.</li>
+            <li>An <em>Owner</em> link to the section that teaches each term, plus where it comes back.</li>
+            <li>A search box that filters every entry as you type.</li>
+      </ul>
+    </header>
+    <section class="sec" id="find">
+      <h2><span class="sec-num">0</span>Find a term</h2>
+      <div class="gl-tools">
+        <label class="sr-only" for="gl-q">Filter terms</label>
+        <input id="gl-q" type="search" placeholder="Filter terms, e.g. naconmax, warp, cone" autocomplete="off">
+        <span class="count" id="gl-count" aria-live="polite"></span>
+      </div>
+      <figure class="fig">
+        <div class="fig-frame">
+<svg viewBox="0 0 640 300" role="img" aria-labelledby="gfam-t gfam-d">
+<title id="gfam-t">The nine term families</title>
+<desc id="gfam-d">Nine boxes, one per term family, arranged from the MuJoCo basics through Warp and batching to collision, solver and performance; each shows how many terms it holds and links to that part of the glossary.</desc>
+<a href="#g-mujoco" class="fam-hit"><g class="hot" data-info="<strong>MuJoCo basics</strong>: 30 terms. Models, state, MJCF elements and options (Ch 1-2)."><rect x="20" y="30" width="190" height="74" rx="12" class="s-accent-soft" stroke="var(--border-strong)"/><text x="34" y="60" class="s-label">MuJoCo basics</text><text x="34" y="84" class="s-small">30 terms</text><rect x="120" y="76" width="57.0" height="8" rx="4" class="s-accent"/></g></a>
+<a href="#g-primer" class="fam-hit"><g class="hot" data-info="<strong>Physics primer</strong>: 14 terms. Point masses, rigid bodies and time stepping from scratch (Ch 3)."><rect x="225" y="30" width="190" height="74" rx="12" class="s-accent-soft" stroke="var(--border-strong)"/><text x="239" y="60" class="s-label">Physics primer</text><text x="239" y="84" class="s-small">14 terms</text><rect x="325" y="76" width="26.6" height="8" rx="4" class="s-accent"/></g></a>
+<a href="#g-math" class="fam-hit"><g class="hot" data-info="<strong>Math toolkit</strong>: 15 terms. Linear algebra and optimization the solvers rely on (Ch 11, 19-20)."><rect x="430" y="30" width="190" height="74" rx="12" class="s-accent-soft" stroke="var(--border-strong)"/><text x="444" y="60" class="s-label">Math toolkit</text><text x="444" y="84" class="s-small">15 terms</text><rect x="530" y="76" width="28.5" height="8" rx="4" class="s-accent"/></g></a>
+<a href="#g-warp" class="fam-hit"><g class="hot" data-info="<strong>Warp and the GPU</strong>: 36 terms. Kernels, threads, memory, compilation and CUDA graphs (Ch 4, 7, 24, 26)."><rect x="20" y="122" width="190" height="74" rx="12" class="s-accent2-soft" stroke="var(--border-strong)"/><text x="34" y="152" class="s-label">Warp and the GPU</text><text x="34" y="176" class="s-small">36 terms</text><rect x="120" y="168" width="68.4" height="8" rx="4" class="s-accent"/></g></a>
+<a href="#g-batching" class="fam-hit"><g class="hot" data-info="<strong>Batching, sizing and driving simulations</strong>: 23 terms. Many worlds in one Data, buffer sizes and overflow (Ch 5-10)."><rect x="225" y="122" width="190" height="74" rx="12" class="s-accent2-soft" stroke="var(--border-strong)"/><text x="239" y="152" class="s-label">Batching and sizing</text><text x="239" y="176" class="s-small">23 terms</text><rect x="325" y="168" width="43.7" height="8" rx="4" class="s-accent"/></g></a>
+<a href="#g-dynamics" class="fam-hit"><g class="hot" data-info="<strong>Dynamics: equations of motion, forces, integrators</strong>: 39 terms. What forward computes before the solver, and how a step advances (Ch 11-14, 23)."><rect x="430" y="122" width="190" height="74" rx="12" class="s-accent2-soft" stroke="var(--border-strong)"/><text x="444" y="152" class="s-label">Dynamics</text><text x="444" y="176" class="s-small">39 terms</text><rect x="530" y="168" width="74.1" height="8" rx="4" class="s-accent"/></g></a>
+<a href="#g-collision" class="fam-hit"><g class="hot" data-info="<strong>Collision</strong>: 40 terms. Broadphase, narrowphase, convex and SDF collision, flex geometry (Ch 15-18, 23)."><rect x="20" y="214" width="190" height="74" rx="12" class="s-box" stroke="var(--border-strong)"/><text x="34" y="244" class="s-label">Collision</text><text x="34" y="268" class="s-small">40 terms</text><rect x="120" y="260" width="76.0" height="8" rx="4" class="s-accent"/></g></a>
+<a href="#g-solver" class="fam-hit"><g class="hot" data-info="<strong>Constraints, solver, islands and determinism</strong>: 27 terms. Constraint rows, the primal solvers, sleeping and reproducibility (Ch 19-22)."><rect x="225" y="214" width="190" height="74" rx="12" class="s-box" stroke="var(--border-strong)"/><text x="239" y="244" class="s-label">Constraints and solver</text><text x="239" y="268" class="s-small">27 terms</text><rect x="325" y="260" width="51.3" height="8" rx="4" class="s-accent"/></g></a>
+<a href="#g-perf" class="fam-hit"><g class="hot" data-info="<strong>Performance, tools and integration</strong>: 36 terms. Profiling, CLIs, rendering, interop, gradients and RL (Ch 24-30)."><rect x="430" y="214" width="190" height="74" rx="12" class="s-box" stroke="var(--border-strong)"/><text x="444" y="244" class="s-label">Perf, tools, integration</text><text x="444" y="268" class="s-small">36 terms</text><rect x="530" y="260" width="68.4" height="8" rx="4" class="s-accent"/></g></a>
+</svg>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a family; click to jump to it."></div>
+        <figcaption><span class="fig-num">Figure 1.</span>The nine families. Bars show how many terms each holds. Illustrative.</figcaption>
+      </figure>
+      <p class="small muted">Some terms have two anchors because chapters spell them two ways
+        (<code>#round-robin</code> and <code>#round-robin-batching</code>, <code>#quaternion</code> and
+        <code>#orientation-quaternion</code>); both land on the same entry. Each <em>Owner</em> link goes to the section that
+        teaches the term; <em>also</em> lists where it comes back.</p>
+    </section>
+    <section class="sec gl-group" id="g-mujoco">
+      <h2><span class="sec-num">1</span>MuJoCo basics</h2>
+      <p class="muted">Models, state, MJCF elements and options (Ch 1-2). 30 terms.</p>
+      <dl class="gl-list">
+      <div class="gl-entry" id="act" data-search="act actuator activation state, na numbers per world, for actuators with their own dynamics (integrator, filter, muscle, dc motor). part of the physics state (state.act).">
+        <dt><a class="self" href="#act">act</a></dt>
+        <dd>Actuator activation state, <code>na</code> numbers per world, for actuators with their own dynamics (integrator, filter, muscle, DC motor). Part of the physics state (<code>State.ACT</code>).<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#actuator-force" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §7</a> · also <a href="../chapters/08-resets-state-and-control.html#state" title="Resets, State, Mocap and Control Loops">Ch 8 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="body" data-search="body a rigid frame with mass and inertia in the kinematic tree; it can carry geoms, sites, joints and child bodies.">
+        <dt><a class="self" href="#body">body</a></dt>
+        <dd>A rigid frame with mass and inertia in the kinematic tree; it can carry geoms, sites, joints and child bodies.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#mjcf-anatomy" title="MuJoCo Essentials for MJWarp Users">Ch 2 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="camera-mode" data-search="camera mode how a camera (or light) follows the model: fixed, track, trackcom, targetbody, targetbodycom (types.py::camlighttype); camlight applies it every forward.">
+        <dt><a class="self" href="#camera-mode">camera mode</a></dt>
+        <dd>How a camera (or light) follows the model: <code>fixed</code>, <code>track</code>, <code>trackcom</code>, <code>targetbody</code>, <code>targetbodycom</code> (<code>types.py::CamLightType</code>); <code>camlight</code> applies it every forward.<span class="where">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#camera-modes" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="ctrl" data-search="ctrl the control vector, one entry per control input (nu); actuators read it.">
+        <dt><a class="self" href="#ctrl">ctrl</a></dt>
+        <dd>The control vector, one entry per control input (nu); actuators read it.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#actuators-sensors" title="MuJoCo Essentials for MJWarp Users">Ch 2 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="default-class" data-search="default class a named set of default attribute values in mjcf that elements opt into with class=...">
+        <dt><a class="self" href="#default-class">default class</a></dt>
+        <dd>A named set of default attribute values in MJCF that elements opt into with class=...<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#mjcf-anatomy" title="MuJoCo Essentials for MJWarp Users">Ch 2 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="dof" data-search="dof (degree of freedom) degree of freedom: one independent direction of motion; nv counts them.">
+        <dt><a class="self" href="#dof">DOF (degree of freedom)</a></dt>
+        <dd>Degree of freedom: one independent direction of motion; nv counts them.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#joints-coordinates" title="MuJoCo Essentials for MJWarp Users">Ch 2 §3</a> · also <a href="../chapters/03-rigid-body-physics-primer.html#rigid-state" title="Rigid-Body Physics from Scratch">Ch 3 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="equality-constraint" data-search="equality constraint a soft constraint that ties bodies, joints or tendons together: connect, weld, joint, tendon, flex.">
+        <dt><a class="self" href="#equality-constraint">equality constraint</a></dt>
+        <dd>A soft constraint that ties bodies, joints or tendons together: connect, weld, joint, tendon, flex.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#equality" title="MuJoCo Essentials for MJWarp Users">Ch 2 §5</a> · also <a href="../chapters/08-resets-state-and-control.html" title="Resets, State, Mocap and Control Loops">Ch 8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="generalized-coordinates" data-search="generalized coordinates the minimal set of numbers (qpos) that fixes the pose of every body, given the joints.">
+        <dt><a class="self" href="#generalized-coordinates">generalized coordinates</a></dt>
+        <dd>The minimal set of numbers (qpos) that fixes the pose of every body, given the joints.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#joints-coordinates" title="MuJoCo Essentials for MJWarp Users">Ch 2 §3</a> · also <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#eom" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="geom" data-search="geom a geometric shape attached to a body, used for collision and drawing; it also contributes mass.">
+        <dt><a class="self" href="#geom">geom</a></dt>
+        <dd>A geometric shape attached to a body, used for collision and drawing; it also contributes mass.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#mjcf-anatomy" title="MuJoCo Essentials for MJWarp Users">Ch 2 §2</a> · also <a href="../chapters/16-primitive-narrowphase.html#dispatch-table" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="geom-group" data-search="geom group an integer group (0-5) per geom (group=). rays filter by it (the geomgroup argument of mjw.ray/rays) and the batch renderer by enabled_geom_groups (default 0, 1, 2).">
+        <dt><a class="self" href="#geom-group">geom group</a></dt>
+        <dd>An integer group (0-5) per geom (<code>group=</code>). Rays filter by it (the <code>geomgroup</code> argument of <code>mjw.ray</code>/<code>rays</code>) and the batch renderer by <code>enabled_geom_groups</code> (default 0, 1, 2).<span class="where">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#filters" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="joint" data-search="joint declares how a body may move relative to its parent: free, ball, slide or hinge.">
+        <dt><a class="self" href="#joint">joint</a></dt>
+        <dd>Declares how a body may move relative to its parent: free, ball, slide or hinge.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#mjcf-anatomy" title="MuJoCo Essentials for MJWarp Users">Ch 2 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="joint-limit" data-search="joint limit a range on a hinge or slide joint (range=&quot;lo hi&quot;, limited). when the joint gets near an end it adds a one-sided constraint row; ball joints limit the rotation angle.">
+        <dt><a class="self" href="#joint-limit">joint limit</a></dt>
+        <dd>A range on a hinge or slide joint (<code>range="lo hi"</code>, limited). When the joint gets near an end it adds a one-sided constraint row; ball joints limit the rotation angle.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#equalities" title="Constraints as Convex Optimization">Ch 19 §10</a> · also <a href="../chapters/02-mujoco-essentials.html#joints-coordinates" title="MuJoCo Essentials for MJWarp Users">Ch 2 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="keyframe" data-search="keyframe a named, stored state (qpos, qvel, act, ctrl, mocap, time) in the model.">
+        <dt><a class="self" href="#keyframe">keyframe</a></dt>
+        <dd>A named, stored state (qpos, qvel, act, ctrl, mocap, time) in the model.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#sim-loop" title="MuJoCo Essentials for MJWarp Users">Ch 2 §9</a> · also <a href="../chapters/08-resets-state-and-control.html" title="Resets, State, Mocap and Control Loops">Ch 8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mjcf" data-search="mjcf mujoco&#x27;s xml model format: bodies, joints, geoms, actuators, sensors and options.">
+        <dt><a class="self" href="#mjcf">MJCF</a></dt>
+        <dd>MuJoCo&#x27;s XML model format: bodies, joints, geoms, actuators, sensors and options.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#mjcf-anatomy" title="MuJoCo Essentials for MJWarp Users">Ch 2 §2</a> · also <a href="../chapters/01-what-is-mujoco-warp.html#mujoco-in-5-minutes" title="What Is MuJoCo Warp?">Ch 1 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mjdata" data-search="mjdata the changing state of one simulation plus everything computed from it: qpos, qvel, contacts, forces.">
+        <dt><a class="self" href="#mjdata">MjData</a></dt>
+        <dd>The changing state of one simulation plus everything computed from it: qpos, qvel, contacts, forces.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#model-data" title="MuJoCo Essentials for MJWarp Users">Ch 2 §1</a> · also <a href="../chapters/01-what-is-mujoco-warp.html#mujoco-in-5-minutes" title="What Is MuJoCo Warp?">Ch 1 §2</a>, <a href="../chapters/04-warp-and-the-gpu.html" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4</a>, <a href="../chapters/05-first-simulation.html" title="Your First MJWarp Simulation (and How to See It)">Ch 5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mjmodel" data-search="mjmodel compiled, constant description of a mujoco scene: sizes, masses, geometry, options.">
+        <dt><a class="self" href="#mjmodel">MjModel</a></dt>
+        <dd>Compiled, constant description of a MuJoCo scene: sizes, masses, geometry, options.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#model-data" title="MuJoCo Essentials for MJWarp Users">Ch 2 §1</a> · also <a href="../chapters/01-what-is-mujoco-warp.html#mujoco-in-5-minutes" title="What Is MuJoCo Warp?">Ch 1 §2</a>, <a href="../chapters/04-warp-and-the-gpu.html" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4</a>, <a href="../chapters/05-first-simulation.html" title="Your First MJWarp Simulation (and How to See It)">Ch 5</a>, <a href="../chapters/07-pipeline-tour.html" title="A Guided Tour of step and forward">Ch 7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mjspec" data-search="mjspec mujoco&#x27;s editable model specification: build or change a model as python objects, then spec.compile() returns an mjmodel. the course uses it for terrain and per-world mesh variants.">
+        <dt><a class="self" href="#mjspec">MjSpec</a></dt>
+        <dd>MuJoCo's editable model specification: build or change a model as Python objects, then <code>spec.compile()</code> returns an MjModel. The course uses it for terrain and per-world mesh variants.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#mjspec" title="MuJoCo Essentials for MJWarp Users">Ch 2 §11</a> · also <a href="../chapters/10-domain-randomization.html#mesh-variants" title="Domain Randomization with Batched Model Fields">Ch 10 §12</a>, <a href="../chapters/18-heightfields-and-sdfs.html#hfield-spec" title="Collision IV: Heightfields, SDFs and User SDF Plugins">Ch 18 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mocap-body" data-search="mocap body a body with mocap=true: its pose is set by mocap_pos/mocap_quat, not by physics.">
+        <dt><a class="self" href="#mocap-body">mocap body</a></dt>
+        <dd>A body with mocap=true: its pose is set by mocap_pos/mocap_quat, not by physics.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#mocap" title="MuJoCo Essentials for MJWarp Users">Ch 2 §6</a> · also <a href="../chapters/08-resets-state-and-control.html" title="Resets, State, Mocap and Control Loops">Ch 8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mujoco" data-search="mujoco multi-joint dynamics with contact: a physics engine for robotics and biomechanics, maintained by google deepmind.">
+        <dt><a class="self" href="#mujoco">MuJoCo</a></dt>
+        <dd>Multi-Joint dynamics with Contact: a physics engine for robotics and biomechanics, maintained by Google DeepMind.<span class="where">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#mujoco-in-5-minutes" title="What Is MuJoCo Warp?">Ch 1 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="qacc" data-search="qacc generalized accelerations, one per dof (nv). forward computes them (unconstrained qacc_smooth, then the solver&#x27;s qacc); the integrator turns them into new qvel and qpos.">
+        <dt><a class="self" href="#qacc">qacc</a></dt>
+        <dd>Generalized accelerations, one per DOF (nv). <code>forward</code> computes them (unconstrained <code>qacc_smooth</code>, then the solver's <code>qacc</code>); the integrator turns them into new qvel and qpos.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#model-data" title="MuJoCo Essentials for MJWarp Users">Ch 2 §1</a> · also <a href="../chapters/07-pipeline-tour.html#step" title="A Guided Tour of step and forward">Ch 7 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="qfrc-family" data-search="qfrc_* family generalized-force arrays (nv per world), one per source: qfrc_spring, qfrc_damper, qfrc_gravcomp, qfrc_fluid (summed into qfrc_passive), plus qfrc_actuator, qfrc_applied, qfrc_bias, qfrc_constraint."><span class="gl-alias" id="qfrc-spring"></span><span class="gl-alias" id="qfrc-damper"></span><span class="gl-alias" id="qfrc-gravcomp"></span><span class="gl-alias" id="qfrc-fluid"></span>
+        <dt><a class="self" href="#qfrc-family">qfrc_* family</a></dt>
+        <dd>Generalized-force arrays (nv per world), one per source: <code>qfrc_spring</code>, <code>qfrc_damper</code>, <code>qfrc_gravcomp</code>, <code>qfrc_fluid</code> (summed into <code>qfrc_passive</code>), plus <code>qfrc_actuator</code>, <code>qfrc_applied</code>, <code>qfrc_bias</code>, <code>qfrc_constraint</code>.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#ledger" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §1</a> · also <a href="../chapters/07-pipeline-tour.html#force-budget" title="A Guided Tour of step and forward">Ch 7 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="qpos" data-search="qpos generalized positions: one number per position coordinate of every joint (a free body uses 7: x, y, z and a quaternion).">
+        <dt><a class="self" href="#qpos">qpos</a></dt>
+        <dd>Generalized positions: one number per position coordinate of every joint (a free body uses 7: x, y, z and a quaternion).<span class="where">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#state-in-state-out" title="What Is MuJoCo Warp?">Ch 1 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="quaternion" data-search="quaternion four numbers (w, x, y, z) with unit length that encode a 3-d rotation without singularities. mujoco and mjwarp store them scalar-first; wp.quat stores (x, y, z, w) (ch 4 §6)."><span class="gl-alias" id="orientation-quaternion"></span>
+        <dt><a class="self" href="#quaternion">quaternion</a></dt>
+        <dd>Four numbers (w, x, y, z) with unit length that encode a 3-D rotation without singularities. MuJoCo and MJWarp store them scalar-first; <code>wp.quat</code> stores (x, y, z, w) (Ch 4 §6).<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#joints-coordinates" title="MuJoCo Essentials for MJWarp Users">Ch 2 §3</a> · also <a href="../chapters/13-integrators.html#quaternions" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13 §2</a>, <a href="../chapters/03-rigid-body-physics-primer.html#rigid-state" title="Rigid-Body Physics from Scratch">Ch 3 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="qvel" data-search="qvel generalized velocities: one number per degree of freedom (a free body uses 6: linear and angular velocity).">
+        <dt><a class="self" href="#qvel">qvel</a></dt>
+        <dd>Generalized velocities: one number per degree of freedom (a free body uses 6: linear and angular velocity).<span class="where">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#state-in-state-out" title="What Is MuJoCo Warp?">Ch 1 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="set-const" data-search="set_const mjw.set_const(m, d): recompute the model constants derived from other fields (qpos0-dependent and fixed groups, setconstgroup) on the device, for example after randomizing masses per world.">
+        <dt><a class="self" href="#set-const">set_const</a></dt>
+        <dd><code>mjw.set_const(m, d)</code>: recompute the model constants derived from other fields (qpos0-dependent and fixed groups, <code>SetConstGroup</code>) on the device, for example after randomizing masses per world.<span class="where">Owner: <a href="../chapters/10-domain-randomization.html#set-const" title="Domain Randomization with Batched Model Fields">Ch 10 §6</a> · also <a href="../chapters/10-domain-randomization.html#derived-pitfall" title="Domain Randomization with Batched Model Fields">Ch 10 §7</a>, <a href="../chapters/29-gradients-and-system-identification.html#sysid" title="Gradients, Sampling-Based Optimization and Parallel System Identification">Ch 29 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="site" data-search="site a massless marker frame on a body, used by sensors, tendons and actuators.">
+        <dt><a class="self" href="#site">site</a></dt>
+        <dd>A massless marker frame on a body, used by sensors, tendons and actuators.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#mjcf-anatomy" title="MuJoCo Essentials for MJWarp Users">Ch 2 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="solimp" data-search="solimp five numbers (dmin, dmax, width, mid, power) that set a constraint&#x27;s impedance d, between dmin at zero violation and dmax at width, as a sigmoid with its joint at mid.">
+        <dt><a class="self" href="#solimp">solimp</a></dt>
+        <dd>Five numbers (dmin, dmax, width, mid, power) that set a constraint's impedance d, between dmin at zero violation and dmax at <code>width</code>, as a sigmoid with its joint at <code>mid</code>.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#geoms-contacts" title="MuJoCo Essentials for MJWarp Users">Ch 2 §4</a> · also <a href="../chapters/19-constraints-as-optimization.html#softness" title="Constraints as Convex Optimization">Ch 19 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="solref" data-search="solref two numbers (timeconst, dampratio) that make a constraint behave like a spring-damper; negative values give stiffness and damping directly. the refsafe rule clamps timeconst to at least 2 timesteps.">
+        <dt><a class="self" href="#solref">solref</a></dt>
+        <dd>Two numbers (timeconst, dampratio) that make a constraint behave like a spring-damper; negative values give stiffness and damping directly. The refsafe rule clamps timeconst to at least 2 timesteps.<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#geoms-contacts" title="MuJoCo Essentials for MJWarp Users">Ch 2 §4</a> · also <a href="../chapters/10-domain-randomization.html#contact-materials" title="Domain Randomization with Batched Model Fields">Ch 10 §10</a>, <a href="../chapters/19-constraints-as-optimization.html#softness" title="Constraints as Convex Optimization">Ch 19 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="userdata" data-search="userdata d.userdata: a per-world float array of size nuserdata (mjcf &lt;size nuserdata=...&gt;) reserved for your own state; saved with state.userdata.">
+        <dt><a class="self" href="#userdata">userdata</a></dt>
+        <dd><code>d.userdata</code>: a per-world float array of size <code>nuserdata</code> (MJCF <code>&lt;size nuserdata=...&gt;</code>) reserved for your own state; saved with <code>State.USERDATA</code>.<span class="where">Owner: <a href="../chapters/26-custom-kernels-and-extending.html#userdata" title="Writing Custom Kernels and Extending MJWarp">Ch 26 §9</a> · also <a href="../chapters/08-resets-state-and-control.html#state" title="Resets, State, Mocap and Control Loops">Ch 8 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="xfrc-applied" data-search="xfrc_applied user-applied cartesian force and torque on each body, (nworld, nbody, 6) in the world frame at the body&#x27;s centre of mass; mjw.xfrc_accumulate maps it to joint space.">
+        <dt><a class="self" href="#xfrc-applied">xfrc_applied</a></dt>
+        <dd>User-applied Cartesian force and torque on each body, <code>(nworld, nbody, 6)</code> in the world frame at the body's centre of mass; <code>mjw.xfrc_accumulate</code> maps it to joint space.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#applied" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §11</a> · also <a href="../chapters/07-pipeline-tour.html#force-budget" title="A Guided Tour of step and forward">Ch 7 §5</a></span></dd>
+      </div>
+      </dl>
+      <p class="gl-empty">No term in this family matches the filter.</p>
+    </section>
+    <section class="sec gl-group" id="g-primer">
+      <h2><span class="sec-num">2</span>Physics primer</h2>
+      <p class="muted">Point masses, rigid bodies and time stepping from scratch (Ch 3). 14 terms.</p>
+      <dl class="gl-list">
+      <div class="gl-entry" id="six-dof-state" data-search="6-dof state position (3), orientation (unit quaternion, 4 numbers), linear velocity (3) and angular velocity (3) of a rigid body.">
+        <dt><a class="self" href="#six-dof-state">6-DOF state</a></dt>
+        <dd>Position (3), orientation (unit quaternion, 4 numbers), linear velocity (3) and angular velocity (3) of a rigid body.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#rigid-state" title="Rigid-Body Physics from Scratch">Ch 3 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="angular-velocity" data-search="angular velocity vector omega: the body turns about omega/|omega| at |omega| rad/s.">
+        <dt><a class="self" href="#angular-velocity">angular velocity</a></dt>
+        <dd>Vector omega: the body turns about omega/|omega| at |omega| rad/s.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#rigid-state" title="Rigid-Body Physics from Scratch">Ch 3 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="constraint" data-search="constraint a rule the state must (approximately) obey, enforced by a force the solver computes, e.g. no penetration, joint inside its range.">
+        <dt><a class="self" href="#constraint">constraint</a></dt>
+        <dd>A rule the state must (approximately) obey, enforced by a force the solver computes, e.g. no penetration, joint inside its range.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#constraints" title="Rigid-Body Physics from Scratch">Ch 3 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="explicit-euler" data-search="explicit euler time stepping that updates position and velocity from the old state only: x += v dt, v += a dt.">
+        <dt><a class="self" href="#explicit-euler">explicit Euler</a></dt>
+        <dd>Time stepping that updates position and velocity from the old state only: x += v dt, v += a dt.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#euler" title="Rigid-Body Physics from Scratch">Ch 3 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="gyroscopic-term" data-search="gyroscopic term omega x (i omega): the term in euler&#x27;s equation that couples the rotation axes of a spinning body.">
+        <dt><a class="self" href="#gyroscopic-term">gyroscopic term</a></dt>
+        <dd>omega x (I omega): the term in Euler&#x27;s equation that couples the rotation axes of a spinning body.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#inertia" title="Rigid-Body Physics from Scratch">Ch 3 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="inertia-tensor" data-search="inertia tensor 3x3 symmetric matrix i: angular momentum l = i omega. its diagonal entries are moments of inertia.">
+        <dt><a class="self" href="#inertia-tensor">inertia tensor</a></dt>
+        <dd>3x3 symmetric matrix I: angular momentum L = I omega. Its diagonal entries are moments of inertia.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#inertia" title="Rigid-Body Physics from Scratch">Ch 3 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="maximal-coordinates" data-search="maximal coordinates describe every body with its full 6-dof pose, then add constraints that remove the dofs a joint forbids.">
+        <dt><a class="self" href="#maximal-coordinates">maximal coordinates</a></dt>
+        <dd>Describe every body with its full 6-DOF pose, then add constraints that remove the DOFs a joint forbids.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#joints" title="Rigid-Body Physics from Scratch">Ch 3 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="newtons-second-law" data-search="newton&#x27;s second law f = m a: the net force on a body equals its mass times its acceleration.">
+        <dt><a class="self" href="#newtons-second-law">Newton's second law</a></dt>
+        <dd>F = m a: the net force on a body equals its mass times its acceleration.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#point-mass" title="Rigid-Body Physics from Scratch">Ch 3 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="penetration" data-search="penetration how far two shapes overlap. soft contact models allow a small, controlled penetration.">
+        <dt><a class="self" href="#penetration">penetration</a></dt>
+        <dd>How far two shapes overlap. Soft contact models allow a small, controlled penetration.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#penalty-floor" title="Rigid-Body Physics from Scratch">Ch 3 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="point-mass" data-search="point mass an idealized body with mass but no size: it can move but not rotate.">
+        <dt><a class="self" href="#point-mass">point mass</a></dt>
+        <dd>An idealized body with mass but no size: it can move but not rotate.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#point-mass" title="Rigid-Body Physics from Scratch">Ch 3 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="principal-axes" data-search="principal axes the eigenvectors of the inertia tensor: in this frame the tensor is diagonal.">
+        <dt><a class="self" href="#principal-axes">principal axes</a></dt>
+        <dd>The eigenvectors of the inertia tensor: in this frame the tensor is diagonal.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#inertia" title="Rigid-Body Physics from Scratch">Ch 3 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="reduced-coordinates" data-search="reduced (joint) coordinates generalized (joint) coordinates: only the dofs a joint allows, so the joint can never come apart.">
+        <dt><a class="self" href="#reduced-coordinates">reduced (joint) coordinates</a></dt>
+        <dd>Generalized (joint) coordinates: only the DOFs a joint allows, so the joint can never come apart.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#joints" title="Rigid-Body Physics from Scratch">Ch 3 §7</a> · also <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#generalized" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="rigid-body" data-search="rigid body a body whose points keep their distances: it can translate and rotate but not deform.">
+        <dt><a class="self" href="#rigid-body">rigid body</a></dt>
+        <dd>A body whose points keep their distances: it can translate and rotate but not deform.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#rigid-state" title="Rigid-Body Physics from Scratch">Ch 3 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="semi-implicit-euler" data-search="semi-implicit (symplectic) euler symplectic euler: update the velocity first, then move the position with the new velocity. mujoco&#x27;s euler integrator.">
+        <dt><a class="self" href="#semi-implicit-euler">semi-implicit (symplectic) Euler</a></dt>
+        <dd>Symplectic Euler: update the velocity first, then move the position with the NEW velocity. MuJoCo&#x27;s Euler integrator.<span class="where">Owner: <a href="../chapters/03-rigid-body-physics-primer.html#euler" title="Rigid-Body Physics from Scratch">Ch 3 §2</a> · also <a href="../chapters/13-integrators.html#euler" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13 §3</a></span></dd>
+      </div>
+      </dl>
+      <p class="gl-empty">No term in this family matches the filter.</p>
+    </section>
+    <section class="sec gl-group" id="g-dynamics">
+      <h2><span class="sec-num">3</span>Dynamics: equations of motion, forces, integrators</h2>
+      <p class="muted">What forward computes before the solver, and how a step advances (Ch 11-14, 23). 39 terms.</p>
+      <dl class="gl-list">
+      <div class="gl-entry" id="actuator-damping" data-search="actuator damping mujoco 4 linear (and polynomial) damping on an actuator&#x27;s own coordinate (actuator_damping, actuator_dampingpoly), applied as a passive force.">
+        <dt><a class="self" href="#actuator-damping">actuator damping</a></dt>
+        <dd>MuJoCo 4 linear (and polynomial) damping on an actuator's own coordinate (<code>actuator_damping</code>, <code>actuator_dampingpoly</code>), applied as a passive force.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#passive" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="actuator-dyn-gain-bias" data-search="actuator dyn / gain / bias mujoco&#x27;s actuator model: dyntype (dyntype) says how act evolves; gaintype and biastype (gaintype, biastype) give force = gain · input + bias."><span class="gl-alias" id="actuator-dyn"></span><span class="gl-alias" id="actuator-gain"></span><span class="gl-alias" id="actuator-bias"></span>
+        <dt><a class="self" href="#actuator-dyn-gain-bias">actuator dyn / gain / bias</a></dt>
+        <dd>MuJoCo's actuator model: <code>dyntype</code> (DynType) says how <code>act</code> evolves; <code>gaintype</code> and <code>biastype</code> (GainType, BiasType) give force = gain &middot; input + bias.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#actuator-force" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §7</a> · also <a href="../chapters/12-forces-actuators-tendons.html#mujoco4-actuators" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="bias-force" data-search="bias force c(q, qvel) = qfrc_bias: coriolis, centrifugal and gravity forces in joint space, computed by rne with qacc = 0.">
+        <dt><a class="self" href="#bias-force">bias force</a></dt>
+        <dd>c(q, qvel) = qfrc_bias: Coriolis, centrifugal and gravity forces in joint space, computed by RNE with qacc = 0.<span class="where">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#eom" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="branch" data-search="branch a root-to-leaf path in the body tree; mjwarp&#x27;s kinematics runs one thread per (world, branch).">
+        <dt><a class="self" href="#branch">branch</a></dt>
+        <dd>A root-to-leaf path in the body tree; MJWarp&#x27;s kinematics runs one thread per (world, branch).<span class="where">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#branches" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="cdof" data-search="cdof per-dof motion vector in the com frame: the spatial velocity produced by that dof at unit speed; the columns of the body jacobian.">
+        <dt><a class="self" href="#cdof">cdof</a></dt>
+        <dd>Per-DOF motion vector in the com frame: the spatial velocity produced by that DOF at unit speed; the columns of the body Jacobian.<span class="where">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#com-pos" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="cinert" data-search="cinert each body&#x27;s inertia and mass expressed in the com frame (10 numbers per body), written by com_pos and summed up the tree by crb.">
+        <dt><a class="self" href="#cinert">cinert</a></dt>
+        <dd>Each body's inertia and mass expressed in the com frame (10 numbers per body), written by <code>com_pos</code> and summed up the tree by <code>crb</code>.<span class="where">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#com-pos" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="com-frame" data-search="com frame world-aligned frame centred at subtree_com of a tree&#x27;s root body; all c-prefixed quantities (cdof, cinert, cvel, cacc, cfrc) use it.">
+        <dt><a class="self" href="#com-frame">com frame</a></dt>
+        <dd>World-aligned frame centred at subtree_com of a tree&#x27;s root body; all c-prefixed quantities (cdof, cinert, cvel, cacc, cfrc) use it.<span class="where">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#spatial" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="crb" data-search="composite rigid body (crb) composite rigid body: the summed com-frame inertia of a body and all its descendants (d.crb), used to build m.">
+        <dt><a class="self" href="#crb">composite rigid body (crb)</a></dt>
+        <dd>Composite rigid body: the summed com-frame inertia of a body and all its descendants (d.crb), used to build M.<span class="where">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#crb" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="cvel" data-search="cvel each body&#x27;s spatial velocity (rotation, translation) in the com frame, written by com_vel in the velocity stage.">
+        <dt><a class="self" href="#cvel">cvel</a></dt>
+        <dd>Each body's spatial velocity (rotation, translation) in the com frame, written by <code>com_vel</code> in the velocity stage.<span class="where">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#spatial" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §3</a> · also <a href="../chapters/12-forces-actuators-tendons.html#rne" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="dc-motor" data-search="dc motor mujoco 4 actuator (dcmotor dyn, gain and bias types) that models an electric motor: voltage input, coil resistance and back-emf.">
+        <dt><a class="self" href="#dc-motor">DC motor</a></dt>
+        <dd>MuJoCo 4 actuator (DCMOTOR dyn, gain and bias types) that models an electric motor: voltage input, coil resistance and back-EMF.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#mujoco4-actuators" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="discrete-integrator" data-search="discrete integrator mjwarp&#x27;s integrator for stiff soft bodies: it solves the step (and the constraint problem) in an effective metric built from passive stiffness and damping (eff_build, eff_solve).">
+        <dt><a class="self" href="#discrete-integrator">DISCRETE integrator</a></dt>
+        <dd>MJWarp's integrator for stiff soft bodies: it solves the step (and the constraint problem) in an effective metric built from passive stiffness and damping (<code>eff_build</code>, <code>eff_solve</code>).<span class="where">Owner: <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#discrete" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator">Ch 23 §7</a> · also <a href="../chapters/13-integrators.html#discrete" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="effective-metric" data-search="effective metric m_hat = m + h d + h^2 k: the mass matrix plus timestep-scaled damping and stiffness. discrete solves the step (and the constraint problem) in this metric.">
+        <dt><a class="self" href="#effective-metric">effective metric</a></dt>
+        <dd>M_hat = M + h D + h^2 K: the mass matrix plus timestep-scaled damping and stiffness. DISCRETE solves the step (and the constraint problem) in this metric.<span class="where">Owner: <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#discrete" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator">Ch 23 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="equation-of-motion" data-search="equation of motion m(q) qacc + c(q, qvel) = tau + j^t f: newton-euler for a whole kinematic tree in joint coordinates.">
+        <dt><a class="self" href="#equation-of-motion">equation of motion</a></dt>
+        <dd>M(q) qacc + c(q, qvel) = tau + J^T f: Newton-Euler for a whole kinematic tree in joint coordinates.<span class="where">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#eom" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="euler-integrator" data-search="euler integrator mujoco&#x27;s default integratortype.euler: semi-implicit euler, with joint damping treated implicitly (unless disablebit.eulerdamp).">
+        <dt><a class="self" href="#euler-integrator">EULER integrator</a></dt>
+        <dd>MuJoCo's default <code>IntegratorType.EULER</code>: semi-implicit Euler, with joint damping treated implicitly (unless <code>DisableBit.EULERDAMP</code>).<span class="where">Owner: <a href="../chapters/13-integrators.html#euler" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="fluid-model" data-search="fluid model mujoco&#x27;s two fluid-force models: the inertia-box model (drag from each body&#x27;s equivalent box, from density and viscosity) and the per-geom ellipsoid model (fluidshape=&quot;ellipsoid&quot;). result in qfrc_fluid.">
+        <dt><a class="self" href="#fluid-model">fluid model</a></dt>
+        <dd>MuJoCo's two fluid-force models: the inertia-box model (drag from each body's equivalent box, from <code>density</code> and <code>viscosity</code>) and the per-geom ellipsoid model (<code>fluidshape="ellipsoid"</code>). Result in <code>qfrc_fluid</code>.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#gravcomp-fluid" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="gravcomp" data-search="gravcomp gravity compensation: a body&#x27;s gravcomp attribute applies an upward force of gravcomp · m · g at its com, written to qfrc_gravcomp.">
+        <dt><a class="self" href="#gravcomp">gravcomp</a></dt>
+        <dd>Gravity compensation: a body's <code>gravcomp</code> attribute applies an upward force of gravcomp &middot; m &middot; g at its com, written to <code>qfrc_gravcomp</code>.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#gravcomp-fluid" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="gravity-trick" data-search="gravity trick rne adds gravity by giving the root an upward acceleration of -gravity instead of a weight force on every body; the result is the same bias force.">
+        <dt><a class="self" href="#gravity-trick">gravity trick</a></dt>
+        <dd>RNE adds gravity by giving the root an upward acceleration of -gravity instead of a weight force on every body; the result is the same bias force.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#rne" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §4</a> · also <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#joints" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="history-buffer" data-search="history buffer a per-world ring buffer of past (time, value) samples used for actuator and sensor delays and interval sampling.">
+        <dt><a class="self" href="#history-buffer">history buffer</a></dt>
+        <dd>A per-world ring buffer of past (time, value) samples used for actuator and sensor delays and interval sampling.<span class="where">Owner: <a href="../chapters/14-sensors-delays-inverse-dynamics.html#delays" title="Sensors, Delays and Inverse Dynamics">Ch 14 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="implicitfast" data-search="implicitfast integrator implicit in velocity using the analytic derivative of the smooth forces (deriv_smooth_vel) but without the coriolis/rne term, so the matrix stays symmetric and can be cholesky-factored.">
+        <dt><a class="self" href="#implicitfast">IMPLICITFAST integrator</a></dt>
+        <dd>Implicit in velocity using the analytic derivative of the smooth forces (<code>deriv_smooth_vel</code>) but without the Coriolis/RNE term, so the matrix stays symmetric and can be Cholesky-factored.<span class="where">Owner: <a href="../chapters/13-integrators.html#implicitfast" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="implicit-integrator" data-search="implicit integrator implicit in velocity including the derivative of the rne (coriolis, centrifugal) forces; the matrix is not symmetric, so it is lu-factored.">
+        <dt><a class="self" href="#implicit-integrator">IMPLICIT integrator</a></dt>
+        <dd>Implicit in velocity including the derivative of the RNE (Coriolis, centrifugal) forces; the matrix is not symmetric, so it is LU-factored.<span class="where">Owner: <a href="../chapters/13-integrators.html#implicit" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="imu" data-search="imu inertial measurement unit: an accelerometer and a gyro, often with a magnetometer.">
+        <dt><a class="self" href="#imu">IMU</a></dt>
+        <dd>Inertial measurement unit: an accelerometer and a gyro, often with a magnetometer.<span class="where">Owner: <a href="../chapters/14-sensors-delays-inverse-dynamics.html#imu" title="Sensors, Delays and Inverse Dynamics">Ch 14 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="integrator" data-search="integrator the rule that advances qpos, qvel, act and time by one timestep from qacc (euler, rk4, implicit, implicitfast, discrete).">
+        <dt><a class="self" href="#integrator">integrator</a></dt>
+        <dd>The rule that advances qpos, qvel, act and time by one timestep from qacc (Euler, RK4, implicit, implicitfast, discrete).<span class="where">Owner: <a href="../chapters/13-integrators.html#advance" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13 §1</a> · also <a href="../chapters/07-pipeline-tour.html#step" title="A Guided Tour of step and forward">Ch 7 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="inverse-dynamics" data-search="inverse dynamics computing the generalized force that produces a given acceleration at a given state.">
+        <dt><a class="self" href="#inverse-dynamics">inverse dynamics</a></dt>
+        <dd>Computing the generalized force that produces a given acceleration at a given state.<span class="where">Owner: <a href="../chapters/14-sensors-delays-inverse-dynamics.html#inverse" title="Sensors, Delays and Inverse Dynamics">Ch 14 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mass-matrix" data-search="mass matrix the nv x nv symmetric positive definite joint-space inertia matrix m(q); 0.5 qvel^t m qvel is the kinetic energy.">
+        <dt><a class="self" href="#mass-matrix">mass matrix</a></dt>
+        <dd>The nv x nv symmetric positive definite joint-space inertia matrix M(q); 0.5 qvel^T M qvel is the kinetic energy.<span class="where">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#eom" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="moment-arm" data-search="moment arm d(actuator_length)/d(qpos): how far a unit change of a joint moves the actuator; maps actuator force to joint torque.">
+        <dt><a class="self" href="#moment-arm">moment arm</a></dt>
+        <dd>d(actuator_length)/d(qpos): how far a unit change of a joint moves the actuator; maps actuator force to joint torque.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#transmission" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="passive-force" data-search="passive force a force that depends only on the state (q, qdot) and model parameters, not on ctrl: springs, dampers, gravity compensation, fluid drag.">
+        <dt><a class="self" href="#passive-force">passive force</a></dt>
+        <dd>A force that depends only on the state (q, qdot) and model parameters, not on ctrl: springs, dampers, gravity compensation, fluid drag.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#passive" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="plasticity" data-search="plasticity a spring whose reference moves when it is stretched past a yield distance, leaving a permanent deformation.">
+        <dt><a class="self" href="#plasticity">plasticity</a></dt>
+        <dd>A spring whose reference moves when it is stretched past a yield distance, leaving a permanent deformation.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#passive" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="polynomial-stiffness" data-search="polynomial stiffness and damping mujoco 4 accepts up to three numbers in stiffness and damping (&quot;k p1 p2&quot;): the first is linear, the other two go to jnt_stiffnesspoly / dof_dampingpoly as higher-order terms.">
+        <dt><a class="self" href="#polynomial-stiffness">polynomial stiffness and damping</a></dt>
+        <dd>MuJoCo 4 accepts up to three numbers in <code>stiffness</code> and <code>damping</code> ("k p1 p2"): the first is linear, the other two go to <code>jnt_stiffnesspoly</code> / <code>dof_dampingpoly</code> as higher-order terms.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#passive" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="quaternion-integration" data-search="quaternion integration advancing an orientation by an angular velocity with the exponential map (math.py::quat_integrate), so the quaternion stays unit length, instead of adding q̇·dt.">
+        <dt><a class="self" href="#quaternion-integration">quaternion integration</a></dt>
+        <dd>Advancing an orientation by an angular velocity with the exponential map (<code>math.py::quat_integrate</code>), so the quaternion stays unit length, instead of adding q&#775;&middot;dt.<span class="where">Owner: <a href="../chapters/13-integrators.html#quaternions" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13 §2</a> · also <a href="../chapters/03-rigid-body-physics-primer.html#orientation" title="Rigid-Body Physics from Scratch">Ch 3 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="rk4" data-search="rk4 (runge-kutta 4) runge-kutta 4: evaluates the dynamics four times per step and averages the slopes with weights 1/6, 1/3, 1/3, 1/6.">
+        <dt><a class="self" href="#rk4">RK4 (Runge-Kutta 4)</a></dt>
+        <dd>Runge-Kutta 4: evaluates the dynamics four times per step and averages the slopes with weights 1/6, 1/3, 1/3, 1/6.<span class="where">Owner: <a href="../chapters/13-integrators.html#rk4" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="rkmk" data-search="rkmk (runge-kutta-munthe-kaas) runge-kutta-munthe-kaas: run runge-kutta on a rotation vector instead of the quaternion, and map stage velocities with the derivative of the exponential map.">
+        <dt><a class="self" href="#rkmk">RKMK (Runge-Kutta-Munthe-Kaas)</a></dt>
+        <dd>Runge-Kutta-Munthe-Kaas: run Runge-Kutta on a rotation vector instead of the quaternion, and map stage velocities with the derivative of the exponential map.<span class="where">Owner: <a href="../chapters/13-integrators.html#rk4" title="Time Integration: Euler, RK4, Implicit and Discrete">Ch 13 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="rne" data-search="rne (recursive newton-euler) recursive newton-euler: an inverse-dynamics algorithm with a forward pass over bodies (accelerations) and a backward pass (forces).">
+        <dt><a class="self" href="#rne">RNE (recursive Newton-Euler)</a></dt>
+        <dd>Recursive Newton-Euler: an inverse-dynamics algorithm with a forward pass over bodies (accelerations) and a backward pass (forces).<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#rne" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="sensor" data-search="sensor a measurement declared in the mjcf &lt;sensor&gt; block and computed by forward into d.sensordata.">
+        <dt><a class="self" href="#sensor">sensor</a></dt>
+        <dd>A measurement declared in the MJCF &lt;sensor&gt; block and computed by forward into d.sensordata.<span class="where">Owner: <a href="../chapters/14-sensors-delays-inverse-dynamics.html#stages" title="Sensors, Delays and Inverse Dynamics">Ch 14 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="sparse-actuator-moment" data-search="sparse actuator moment d.actuator_moment stored row-sparse: per actuator only its nonzero dof entries, indexed by moment_rownnz, moment_rowadr, moment_colind.">
+        <dt><a class="self" href="#sparse-actuator-moment">sparse actuator moment</a></dt>
+        <dd><code>d.actuator_moment</code> stored row-sparse: per actuator only its nonzero DOF entries, indexed by <code>moment_rownnz</code>, <code>moment_rowadr</code>, <code>moment_colind</code>.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#transmission" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="spatial-vector" data-search="spatial vector a 6-number vector (rotation part, translation part): a twist (angular, linear velocity) or a wrench (torque, force).">
+        <dt><a class="self" href="#spatial-vector">spatial vector</a></dt>
+        <dd>A 6-number vector (rotation part, translation part): a twist (angular, linear velocity) or a wrench (torque, force).<span class="where">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#spatial" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="specific-force" data-search="specific force acceleration minus gravitational acceleration: what an accelerometer measures.">
+        <dt><a class="self" href="#specific-force">specific force</a></dt>
+        <dd>Acceleration minus gravitational acceleration: what an accelerometer measures.<span class="where">Owner: <a href="../chapters/14-sensors-delays-inverse-dynamics.html#imu" title="Sensors, Delays and Inverse Dynamics">Ch 14 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="tendon" data-search="tendon a scalar length defined from joints (fixed tendon) or from a path through sites and wrapping geoms (spatial tendon), with its own jacobian.">
+        <dt><a class="self" href="#tendon">tendon</a></dt>
+        <dd>A scalar length defined from joints (fixed tendon) or from a path through sites and wrapping geoms (spatial tendon), with its own Jacobian.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#tendons" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §10</a></span></dd>
+      </div>
+      <div class="gl-entry" id="transmission" data-search="transmission the mapping from joint coordinates to an actuator&#x27;s own length coordinate; its derivative is the moment arm.">
+        <dt><a class="self" href="#transmission">transmission</a></dt>
+        <dd>The mapping from joint coordinates to an actuator&#x27;s own length coordinate; its derivative is the moment arm.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#transmission" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="wrap" data-search="wrap (tendon wrapping) a path element of a spatial tendon: the tendon passes through sites and wraps around sphere or cylinder geoms, and its length and jacobian follow the wrapped path.">
+        <dt><a class="self" href="#wrap">wrap (tendon wrapping)</a></dt>
+        <dd>A path element of a spatial tendon: the tendon passes through sites and wraps around sphere or cylinder geoms, and its length and Jacobian follow the wrapped path.<span class="where">Owner: <a href="../chapters/12-forces-actuators-tendons.html#tendons" title="Forces: Passive, Springs, Bias, Actuators and Tendons">Ch 12 §10</a></span></dd>
+      </div>
+      </dl>
+      <p class="gl-empty">No term in this family matches the filter.</p>
+    </section>
+    <section class="sec gl-group" id="g-math">
+      <h2><span class="sec-num">4</span>Math toolkit</h2>
+      <p class="muted">Linear algebra and optimization the solvers rely on (Ch 11, 19-20). 15 terms.</p>
+      <dl class="gl-list">
+      <div class="gl-entry" id="cholesky" data-search="cholesky factorization factorization a = uᵀu (or llᵀ) of an spd matrix into triangular factors, used to solve a x = b cheaply.">
+        <dt><a class="self" href="#cholesky">Cholesky factorization</a></dt>
+        <dd>Factorization A = UᵀU (or LLᵀ) of an SPD matrix into triangular factors, used to solve A x = b cheaply.<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#newton" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="complementarity" data-search="complementarity a pair of non-negative quantities whose product must be zero: one of them is always zero.">
+        <dt><a class="self" href="#complementarity">complementarity</a></dt>
+        <dd>A pair of non-negative quantities whose product must be zero: one of them is always zero.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#why-soft" title="Constraints as Convex Optimization">Ch 19 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="conjugate-gradient" data-search="conjugate gradient an iterative method that combines the current steepest-descent direction with the previous search direction so successive steps do not undo each other.">
+        <dt><a class="self" href="#conjugate-gradient">conjugate gradient</a></dt>
+        <dd>An iterative method that combines the current steepest-descent direction with the previous search direction so successive steps do not undo each other.<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#cg" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="convexity" data-search="convex function a function whose graph lies below every chord; any local minimum is the global minimum.">
+        <dt><a class="self" href="#convexity">convex function</a></dt>
+        <dd>A function whose graph lies below every chord; any local minimum is the global minimum.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#math-toolkit" title="Constraints as Convex Optimization">Ch 19 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="csr" data-search="csr compressed sparse row: values row by row with a start address and a count per row; d.m uses it for the lower triangle of m.">
+        <dt><a class="self" href="#csr">CSR</a></dt>
+        <dd>Compressed sparse row: values row by row with a start address and a count per row; d.M uses it for the lower triangle of M.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#sparse-j" title="Constraints as Convex Optimization">Ch 19 §7</a> · also <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#crb" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="factorization" data-search="factorization writing the spd mass matrix m as l d l^t (stored in qld, qldiaginv) so that solves with m are cheap.">
+        <dt><a class="self" href="#factorization">factorization</a></dt>
+        <dd>Writing the SPD mass matrix M as L D L^T (stored in qLD, qLDiagInv) so that solves with M are cheap.<span class="where">Owner: <a href="../chapters/07-pipeline-tour.html#factorize" title="A Guided Tour of step and forward">Ch 7 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="gradient-descent" data-search="gradient descent repeatedly stepping along the negative gradient. simple, but slow when the problem is badly conditioned; cg and newton fix that.">
+        <dt><a class="self" href="#gradient-descent">gradient descent</a></dt>
+        <dd>Repeatedly stepping along the negative gradient. Simple, but slow when the problem is badly conditioned; CG and Newton fix that.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#math-toolkit" title="Constraints as Convex Optimization">Ch 19 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="hager-zhang" data-search="hager-zhang a conjugate-gradient beta formula with stronger convergence guarantees than polak-ribière; the dev tree uses it with a non-negative clamp.">
+        <dt><a class="self" href="#hager-zhang">Hager-Zhang</a></dt>
+        <dd>A conjugate-gradient beta formula with stronger convergence guarantees than Polak-Ribière; the dev tree uses it with a non-negative clamp.<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#cg" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="ldl" data-search="ldl factorization writing an spd matrix as l d lt with unit-triangular l and diagonal d; mjwarp stores the mass-matrix factor in qld and qldiaginv (factor_m).">
+        <dt><a class="self" href="#ldl">LDL factorization</a></dt>
+        <dd>Writing an SPD matrix as L D L<sup>T</sup> with unit-triangular L and diagonal D; MJWarp stores the mass-matrix factor in <code>qLD</code> and <code>qLDiagInv</code> (<code>factor_m</code>).<span class="where">Owner: <a href="../chapters/11-equations-of-motion-kinematics-mass-matrix.html#factorization" title="Equations of Motion, Kinematics and the Mass Matrix">Ch 11 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="linesearch" data-search="linesearch the 1-d search for a good step length along the solver&#x27;s search direction, run inside every solver iteration.">
+        <dt><a class="self" href="#linesearch">linesearch</a></dt>
+        <dd>The 1-D search for a good step length along the solver&#x27;s search direction, run inside every solver iteration.<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#linesearch" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §8</a> · also <a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §9</a>, <a href="../chapters/19-constraints-as-optimization.html#math-toolkit" title="Constraints as Convex Optimization">Ch 19 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="newtons-method" data-search="newton&#x27;s method an optimization method that steps along -h^-1 grad, the minimizer of the local quadratic model.">
+        <dt><a class="self" href="#newtons-method">Newton's method</a></dt>
+        <dd>An optimization method that steps along -H^-1 grad, the minimizer of the local quadratic model.<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#newton" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="piecewise-quadratic" data-search="piecewise quadratic a function made of quadratic pieces joined continuously; its curvature jumps at the joints (kinks).">
+        <dt><a class="self" href="#piecewise-quadratic">piecewise quadratic</a></dt>
+        <dd>A function made of quadratic pieces joined continuously; its curvature jumps at the joints (kinks).<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#math-toolkit" title="Constraints as Convex Optimization">Ch 19 §2</a> · also <a href="../chapters/20-solvers-cg-newton.html#problem" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="preconditioner" data-search="preconditioner a cheap approximate inverse applied to the gradient so the problem looks better conditioned to the solver.">
+        <dt><a class="self" href="#preconditioner">preconditioner</a></dt>
+        <dd>A cheap approximate inverse applied to the gradient so the problem looks better conditioned to the solver.<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#cg" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §5</a> · also <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#discrete" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator">Ch 23 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="quadratic-form" data-search="quadratic form a function f(x) = 0.5 x^t a x - b^t x: the multi-dimensional parabola.">
+        <dt><a class="self" href="#quadratic-form">quadratic form</a></dt>
+        <dd>A function f(x) = 0.5 x^T A x - b^T x: the multi-dimensional parabola.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#math-toolkit" title="Constraints as Convex Optimization">Ch 19 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="spd" data-search="spd symmetric positive definite: symmetric with all eigenvalues &gt; 0; x^t a x &gt; 0 for every x != 0.">
+        <dt><a class="self" href="#spd">SPD</a></dt>
+        <dd>Symmetric positive definite: symmetric with all eigenvalues &gt; 0; x^T A x &gt; 0 for every x != 0.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#math-toolkit" title="Constraints as Convex Optimization">Ch 19 §2</a> · also <a href="../chapters/20-solvers-cg-newton.html#newton" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §6</a></span></dd>
+      </div>
+      </dl>
+      <p class="gl-empty">No term in this family matches the filter.</p>
+    </section>
+    <section class="sec gl-group" id="g-warp">
+      <h2><span class="sec-num">5</span>Warp and the GPU</h2>
+      <p class="muted">Kernels, threads, memory, compilation and CUDA graphs (Ch 4, 7, 24, 26). 36 terms.</p>
+      <dl class="gl-list">
+      <div class="gl-entry" id="atomics" data-search="atomics (atomic operations) read-modify-write operations (wp.atomic_add, ...) that no other thread can interrupt.">
+        <dt><a class="self" href="#atomics">atomics (atomic operations)</a></dt>
+        <dd>Read-modify-write operations (wp.atomic_add, ...) that no other thread can interrupt.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#atomics" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="block" data-search="block (thread block) a group of threads (block_dim, default 256 in warp) that runs on one sm and can share memory.">
+        <dt><a class="self" href="#block">block (thread block)</a></dt>
+        <dd>A group of threads (block_dim, default 256 in Warp) that runs on one SM and can share memory.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#gpu-model" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §4</a> · also <a href="../chapters/25-profiling-benchmarking-tuning.html#launch-config" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="coalescing" data-search="coalescing (coalesced access) neighbouring threads of a warp reading neighbouring addresses, so the hardware serves the warp with few memory transactions.">
+        <dt><a class="self" href="#coalescing">coalescing (coalesced access)</a></dt>
+        <dd>Neighbouring threads of a warp reading neighbouring addresses, so the hardware serves the warp with few memory transactions.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#gpu-model" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="conditional-node" data-search="conditional node a cuda graph node that repeats (capture_while) or skips (capture_if) a sub-graph based on a value in device memory.">
+        <dt><a class="self" href="#conditional-node">conditional node</a></dt>
+        <dd>A CUDA graph node that repeats (capture_while) or skips (capture_if) a sub-graph based on a value in device memory.<span class="where">Owner: <a href="../chapters/24-cuda-graphs.html#conditional" title="CUDA Graphs: Capture, Replay and What Gets Baked">Ch 24 §5</a> · also <a href="../chapters/06-batched-data-layout.html#host-reads" title="Many Worlds: The Batched Data Layout">Ch 6 §10</a>, <a href="../chapters/07-pipeline-tour.html#cuda-graphs" title="A Guided Tour of step and forward">Ch 7 §10</a>, <a href="../chapters/20-solvers-cg-newton.html#gpu-scale" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §11</a></span></dd>
+      </div>
+      <div class="gl-entry" id="cuda-graph" data-search="cuda graph a recording of a sequence of gpu launches that can be replayed with one call (wp.scopedcapture, wp.capture_launch).">
+        <dt><a class="self" href="#cuda-graph">CUDA graph</a></dt>
+        <dd>A recording of a sequence of GPU launches that can be replayed with one call (wp.ScopedCapture, wp.capture_launch).<span class="where">Owner: <a href="../chapters/24-cuda-graphs.html#why" title="CUDA Graphs: Capture, Replay and What Gets Baked">Ch 24 §1</a> · also <a href="../chapters/07-pipeline-tour.html#cuda-graphs" title="A Guided Tour of step and forward">Ch 7 §10</a>, <a href="../chapters/10-domain-randomization.html" title="Domain Randomization with Batched Model Fields">Ch 10</a></span></dd>
+      </div>
+      <div class="gl-entry" id="cuda-stream" data-search="cuda stream a queue of gpu work; work in one stream runs in order, different streams may overlap.">
+        <dt><a class="self" href="#cuda-stream">CUDA stream</a></dt>
+        <dd>A queue of GPU work; work in one stream runs in order, different streams may overlap.<span class="where">Owner: <a href="../chapters/28-interop-torch-and-jax.html#caveats" title="Interop with PyTorch and JAX">Ch 28 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="debug-mode" data-search="debug mode wp.config.mode = &quot;debug&quot;, set before the first launch: warp compiles bounds checks into every array access. slow, but it turns silent out-of-bounds writes into errors.">
+        <dt><a class="self" href="#debug-mode">debug mode</a></dt>
+        <dd><code>wp.config.mode = "debug"</code>, set before the first launch: Warp compiles bounds checks into every array access. Slow, but it turns silent out-of-bounds writes into errors.<span class="where">Owner: <a href="../chapters/26-custom-kernels-and-extending.html#user-contacts" title="Writing Custom Kernels and Extending MJWarp">Ch 26 §6</a> · also <a href="../chapters/09-contacts-and-buffer-sizing.html#contact-pool" title="Contacts, Constraint Budgets and Overflow">Ch 9 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="device" data-search="device where warp arrays live and kernels run: &quot;cpu&quot; or a gpu such as &quot;cuda:0&quot;.">
+        <dt><a class="self" href="#device">device</a></dt>
+        <dd>Where Warp arrays live and kernels run: &quot;cpu&quot; or a GPU such as &quot;cuda:0&quot;.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#devices" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="divergence" data-search="divergence lanes of one warp taking different branches; the warp executes each taken branch in turn with the other lanes masked off.">
+        <dt><a class="self" href="#divergence">divergence</a></dt>
+        <dd>Lanes of one warp taking different branches; the warp executes each taken branch in turn with the other lanes masked off.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#gpu-model" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="cuda-event" data-search="event a timestamp marker placed in a gpu stream; the time between two events is measured on the device.">
+        <dt><a class="self" href="#cuda-event">event</a></dt>
+        <dd>A timestamp marker placed in a GPU stream; the time between two events is measured on the device.<span class="where">Owner: <a href="../chapters/07-pipeline-tour.html#instrumentation" title="A Guided Tour of step and forward">Ch 7 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="graph-conditional" data-search="graph_conditional m.opt.graph_conditional: use conditional graph nodes for device-side loops. it needs cuda 12.4+ toolkit and driver; put_model sets it true, so on older cuda set it false before capturing.">
+        <dt><a class="self" href="#graph-conditional">graph_conditional</a></dt>
+        <dd><code>m.opt.graph_conditional</code>: use conditional graph nodes for device-side loops. It needs CUDA 12.4+ toolkit and driver; <code>put_model</code> sets it True, so on older CUDA set it False before capturing.<span class="where">Owner: <a href="../chapters/24-cuda-graphs.html#toolkit" title="CUDA Graphs: Capture, Replay and What Gets Baked">Ch 24 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="grid" data-search="grid all blocks of one kernel launch.">
+        <dt><a class="self" href="#grid">grid</a></dt>
+        <dd>All blocks of one kernel launch.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#gpu-model" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="jit" data-search="jit compilation just-in-time compilation: code is compiled the first time it is needed, at run time, not ahead of time.">
+        <dt><a class="self" href="#jit">JIT compilation</a></dt>
+        <dd>Just-in-time compilation: code is compiled the first time it is needed, at run time, not ahead of time.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#jit" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §8</a> · also <a href="../chapters/01-what-is-mujoco-warp.html#warp-and-mjwarp" title="What Is MuJoCo Warp?">Ch 1 §4</a>, <a href="../chapters/05-first-simulation.html" title="Your First MJWarp Simulation (and How to See It)">Ch 5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="kernel" data-search="kernel a function that runs on the device once per thread index of a launch.">
+        <dt><a class="self" href="#kernel">kernel</a></dt>
+        <dd>A function that runs on the device once per thread index of a launch.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#kernels" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §3</a> · also <a href="../chapters/01-what-is-mujoco-warp.html#warp-and-mjwarp" title="What Is MuJoCo Warp?">Ch 1 §4</a>, <a href="../chapters/05-first-simulation.html" title="Your First MJWarp Simulation (and How to See It)">Ch 5</a>, <a href="../chapters/07-pipeline-tour.html#kernels" title="A Guided Tour of step and forward">Ch 7 §8</a>, <a href="../chapters/24-cuda-graphs.html#why" title="CUDA Graphs: Capture, Replay and What Gets Baked">Ch 24 §1</a>, <a href="../chapters/26-custom-kernels-and-extending.html" title="Writing Custom Kernels and Extending MJWarp">Ch 26</a></span></dd>
+      </div>
+      <div class="gl-entry" id="kernel-cache" data-search="kernel cache the directory where warp stores compiled kernel binaries so later runs can load them instead of compiling again.">
+        <dt><a class="self" href="#kernel-cache">kernel cache</a></dt>
+        <dd>The directory where Warp stores compiled kernel binaries so later runs can load them instead of compiling again.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#jit" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §8</a> · also <a href="../chapters/01-what-is-mujoco-warp.html#colab-setup" title="What Is MuJoCo Warp?">Ch 1 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="launch-dim" data-search="launch dim the dim argument of wp.launch: how many threads, and in what shape, run the kernel.">
+        <dt><a class="self" href="#launch-dim">launch dim</a></dt>
+        <dd>The dim argument of wp.launch: how many threads, and in what shape, run the kernel.<span class="where">Owner: <a href="../chapters/07-pipeline-tour.html#kernels" title="A Guided Tour of step and forward">Ch 7 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="launch-shape-atlas" data-search="launch-shape atlas the course&#x27;s catalogue of the eight ways mjwarp maps work to threads (ch 7 owns layouts 1, 2, 6, 7, 8).">
+        <dt><a class="self" href="#launch-shape-atlas">launch-shape atlas</a></dt>
+        <dd>The course&#x27;s catalogue of the eight ways MJWarp maps work to threads (Ch 7 owns layouts 1, 2, 6, 7, 8).<span class="where">Owner: <a href="../chapters/07-pipeline-tour.html#kernels" title="A Guided Tour of step and forward">Ch 7 §8</a> · also <a href="../chapters/27-rays-lidar-and-batch-rendering.html#threads" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="log-level" data-search="log level wp.config.log_level: how much warp prints. course scripts set wp.log_warning right after import warp to silence module-load messages.">
+        <dt><a class="self" href="#log-level">log level</a></dt>
+        <dd><code>wp.config.log_level</code>: how much Warp prints. Course scripts set <code>wp.LOG_WARNING</code> right after <code>import warp</code> to silence module-load messages.<span class="where">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#colab-setup" title="What Is MuJoCo Warp?">Ch 1 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="occupancy" data-search="occupancy resident warps on an sm divided by the maximum it can hold; higher occupancy hides memory latency better.">
+        <dt><a class="self" href="#occupancy">occupancy</a></dt>
+        <dd>Resident warps on an SM divided by the maximum it can hold; higher occupancy hides memory latency better.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#gpu-model" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §4</a> · also <a href="../chapters/06-batched-data-layout.html#throughput" title="Many Worlds: The Batched Data Layout">Ch 6 §11</a>, <a href="../chapters/27-rays-lidar-and-batch-rendering.html#megakernel" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="pcie" data-search="pcie the bus between the cpu and a discrete gpu; every host-device copy crosses it.">
+        <dt><a class="self" href="#pcie">PCIe</a></dt>
+        <dd>The bus between the CPU and a discrete GPU; every host-device copy crosses it.<span class="where">Owner: <a href="../chapters/05-first-simulation.html#get-data-into" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="shared-memory" data-search="shared memory fast on-chip memory of an sm, shared by the threads of one block.">
+        <dt><a class="self" href="#shared-memory">shared memory</a></dt>
+        <dd>Fast on-chip memory of an SM, shared by the threads of one block.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#gpu-model" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="simt" data-search="simt single instruction, multiple threads: the 32 lanes of a warp execute the same instruction, each on its own data.">
+        <dt><a class="self" href="#simt">SIMT</a></dt>
+        <dd>Single instruction, multiple threads: the 32 lanes of a warp execute the same instruction, each on its own data.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#gpu-model" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="sm" data-search="sm (streaming multiprocessor) streaming multiprocessor: a gpu core cluster that runs warps, with its own registers and shared memory.">
+        <dt><a class="self" href="#sm">SM (streaming multiprocessor)</a></dt>
+        <dd>Streaming Multiprocessor: a GPU core cluster that runs warps, with its own registers and shared memory.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#gpu-model" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §4</a> · also <a href="../chapters/06-batched-data-layout.html#throughput" title="Many Worlds: The Batched Data Layout">Ch 6 §11</a></span></dd>
+      </div>
+      <div class="gl-entry" id="tile" data-search="tile a block-wide array that the threads of one block load, compute on and store together (shared memory on gpu).">
+        <dt><a class="self" href="#tile">tile</a></dt>
+        <dd>A block-wide array that the threads of one block load, compute on and store together (shared memory on GPU).<span class="where">Owner: <a href="../chapters/26-custom-kernels-and-extending.html#tiles" title="Writing Custom Kernels and Extending MJWarp">Ch 26 §8</a> · also <a href="../chapters/04-warp-and-the-gpu.html#tiles" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §11</a>, <a href="../chapters/27-rays-lidar-and-batch-rendering.html#rays" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="vec3" data-search="vec3 warp&#x27;s 3-float vector dtype (12 bytes); one array element holds a whole vector.">
+        <dt><a class="self" href="#vec3">vec3</a></dt>
+        <dd>Warp&#x27;s 3-float vector dtype (12 bytes); one array element holds a whole vector.<span class="where">Owner: <a href="../chapters/06-batched-data-layout.html#vector-dtypes" title="Many Worlds: The Batched Data Layout">Ch 6 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="warp-dtypes" data-search="vec3 / quat / mat33 / spatial_vector warp&#x27;s fixed-size value types: one array element holds a whole 3-vector, quaternion (stored x, y, z, w), 3x3 matrix or 6-vector, and numpy views add a trailing dimension."><span class="gl-alias" id="wp-quat"></span><span class="gl-alias" id="mat33"></span><span class="gl-alias" id="spatial-vector-dtype"></span>
+        <dt><a class="self" href="#warp-dtypes">vec3 / quat / mat33 / spatial_vector</a></dt>
+        <dd>Warp's fixed-size value types: one array element holds a whole 3-vector, quaternion (stored x, y, z, w), 3x3 matrix or 6-vector, and NumPy views add a trailing dimension.<span class="where">Owner: <a href="../chapters/06-batched-data-layout.html#vector-dtypes" title="Many Worlds: The Batched Data Layout">Ch 6 §2</a> · also <a href="../chapters/04-warp-and-the-gpu.html#quat-storage" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="warp-32" data-search="warp (32 lanes) 32 gpu threads that execute one instruction stream in lockstep (simt).">
+        <dt><a class="self" href="#warp-32">warp (32 lanes)</a></dt>
+        <dd>32 GPU threads that execute one instruction stream in lockstep (SIMT).<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#gpu-model" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="warp" data-search="warp (nvidia warp) nvidia&#x27;s python framework for writing gpu (and cpu) kernels in python, jit-compiled to cuda or c++.">
+        <dt><a class="self" href="#warp">Warp (NVIDIA Warp)</a></dt>
+        <dd>NVIDIA&#x27;s Python framework for writing GPU (and CPU) kernels in Python, JIT-compiled to CUDA or C++.<span class="where">Owner: <a href="../chapters/01-what-is-mujoco-warp.html#warp-and-mjwarp" title="What Is MuJoCo Warp?">Ch 1 §4</a> · also <a href="../chapters/04-warp-and-the-gpu.html#devices" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="wp-array" data-search="wp.array warp&#x27;s typed, device-resident n-dimensional array (up to 4 dims).">
+        <dt><a class="self" href="#wp-array">wp.array</a></dt>
+        <dd>Warp&#x27;s typed, device-resident n-dimensional array (up to 4 dims).<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#arrays" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="capture-if" data-search="wp.capture_if a conditional graph node: runs one of two captured branches depending on an int in device memory.">
+        <dt><a class="self" href="#capture-if">wp.capture_if</a></dt>
+        <dd>A conditional graph node: runs one of two captured branches depending on an int in device memory.<span class="where">Owner: <a href="../chapters/24-cuda-graphs.html#conditional" title="CUDA Graphs: Capture, Replay and What Gets Baked">Ch 24 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="capture-launch" data-search="wp.capture_launch wp.capture_launch(graph): replay a captured cuda graph with one call.">
+        <dt><a class="self" href="#capture-launch">wp.capture_launch</a></dt>
+        <dd><code>wp.capture_launch(graph)</code>: replay a captured CUDA graph with one call.<span class="where">Owner: <a href="../chapters/24-cuda-graphs.html#pattern" title="CUDA Graphs: Capture, Replay and What Gets Baked">Ch 24 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="capture-while" data-search="wp.capture_while a conditional graph node: repeats a captured body while an int in device memory is nonzero. mjwarp&#x27;s solver loop uses it when m.opt.graph_conditional is true.">
+        <dt><a class="self" href="#capture-while">wp.capture_while</a></dt>
+        <dd>A conditional graph node: repeats a captured body while an int in device memory is nonzero. MJWarp's solver loop uses it when <code>m.opt.graph_conditional</code> is True.<span class="where">Owner: <a href="../chapters/24-cuda-graphs.html#conditional" title="CUDA Graphs: Capture, Replay and What Gets Baked">Ch 24 §5</a> · also <a href="../chapters/20-solvers-cg-newton.html#solve-flow" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="wp-func" data-search="wp.func (@wp.func) a warp device function: typed, callable from kernels and other funcs, may return values; inlined by the compiler.">
+        <dt><a class="self" href="#wp-func">wp.func (@wp.func)</a></dt>
+        <dd>A Warp device function: typed, callable from kernels and other funcs, may return values; inlined by the compiler.<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#funcs" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="launch-tiled" data-search="wp.launch_tiled wp.launch_tiled(kernel, dim, inputs, block_dim): launch block_dim threads per logical index so they can load and compute tiles together.">
+        <dt><a class="self" href="#launch-tiled">wp.launch_tiled</a></dt>
+        <dd><code>wp.launch_tiled(kernel, dim, inputs, block_dim)</code>: launch <code>block_dim</code> threads per logical index so they can load and compute tiles together.<span class="where">Owner: <a href="../chapters/26-custom-kernels-and-extending.html#tiles" title="Writing Custom Kernels and Extending MJWarp">Ch 26 §8</a> · also <a href="../chapters/04-warp-and-the-gpu.html#tiles" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §11</a></span></dd>
+      </div>
+      <div class="gl-entry" id="scoped-capture" data-search="wp.scopedcapture with wp.scopedcapture() as cap: records the launches made inside the block into cap.graph instead of running them.">
+        <dt><a class="self" href="#scoped-capture">wp.ScopedCapture</a></dt>
+        <dd><code>with wp.ScopedCapture() as cap:</code> records the launches made inside the block into <code>cap.graph</code> instead of running them.<span class="where">Owner: <a href="../chapters/24-cuda-graphs.html#pattern" title="CUDA Graphs: Capture, Replay and What Gets Baked">Ch 24 §2</a> · also <a href="../chapters/07-pipeline-tour.html#cuda-graphs" title="A Guided Tour of step and forward">Ch 7 §10</a></span></dd>
+      </div>
+      <div class="gl-entry" id="wp-tid" data-search="wp.tid() inside a kernel, returns this thread&#x27;s launch index (one int per launch dimension).">
+        <dt><a class="self" href="#wp-tid">wp.tid()</a></dt>
+        <dd>Inside a kernel, returns this thread&#x27;s launch index (one int per launch dimension).<span class="where">Owner: <a href="../chapters/04-warp-and-the-gpu.html#kernels" title="NVIDIA Warp and How a GPU Runs Your Kernel">Ch 4 §3</a></span></dd>
+      </div>
+      </dl>
+      <p class="gl-empty">No term in this family matches the filter.</p>
+    </section>
+    <section class="sec gl-group" id="g-batching">
+      <h2><span class="sec-num">6</span>Batching, sizing and driving simulations</h2>
+      <p class="muted">Many worlds in one Data, buffer sizes and overflow (Ch 5-10). 23 terms.</p>
+      <dl class="gl-list">
+      <div class="gl-entry" id="batched-field" data-search="batched field a model array whose type spec starts with &#x27;*&#x27;: its leading dimension may be 1 (shared) or b (one row per group of worlds).">
+        <dt><a class="self" href="#batched-field">batched field</a></dt>
+        <dd>A Model array whose type spec starts with &#x27;*&#x27;: its leading dimension may be 1 (shared) or B (one row per group of worlds).<span class="where">Owner: <a href="../chapters/06-batched-data-layout.html#nworld-first" title="Many Worlds: The Batched Data Layout">Ch 6 §1</a> · also <a href="../chapters/10-domain-randomization.html" title="Domain Randomization with Batched Model Fields">Ch 10</a></span></dd>
+      </div>
+      <div class="gl-entry" id="contact-pool" data-search="contact pool one flat array of naconmax contact slots shared by all worlds; each contact records its worldid.">
+        <dt><a class="self" href="#contact-pool">contact pool</a></dt>
+        <dd>One flat array of naconmax contact slots shared by all worlds; each contact records its worldid.<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#contact-pool" title="Contacts, Constraint Budgets and Overflow">Ch 9 §2</a> · also <a href="../chapters/06-batched-data-layout.html#pooled" title="Many Worlds: The Batched Data Layout">Ch 6 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="domain-randomization" data-search="domain randomization training or testing on many simulator variants whose physical or visual parameters are drawn from distributions, so the result is robust to the real values.">
+        <dt><a class="self" href="#domain-randomization">domain randomization</a></dt>
+        <dd>Training or testing on many simulator variants whose physical or visual parameters are drawn from distributions, so the result is robust to the real values.<span class="where">Owner: <a href="../chapters/10-domain-randomization.html#why-dr" title="Domain Randomization with Batched Model Fields">Ch 10 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="forward" data-search="forward dynamics (mjw.forward) mjw.forward: computes every derived quantity (positions, contacts, forces, accelerations) from the current state without advancing time.">
+        <dt><a class="self" href="#forward">forward dynamics (mjw.forward)</a></dt>
+        <dd>mjw.forward: computes every derived quantity (positions, contacts, forces, accelerations) from the current state without advancing time.<span class="where">Owner: <a href="../chapters/07-pipeline-tour.html#step" title="A Guided Tour of step and forward">Ch 7 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="get-data-into" data-search="get_data_into mjw.get_data_into(mjd, mjm, d, world_id=0): copy one world back into an existing host mjdata. every call crosses pcie, so call it rarely.">
+        <dt><a class="self" href="#get-data-into">get_data_into</a></dt>
+        <dd><code>mjw.get_data_into(mjd, mjm, d, world_id=0)</code>: copy one world back into an existing host MjData. Every call crosses PCIe, so call it rarely.<span class="where">Owner: <a href="../chapters/05-first-simulation.html#get-data-into" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="make-data" data-search="make_data mjw.make_data(mjm, nworld, ...): allocate a fresh device data for nworld worlds in the default state, with the buffer sizes (nconmax, njmax, ...) you pass.">
+        <dt><a class="self" href="#make-data">make_data</a></dt>
+        <dd><code>mjw.make_data(mjm, nworld, ...)</code>: allocate a fresh device Data for nworld worlds in the default state, with the buffer sizes (nconmax, njmax, ...) you pass.<span class="where">Owner: <a href="../chapters/05-first-simulation.html#make-put" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mjw-state" data-search="mjw.state (physics, integration, warmstart) integer bit flags naming state components (time, qpos, qvel, act, history, warmstart, ctrl, ...). physics = qpos | qvel | act | history | plastic; integration sets every bit (all inputs of a step); add warmstart to physics for bitwise replays."><span class="gl-alias" id="state-physics"></span><span class="gl-alias" id="state-integration"></span><span class="gl-alias" id="state-warmstart"></span>
+        <dt><a class="self" href="#mjw-state">mjw.State (PHYSICS, INTEGRATION, WARMSTART)</a></dt>
+        <dd>Integer bit flags naming state components (TIME, QPOS, QVEL, ACT, HISTORY, WARMSTART, CTRL, ...). PHYSICS = QPOS | QVEL | ACT | HISTORY | PLASTIC; INTEGRATION sets every bit (all inputs of a step); add WARMSTART to PHYSICS for bitwise replays.<span class="where">Owner: <a href="../chapters/08-resets-state-and-control.html#state" title="Resets, State, Mocap and Control Loops">Ch 8 §4</a> · also <a href="../chapters/22-determinism-and-reproducibility.html#snapshots" title="Determinism and Reproducibility">Ch 22 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="nacon" data-search="nacon d.nacon: a one-element device counter of contacts written to the shared pool this step, over all worlds.">
+        <dt><a class="self" href="#nacon">nacon</a></dt>
+        <dd><code>d.nacon</code>: a one-element device counter of contacts written to the shared pool this step, over all worlds.<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#contact-pool" title="Contacts, Constraint Budgets and Overflow">Ch 9 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="naconmax" data-search="naconmax total contact slots in the shared pool, for all worlds together; make_data sets it to nconmax × nworld by default.">
+        <dt><a class="self" href="#naconmax">naconmax</a></dt>
+        <dd>Total contact slots in the shared pool, for all worlds together; make_data sets it to nconmax × nworld by default.<span class="where">Owner: <a href="../chapters/06-batched-data-layout.html#nworld-first" title="Many Worlds: The Batched Data Layout">Ch 6 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="nccdmax" data-search="nccdmax / naccdmax scratch rows for convex (gjk/epa) collision: nccdmax per world, naccdmax for all worlds (defaults to naconmax). too few sets the ccd overflow bit."><span class="gl-alias" id="naccdmax"></span>
+        <dt><a class="self" href="#nccdmax">nccdmax / naccdmax</a></dt>
+        <dd>Scratch rows for convex (GJK/EPA) collision: <code>nccdmax</code> per world, <code>naccdmax</code> for all worlds (defaults to naconmax). Too few sets the CCD overflow bit.<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#sizing-parameters" title="Contacts, Constraint Budgets and Overflow">Ch 9 §5</a> · also <a href="../chapters/17-convex-collision-gjk-epa.html#kernels-scratch" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="ncollision" data-search="ncollision d.ncollision: the number of candidate pairs the broadphase wrote (one counter for all worlds).">
+        <dt><a class="self" href="#ncollision">ncollision</a></dt>
+        <dd><code>d.ncollision</code>: the number of candidate pairs the broadphase wrote (one counter for all worlds).<span class="where">Owner: <a href="../chapters/15-geometry-toolkit-and-broadphase.html#funnel" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="nconmax" data-search="nconmax make_data/put_data argument: contacts to allocate per world. the pool holds naconmax = nconmax × nworld slots, and one world may use more than nconmax.">
+        <dt><a class="self" href="#nconmax">nconmax</a></dt>
+        <dd><code>make_data</code>/<code>put_data</code> argument: contacts to allocate <em>per world</em>. The pool holds naconmax = nconmax &times; nworld slots, and one world may use more than nconmax.<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#sizing-parameters" title="Contacts, Constraint Budgets and Overflow">Ch 9 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="njmax" data-search="njmax maximum constraint (efc) rows per world; each world has its own njmax rows.">
+        <dt><a class="self" href="#njmax">njmax</a></dt>
+        <dd>Maximum constraint (efc) rows per world; each world has its own njmax rows.<span class="where">Owner: <a href="../chapters/06-batched-data-layout.html#nworld-first" title="Many Worlds: The Batched Data Layout">Ch 6 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="njmax-nnz" data-search="njmax_nnz non-zeros of the sparse constraint jacobian per world; defaults to njmax × nv for dense models; for sparse models make_data estimates it from the model's frictionloss, limit and contact rows, at most njmax × nv.">
+        <dt><a class="self" href="#njmax-nnz">njmax_nnz</a></dt>
+        <dd>Non-zeros of the sparse constraint Jacobian per world; defaults to njmax &times; nv for dense models; for sparse models <code>make_data</code> estimates it from the model&rsquo;s frictionloss, limit and contact rows, at most njmax &times; nv.<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#sizing-parameters" title="Contacts, Constraint Budgets and Overflow">Ch 9 §5</a> · also <a href="../chapters/19-constraints-as-optimization.html#sparse-j" title="Constraints as Convex Optimization">Ch 19 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="nworld" data-search="nworld the number of worlds in one mjw.data. every per-world state array (qpos, qvel, ctrl, time, ...) has nworld as its first dimension; contacts are pooled across worlds instead (ch 6, ch 9).">
+        <dt><a class="self" href="#nworld">nworld</a></dt>
+        <dd>The number of worlds in one mjw.Data. Every per-world state array (qpos, qvel, ctrl, time, ...) has nworld as its first dimension; contacts are pooled across worlds instead (Ch 6, Ch 9).<span class="where">Owner: <a href="../chapters/06-batched-data-layout.html#nworld-first" title="Many Worlds: The Batched Data Layout">Ch 6 §1</a> · also <a href="../chapters/01-what-is-mujoco-warp.html#why-gpus" title="What Is MuJoCo Warp?">Ch 1 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="overflow-bitmask" data-search="overflow bitmask d.overflow, one int per world: sticky overflowtype bits (nefc, njmax_nnz, broadphase, narrowphase, ccd, hfield, ...) set when a buffer was too small and work was dropped.">
+        <dt><a class="self" href="#overflow-bitmask">overflow bitmask</a></dt>
+        <dd><code>d.overflow</code>, one int per world: sticky <code>OverflowType</code> bits (NEFC, NJMAX_NNZ, BROADPHASE, NARROWPHASE, CCD, HFIELD, ...) set when a buffer was too small and work was dropped.<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#overflow-detection" title="Contacts, Constraint Budgets and Overflow">Ch 9 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="pipeline-breadcrumb" data-search="pipeline breadcrumb the fixed strip of pipeline stations at the top of ch 7-23; each chapter highlights the stations it explains.">
+        <dt><a class="self" href="#pipeline-breadcrumb">pipeline breadcrumb</a></dt>
+        <dd>The fixed strip of pipeline stations at the top of Ch 7-23; each chapter highlights the stations it explains.<span class="where">Owner: <a href="../chapters/07-pipeline-tour.html#stage-order" title="A Guided Tour of step and forward">Ch 7 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="put-data" data-search="put_data mjw.put_data(mjm, mjd, nworld, ...): copy one host mjdata to the device, repeated in every world.">
+        <dt><a class="self" href="#put-data">put_data</a></dt>
+        <dd><code>mjw.put_data(mjm, mjd, nworld, ...)</code>: copy one host MjData to the device, repeated in every world.<span class="where">Owner: <a href="../chapters/05-first-simulation.html#make-put" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="put-model" data-search="put_model mjw.put_model(mjm): copy a compiled mjmodel to the device as an mjw.model; batch_sizes gives chosen &#x27;*&#x27; fields b rows.">
+        <dt><a class="self" href="#put-model">put_model</a></dt>
+        <dd>mjw.put_model(mjm): copy a compiled MjModel to the device as an mjw.Model; batch_sizes gives chosen &#x27;*&#x27; fields B rows.<span class="where">Owner: <a href="../chapters/06-batched-data-layout.html#model-batch" title="Many Worlds: The Batched Data Layout">Ch 6 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="round-robin-batching" data-search="round-robin batching a batched model field with b rows is applied to world w as row w % b: rows are dealt to worlds like cards (worlds k, k+b, k+2b, ... share row k), not in contiguous blocks."><span class="gl-alias" id="round-robin"></span>
+        <dt><a class="self" href="#round-robin-batching">round-robin batching</a></dt>
+        <dd>A batched Model field with B rows is applied to world w as row <code>w % B</code>: rows are dealt to worlds like cards (worlds k, k+B, k+2B, ... share row k), not in contiguous blocks.<span class="where">Owner: <a href="../chapters/06-batched-data-layout.html#round-robin" title="Many Worlds: The Batched Data Layout">Ch 6 §7</a> · also <a href="../chapters/10-domain-randomization.html#batching-rule" title="Domain Randomization with Batched Model Fields">Ch 10 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="state-signature" data-search="state signature an integer bitmask of mjw.state flags that says which state components are packed into a state vector.">
+        <dt><a class="self" href="#state-signature">state signature</a></dt>
+        <dd>An integer bitmask of mjw.State flags that says which state components are packed into a state vector.<span class="where">Owner: <a href="../chapters/08-resets-state-and-control.html#state" title="Resets, State, Mocap and Control Loops">Ch 8 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="sticky-bit" data-search="sticky bit a flag that stays set once set, until explicitly cleared (here by reset_data).">
+        <dt><a class="self" href="#sticky-bit">sticky bit</a></dt>
+        <dd>A flag that stays set once set, until explicitly cleared (here by reset_data).<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#overflow-detection" title="Contacts, Constraint Budgets and Overflow">Ch 9 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="world" data-search="world one independent simulation inside a batched mjwarp data; worlds share one model but have their own state.">
+        <dt><a class="self" href="#world">world</a></dt>
+        <dd>One independent simulation inside a batched MJWarp Data; worlds share one model but have their own state.<span class="where">Owner: <a href="../chapters/06-batched-data-layout.html#nworld-first" title="Many Worlds: The Batched Data Layout">Ch 6 §1</a> · also <a href="../chapters/01-what-is-mujoco-warp.html#why-gpus" title="What Is MuJoCo Warp?">Ch 1 §3</a>, <a href="../chapters/05-first-simulation.html#four-calls" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §1</a></span></dd>
+      </div>
+      </dl>
+      <p class="gl-empty">No term in this family matches the filter.</p>
+    </section>
+    <section class="sec gl-group" id="g-collision">
+      <h2><span class="sec-num">7</span>Collision</h2>
+      <p class="muted">Broadphase, narrowphase, convex and SDF collision, flex geometry (Ch 15-18, 23). 40 terms.</p>
+      <dl class="gl-list">
+      <div class="gl-entry" id="aabb" data-search="aabb axis-aligned bounding box: a box aligned with the world axes that contains a shape.">
+        <dt><a class="self" href="#aabb">AABB</a></dt>
+        <dd>Axis-aligned bounding box: a box aligned with the world axes that contains a shape.<span class="where">Owner: <a href="../chapters/15-geometry-toolkit-and-broadphase.html#toolkit" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15 §1</a> · also <a href="../chapters/27-rays-lidar-and-batch-rendering.html" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27</a></span></dd>
+      </div>
+      <div class="gl-entry" id="bounding-sphere" data-search="bounding sphere the sphere of radius geom_rbound around a geom&#x27;s centre; the cheapest broadphase filter (broadphasefilter.sphere).">
+        <dt><a class="self" href="#bounding-sphere">bounding sphere</a></dt>
+        <dd>The sphere of radius <code>geom_rbound</code> around a geom's centre; the cheapest broadphase filter (<code>BroadphaseFilter.SPHERE</code>).<span class="where">Owner: <a href="../chapters/15-geometry-toolkit-and-broadphase.html#filters" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15 §4</a> · also <a href="../chapters/15-geometry-toolkit-and-broadphase.html#toolkit" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="broadphase" data-search="broadphase a cheap test that lists geom pairs that might touch (bounding volumes overlap).">
+        <dt><a class="self" href="#broadphase">broadphase</a></dt>
+        <dd>A cheap test that lists geom pairs that might touch (bounding volumes overlap).<span class="where">Owner: <a href="../chapters/15-geometry-toolkit-and-broadphase.html#funnel" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15 §2</a> · also <a href="../chapters/09-contacts-and-buffer-sizing.html#where-contacts-come-from" title="Contacts, Constraint Budgets and Overflow">Ch 9 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="ccd" data-search="ccd (convex collision detection) the general path for convex pairs with no primitive formula: gjk for distance, epa for penetration, then multi-contact (collision_gjk.py, collision_convex.py).">
+        <dt><a class="self" href="#ccd">CCD (convex collision detection)</a></dt>
+        <dd>The general path for convex pairs with no primitive formula: GJK for distance, EPA for penetration, then multi-contact (<code>collision_gjk.py</code>, <code>collision_convex.py</code>).<span class="where">Owner: <a href="../chapters/17-convex-collision-gjk-epa.html#why-convex" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="collision-table" data-search="collision table the list of geom-type pairs and which narrowphase (primitive, convex/ccd, sdf, heightfield) handles each; only pairs present in the model are compiled.">
+        <dt><a class="self" href="#collision-table">collision table</a></dt>
+        <dd>The list of geom-type pairs and which narrowphase (primitive, convex/CCD, SDF, heightfield) handles each; only pairs present in the model are compiled.<span class="where">Owner: <a href="../chapters/16-primitive-narrowphase.html#dispatch-table" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="condim" data-search="condim contact dimension: 1 = normal force only, 3 = normal + 2 tangential friction directions, 4 and 6 add torsional and rolling friction.">
+        <dt><a class="self" href="#condim">condim</a></dt>
+        <dd>Contact dimension: 1 = normal force only, 3 = normal + 2 tangential friction directions, 4 and 6 add torsional and rolling friction.<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#cones-rows-forces" title="Contacts, Constraint Budgets and Overflow">Ch 9 §4</a> · also <a href="../chapters/05-first-simulation.html#get-data-into" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §6</a>, <a href="../chapters/16-primitive-narrowphase.html#materials" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="contact" data-search="contact a point where two geoms touch or nearly touch, with a distance, a position and a frame.">
+        <dt><a class="self" href="#contact">contact</a></dt>
+        <dd>A point where two geoms touch or nearly touch, with a distance, a position and a frame.<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#where-contacts-come-from" title="Contacts, Constraint Budgets and Overflow">Ch 9 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="contacttype" data-search="contacttype bits on each contact (types.py::contacttype): constraint = 1 (for the solver), sensor = 2 (for a collision sensor), passive = 4 (for the discrete integrator&#x27;s effective metric).">
+        <dt><a class="self" href="#contacttype">ContactType</a></dt>
+        <dd>Bits on each contact (<code>types.py::ContactType</code>): CONSTRAINT = 1 (for the solver), SENSOR = 2 (for a collision sensor), PASSIVE = 4 (for the discrete integrator's effective metric).<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#contact-type" title="Contacts, Constraint Budgets and Overflow">Ch 9 §11</a></span></dd>
+      </div>
+      <div class="gl-entry" id="contype" data-search="contype / conaffinity per-geom bitmasks: two geoms may collide when (contype1 &amp; conaffinity2) || (contype2 &amp; conaffinity1). put_model uses them to pre-filter pairs."><span class="gl-alias" id="conaffinity"></span>
+        <dt><a class="self" href="#contype">contype / conaffinity</a></dt>
+        <dd>Per-geom bitmasks: two geoms may collide when <code>(contype1 &amp; conaffinity2) || (contype2 &amp; conaffinity1)</code>. <code>put_model</code> uses them to pre-filter pairs.<span class="where">Owner: <a href="../chapters/15-geometry-toolkit-and-broadphase.html#prefilter" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="elliptic-cone" data-search="elliptic cone the exact friction cone (conetype.elliptic): one row per contact dimension, with the cone constraint handled by the solver&#x27;s cone state.">
+        <dt><a class="self" href="#elliptic-cone">elliptic cone</a></dt>
+        <dd>The exact friction cone (<code>ConeType.ELLIPTIC</code>): one row per contact dimension, with the cone constraint handled by the solver's CONE state.<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#cones-rows-forces" title="Contacts, Constraint Budgets and Overflow">Ch 9 §4</a> · also <a href="../chapters/19-constraints-as-optimization.html#friction" title="Constraints as Convex Optimization">Ch 19 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="epa" data-search="epa expanding polytope algorithm: grows a polytope inside the minkowski difference until its face closest to the origin gives the penetration depth and normal.">
+        <dt><a class="self" href="#epa">EPA</a></dt>
+        <dd>Expanding Polytope Algorithm: grows a polytope inside the Minkowski difference until its face closest to the origin gives the penetration depth and normal.<span class="where">Owner: <a href="../chapters/17-convex-collision-gjk-epa.html#why-convex" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="flex" data-search="flex a deformable object in mujoco: vertices (point masses on bodies) joined by edges and simplex elements; dim 1 = rope, 2 = cloth, 3 = soft solid.">
+        <dt><a class="self" href="#flex">flex</a></dt>
+        <dd>A deformable object in MuJoCo: vertices (point masses on bodies) joined by edges and simplex elements; dim 1 = rope, 2 = cloth, 3 = soft solid.<span class="where">Owner: <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#anatomy" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator">Ch 23 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="flexcomp" data-search="flexcomp mjcf macro that generates a flex plus one body (with 3 slide joints) per vertex: types grid, box, cylinder, ellipsoid, mesh, gmsh, direct.">
+        <dt><a class="self" href="#flexcomp">flexcomp</a></dt>
+        <dd>MJCF macro that generates a flex plus one body (with 3 slide joints) per vertex: types grid, box, cylinder, ellipsoid, mesh, gmsh, direct.<span class="where">Owner: <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#anatomy" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator">Ch 23 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="friction-cone" data-search="friction cone the set of allowed contact forces; mujoco approximates it as a pyramid (default) or uses the exact elliptic cone.">
+        <dt><a class="self" href="#friction-cone">friction cone</a></dt>
+        <dd>The set of allowed contact forces; MuJoCo approximates it as a pyramid (default) or uses the exact elliptic cone.<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#cones-rows-forces" title="Contacts, Constraint Budgets and Overflow">Ch 9 §4</a> · also <a href="../chapters/05-first-simulation.html#get-data-into" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="gap" data-search="gap extra distance beyond the margin in which contacts are detected but not active (unless adhesive).">
+        <dt><a class="self" href="#gap">gap</a></dt>
+        <dd>Extra distance beyond the margin in which contacts are detected but not active (unless adhesive).<span class="where">Owner: <a href="../chapters/16-primitive-narrowphase.html#write-contact" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="geomtype" data-search="geomtype enum of geom shapes: plane, hfield, sphere, capsule, ellipsoid, cylinder, box, mesh, sdf (plus internal flex, triangle). the pair of types picks the collider.">
+        <dt><a class="self" href="#geomtype">GeomType</a></dt>
+        <dd>Enum of geom shapes: PLANE, HFIELD, SPHERE, CAPSULE, ELLIPSOID, CYLINDER, BOX, MESH, SDF (plus internal FLEX, TRIANGLE). The pair of types picks the collider.<span class="where">Owner: <a href="../chapters/16-primitive-narrowphase.html#dispatch-table" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="gjk" data-search="gjk gilbert-johnson-keerthi: finds the distance between two convex shapes, or proves they overlap, using only support points of their minkowski difference.">
+        <dt><a class="self" href="#gjk">GJK</a></dt>
+        <dd>Gilbert-Johnson-Keerthi: finds the distance between two convex shapes, or proves they overlap, using only support points of their Minkowski difference.<span class="where">Owner: <a href="../chapters/17-convex-collision-gjk-epa.html#why-convex" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="grid-stride-loop" data-search="grid-stride loop a kernel pattern where t threads cover n items: thread t handles items t, t+t, t+2t, ... so the launch size does not have to equal the work size.">
+        <dt><a class="self" href="#grid-stride-loop">grid-stride loop</a></dt>
+        <dd>A kernel pattern where T threads cover N items: thread t handles items t, t+T, t+2T, ... so the launch size does not have to equal the work size.<span class="where">Owner: <a href="../chapters/17-convex-collision-gjk-epa.html#kernels-scratch" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="halton-sequence" data-search="halton sequence a low-discrepancy sequence: the radical inverse of the index in a prime base. fills space more evenly than random points.">
+        <dt><a class="self" href="#halton-sequence">Halton sequence</a></dt>
+        <dd>A low-discrepancy sequence: the radical inverse of the index in a prime base. Fills space more evenly than random points.<span class="where">Owner: <a href="../chapters/18-heightfields-and-sdfs.html#sdf-narrowphase" title="Collision IV: Heightfields, SDFs and User SDF Plugins">Ch 18 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="heightfield" data-search="heightfield a geom whose surface is a regular grid of elevation samples, used for terrain.">
+        <dt><a class="self" href="#heightfield">heightfield</a></dt>
+        <dd>A geom whose surface is a regular grid of elevation samples, used for terrain.<span class="where">Owner: <a href="../chapters/18-heightfields-and-sdfs.html#hfield-basics" title="Collision IV: Heightfields, SDFs and User SDF Plugins">Ch 18 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="hfield-prism" data-search="heightfield prism one grid cell of a heightfield split into triangular prisms; the convex collider tests a geom against the prisms under its bounding box.">
+        <dt><a class="self" href="#hfield-prism">heightfield prism</a></dt>
+        <dd>One grid cell of a heightfield split into triangular prisms; the convex collider tests a geom against the prisms under its bounding box.<span class="where">Owner: <a href="../chapters/18-heightfields-and-sdfs.html#hfield-prisms" title="Collision IV: Heightfields, SDFs and User SDF Plugins">Ch 18 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="horizon" data-search="horizon in epa: the loop of edges between the faces a new support point can see (deleted) and the faces it cannot (kept). new faces connect the point to every horizon edge.">
+        <dt><a class="self" href="#horizon">horizon</a></dt>
+        <dd>In EPA: the loop of edges between the faces a new support point can see (deleted) and the faces it cannot (kept). New faces connect the point to every horizon edge.<span class="where">Owner: <a href="../chapters/17-convex-collision-gjk-epa.html#epa" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="margin" data-search="margin distance below which a contact becomes an active constraint (includemargin).">
+        <dt><a class="self" href="#margin">margin</a></dt>
+        <dd>Distance below which a contact becomes an active constraint (includemargin).<span class="where">Owner: <a href="../chapters/16-primitive-narrowphase.html#write-contact" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="minkowski-difference" data-search="minkowski difference a - b = {a - b : a in a, b in b}. it contains the origin exactly when a and b overlap; its distance to the origin is the distance between a and b.">
+        <dt><a class="self" href="#minkowski-difference">Minkowski difference</a></dt>
+        <dd>A - B = {a - b : a in A, b in B}. It contains the origin exactly when A and B overlap; its distance to the origin is the distance between A and B.<span class="where">Owner: <a href="../chapters/17-convex-collision-gjk-epa.html#support-functions" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="multiccd" data-search="multiccd generating several contacts for one convex pair (face clipping around the epa witness), so flat contacts are stable; disablebit.multiccd turns it off.">
+        <dt><a class="self" href="#multiccd">multiccd</a></dt>
+        <dd>Generating several contacts for one convex pair (face clipping around the EPA witness), so flat contacts are stable; <code>DisableBit.MULTICCD</code> turns it off.<span class="where">Owner: <a href="../chapters/17-convex-collision-gjk-epa.html#multicontact" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="narrowphase" data-search="narrowphase the exact geometric test for one candidate pair; it writes 0 or more contacts.">
+        <dt><a class="self" href="#narrowphase">narrowphase</a></dt>
+        <dd>The exact geometric test for one candidate pair; it writes 0 or more contacts.<span class="where">Owner: <a href="../chapters/16-primitive-narrowphase.html#dispatch" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §4</a> · also <a href="../chapters/09-contacts-and-buffer-sizing.html#where-contacts-come-from" title="Contacts, Constraint Budgets and Overflow">Ch 9 §1</a>, <a href="../chapters/15-geometry-toolkit-and-broadphase.html#toolkit" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="nxn" data-search="nxn the brute-force broadphase: test every pair of the filtered list in every world.">
+        <dt><a class="self" href="#nxn">NXN</a></dt>
+        <dd>The brute-force broadphase: test every pair of the filtered list in every world.<span class="where">Owner: <a href="../chapters/15-geometry-toolkit-and-broadphase.html#nxn" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="obb" data-search="obb oriented bounding box: a box aligned with the shape&#x27;s own frame.">
+        <dt><a class="self" href="#obb">OBB</a></dt>
+        <dd>Oriented bounding box: a box aligned with the shape&#x27;s own frame.<span class="where">Owner: <a href="../chapters/15-geometry-toolkit-and-broadphase.html#toolkit" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="octree-sdf" data-search="octree sdf an sdf sampled on the corners of an adaptive octree and interpolated trilinearly.">
+        <dt><a class="self" href="#octree-sdf">octree SDF</a></dt>
+        <dd>An SDF sampled on the corners of an adaptive octree and interpolated trilinearly.<span class="where">Owner: <a href="../chapters/18-heightfields-and-sdfs.html#sdf-basics" title="Collision IV: Heightfields, SDFs and User SDF Plugins">Ch 18 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="primitive-collider" data-search="primitive collider a hand-derived formula for one pair of simple shapes (plane-sphere, capsule-capsule, ...) that returns distance, position and normal directly.">
+        <dt><a class="self" href="#primitive-collider">primitive collider</a></dt>
+        <dd>A hand-derived formula for one pair of simple shapes (plane-sphere, capsule-capsule, ...) that returns distance, position and normal directly.<span class="where">Owner: <a href="../chapters/16-primitive-narrowphase.html#dispatch-table" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="pyramidal-cone" data-search="pyramidal cone the default friction-cone approximation (conetype.pyramidal): condim 1 gives one normal row; condim c &gt; 1 gives 2(c-1) rows, each a non-negative force along one edge of a pyramid.">
+        <dt><a class="self" href="#pyramidal-cone">pyramidal cone</a></dt>
+        <dd>The default friction-cone approximation (<code>ConeType.PYRAMIDAL</code>): condim 1 gives one normal row; condim c &gt; 1 gives 2(c-1) rows, each a non-negative force along one edge of a pyramid.<span class="where">Owner: <a href="../chapters/09-contacts-and-buffer-sizing.html#cones-rows-forces" title="Contacts, Constraint Budgets and Overflow">Ch 9 §4</a> · also <a href="../chapters/19-constraints-as-optimization.html#friction" title="Constraints as Convex Optimization">Ch 19 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="rod" data-search="rod a 1-d flex with bending and twist elasticity, simulated as a discrete elastic rod (bergou et al. 2008): curvature at hinges, twist per edge.">
+        <dt><a class="self" href="#rod">rod</a></dt>
+        <dd>A 1-D flex with bending and twist elasticity, simulated as a discrete elastic rod (Bergou et al. 2008): curvature at hinges, twist per edge.<span class="where">Owner: <a href="../chapters/23-soft-bodies-flex-discrete-integrator.html#rods" title="Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator">Ch 23 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="sap" data-search="sap (sweep and prune) sweep and prune: project bounding volumes onto an axis, sort them, and only test pairs whose intervals overlap.">
+        <dt><a class="self" href="#sap">SAP (sweep and prune)</a></dt>
+        <dd>Sweep and prune: project bounding volumes onto an axis, sort them, and only test pairs whose intervals overlap.<span class="where">Owner: <a href="../chapters/15-geometry-toolkit-and-broadphase.html#sap" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="sdf" data-search="sdf (signed distance field) signed distance field: a function giving the distance to a surface, negative inside, positive outside.">
+        <dt><a class="self" href="#sdf">SDF (signed distance field)</a></dt>
+        <dd>Signed distance field: a function giving the distance to a surface, negative inside, positive outside.<span class="where">Owner: <a href="../chapters/18-heightfields-and-sdfs.html#sdf-basics" title="Collision IV: Heightfields, SDFs and User SDF Plugins">Ch 18 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="separating-axis" data-search="separating axis theorem two convex shapes are disjoint exactly when some direction exists on which their projections do not overlap.">
+        <dt><a class="self" href="#separating-axis">separating axis theorem</a></dt>
+        <dd>Two convex shapes are disjoint exactly when some direction exists on which their projections do not overlap.<span class="where">Owner: <a href="../chapters/15-geometry-toolkit-and-broadphase.html#toolkit" title="Collision I: Geometry Toolkit, Pair Filtering and the Broadphase">Ch 15 §1</a> · also <a href="../chapters/16-primitive-narrowphase.html#box-box" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="simplex" data-search="simplex the simplest shape in a dimension: a point, a segment, a triangle or a tetrahedron (1 to 4 points in 3-d).">
+        <dt><a class="self" href="#simplex">simplex</a></dt>
+        <dd>The simplest shape in a dimension: a point, a segment, a triangle or a tetrahedron (1 to 4 points in 3-D).<span class="where">Owner: <a href="../chapters/17-convex-collision-gjk-epa.html#gjk" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="support-function" data-search="support function s(d): the point of a shape that lies furthest along direction d. a convex shape is fully described by it.">
+        <dt><a class="self" href="#support-function">support function</a></dt>
+        <dd>s(d): the point of a shape that lies furthest along direction d. A convex shape is fully described by it.<span class="where">Owner: <a href="../chapters/17-convex-collision-gjk-epa.html#why-convex" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="surface-velocity" data-search="surface velocity a geom attribute (6 numbers, linear then angular, local frame) that makes contacts behave as if the surface moved, without moving the geom.">
+        <dt><a class="self" href="#surface-velocity">surface velocity</a></dt>
+        <dd>A geom attribute (6 numbers, linear then angular, local frame) that makes contacts behave as if the surface moved, without moving the geom.<span class="where">Owner: <a href="../chapters/16-primitive-narrowphase.html#surfacevel" title="Collision II: Geom Types and Primitive Colliders">Ch 16 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="user-sdf-plugin" data-search="user sdf plugin a geom sdf evaluated by a user-supplied warp function (user_sdf / user_sdf_grad) selected by the plugin type id.">
+        <dt><a class="self" href="#user-sdf-plugin">user SDF plugin</a></dt>
+        <dd>A geom SDF evaluated by a user-supplied Warp function (user_sdf / user_sdf_grad) selected by the plugin type id.<span class="where">Owner: <a href="../chapters/18-heightfields-and-sdfs.html#sdf-plugins" title="Collision IV: Heightfields, SDFs and User SDF Plugins">Ch 18 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="witness-points" data-search="witness points the pair of points, one on each shape, that realize the distance (or the penetration) between them. the contact position is their midpoint.">
+        <dt><a class="self" href="#witness-points">witness points</a></dt>
+        <dd>The pair of points, one on each shape, that realize the distance (or the penetration) between them. The contact position is their midpoint.<span class="where">Owner: <a href="../chapters/17-convex-collision-gjk-epa.html#gjk" title="Convex Shapes with GJK, EPA and Multi-Contact">Ch 17 §3</a></span></dd>
+      </div>
+      </dl>
+      <p class="gl-empty">No term in this family matches the filter.</p>
+    </section>
+    <section class="sec gl-group" id="g-solver">
+      <h2><span class="sec-num">8</span>Constraints, solver, islands and determinism</h2>
+      <p class="muted">Constraint rows, the primal solvers, sleeping and reproducibility (Ch 19-22). 27 terms.</p>
+      <dl class="gl-list">
+      <div class="gl-entry" id="aref" data-search="aref per-row reference acceleration, aref = -b · (j v) - k · d · pos: the spring-damper target the soft constraint pulls toward.">
+        <dt><a class="self" href="#aref">aref</a></dt>
+        <dd>Per-row reference acceleration, aref = -b &middot; (J v) - k &middot; d &middot; pos: the spring-damper target the soft constraint pulls toward.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#softness" title="Constraints as Convex Optimization">Ch 19 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="bitwise-reproducible" data-search="bitwise reproducible two runs produce exactly the same bit patterns in every compared array, not just values that are close.">
+        <dt><a class="self" href="#bitwise-reproducible">bitwise reproducible</a></dt>
+        <dd>Two runs produce exactly the same bit patterns in every compared array, not just values that are close.<span class="where">Owner: <a href="../chapters/22-determinism-and-reproducibility.html#sources" title="Determinism and Reproducibility">Ch 22 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="solver-cg" data-search="cg solver solvertype.cg: nonlinear conjugate gradient on the primal problem, m-preconditioned (polak-ribiere in 4.0.1), cheap per iteration.">
+        <dt><a class="self" href="#solver-cg">CG solver</a></dt>
+        <dd><code>SolverType.CG</code>: nonlinear conjugate gradient on the primal problem, M-preconditioned (Polak-Ribiere in 4.0.1), cheap per iteration.<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#cg" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="chaos" data-search="chaos (chaotic dynamics) sensitive dependence on initial conditions: tiny differences grow exponentially until trajectories are unrelated.">
+        <dt><a class="self" href="#chaos">chaos (chaotic dynamics)</a></dt>
+        <dd>Sensitive dependence on initial conditions: tiny differences grow exponentially until trajectories are unrelated.<span class="where">Owner: <a href="../chapters/22-determinism-and-reproducibility.html#chaos" title="Determinism and Reproducibility">Ch 22 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="efc-jacobian" data-search="constraint jacobian (efc j) the constraint jacobian: one row per scalar constraint, mapping generalized velocity (nv) to the constraint&#x27;s velocity.">
+        <dt><a class="self" href="#efc-jacobian">constraint Jacobian (efc J)</a></dt>
+        <dd>The constraint Jacobian: one row per scalar constraint, mapping generalized velocity (nv) to the constraint&#x27;s velocity.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#sparse-j" title="Constraints as Convex Optimization">Ch 19 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="efc-row" data-search="constraint row (efc row) one scalar constraint of the solver (efc = equality, friction, contact); mujoco stores them as rows of a matrix.">
+        <dt><a class="self" href="#efc-row">constraint row (efc row)</a></dt>
+        <dd>One scalar constraint of the solver (efc = equality, friction, contact); MuJoCo stores them as rows of a matrix.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#efc-layout" title="Constraints as Convex Optimization">Ch 19 §4</a> · also <a href="../chapters/05-first-simulation.html#four-calls" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §1</a>, <a href="../chapters/07-pipeline-tour.html#solve" title="A Guided Tour of step and forward">Ch 7 §6</a>, <a href="../chapters/09-contacts-and-buffer-sizing.html#where-contacts-come-from" title="Contacts, Constraint Budgets and Overflow">Ch 9 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="constraintstate" data-search="constraintstate per-row label (satisfied, quadratic, linearneg, linearpos, cone) saying which piece of its cost a row is on at the current qacc.">
+        <dt><a class="self" href="#constraintstate">ConstraintState</a></dt>
+        <dd>Per-row label (SATISFIED, QUADRATIC, LINEARNEG, LINEARPOS, CONE) saying which piece of its cost a row is on at the current qacc.<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#problem" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="determinism" data-search="determinism (contacts / constraint / atomics) m.opt.deterministic, a determinismtype bitmask. in 4.0.1 only atomics does something (run-to-run invariant atomic reductions); contacts and constraint sorting are stubs there.">
+        <dt><a class="self" href="#determinism">determinism (CONTACTS / CONSTRAINT / ATOMICS)</a></dt>
+        <dd><code>m.opt.deterministic</code>, a <code>DeterminismType</code> bitmask. In 4.0.1 only ATOMICS does something (run-to-run invariant atomic reductions); CONTACTS and CONSTRAINT sorting are stubs there.<span class="where">Owner: <a href="../chapters/22-determinism-and-reproducibility.html#option" title="Determinism and Reproducibility">Ch 22 §3</a> · also <a href="../chapters/22-determinism-and-reproducibility.html#cost" title="Determinism and Reproducibility">Ch 22 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="dsu" data-search="dsu (disjoint-set union) disjoint-set union (union-find): a forest of parent pointers where each set is identified by its root; union links two roots, find walks to the root.">
+        <dt><a class="self" href="#dsu">DSU (disjoint-set union)</a></dt>
+        <dd>Disjoint-set union (union-find): a forest of parent pointers where each set is identified by its root; union links two roots, find walks to the root.<span class="where">Owner: <a href="../chapters/21-islands-and-sleep.html#dsu" title="Islands and Sleeping">Ch 21 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="efc-d" data-search="efc.d per-row weight of the constraint cost, d = 1/r with r the row&#x27;s regularizer from impedance: soft rows have small d.">
+        <dt><a class="self" href="#efc-d">efc.D</a></dt>
+        <dd>Per-row weight of the constraint cost, D = 1/R with R the row's regularizer from impedance: soft rows have small D.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#softness" title="Constraints as Convex Optimization">Ch 19 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="frictionloss" data-search="frictionloss dry friction on a joint or tendon: a friction row whose force is bounded by the frictionloss value (rows of type friction_dof / friction_tendon).">
+        <dt><a class="self" href="#frictionloss">frictionloss</a></dt>
+        <dd>Dry friction on a joint or tendon: a friction row whose force is bounded by the frictionloss value (rows of type FRICTION_DOF / FRICTION_TENDON).<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#efc-layout" title="Constraints as Convex Optimization">Ch 19 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="gauss-principle" data-search="gauss principle the constrained acceleration minimizes the m-weighted distance to the unconstrained one plus the constraint cost; mujoco&#x27;s soft version is a convex problem in qacc.">
+        <dt><a class="self" href="#gauss-principle">Gauss principle</a></dt>
+        <dd>The constrained acceleration minimizes the M-weighted distance to the unconstrained one plus the constraint cost; MuJoCo's soft version is a convex problem in qacc.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#gauss" title="Constraints as Convex Optimization">Ch 19 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="impedance" data-search="impedance d in (0, 1) from solimp: how much of the constraint is enforced at the current violation; it sets d and scales aref.">
+        <dt><a class="self" href="#impedance">impedance</a></dt>
+        <dd>d in (0, 1) from solimp: how much of the constraint is enforced at the current violation; it sets D and scales aref.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#softness" title="Constraints as Convex Optimization">Ch 19 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="impratio" data-search="impratio m.opt.impratio: ratio of frictional to normal impedance for elliptic cones; larger values make friction stiffer (less slip).">
+        <dt><a class="self" href="#impratio">impratio</a></dt>
+        <dd><code>m.opt.impratio</code>: ratio of frictional to normal impedance for elliptic cones; larger values make friction stiffer (less slip).<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#friction" title="Constraints as Convex Optimization">Ch 19 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="island" data-search="island a maximal group of kinematic trees connected through constraint rows. trees in different islands do not influence each other within a step.">
+        <dt><a class="self" href="#island">island</a></dt>
+        <dd>A maximal group of kinematic trees connected through constraint rows. Trees in different islands do not influence each other within a step.<span class="where">Owner: <a href="../chapters/21-islands-and-sleep.html#islands" title="Islands and Sleeping">Ch 21 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="kinematic-tree" data-search="kinematic tree a body hanging directly off the world body, together with all its descendants. trees are the unit of sleeping.">
+        <dt><a class="self" href="#kinematic-tree">kinematic tree</a></dt>
+        <dd>A body hanging directly off the world body, together with all its descendants. Trees are the unit of sleeping.<span class="where">Owner: <a href="../chapters/21-islands-and-sleep.html#islands" title="Islands and Sleeping">Ch 21 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="solver-newton" data-search="newton solver solvertype.newton (default): uses the hessian h = m + jt d j and its cholesky factor; few iterations, more work each.">
+        <dt><a class="self" href="#solver-newton">Newton solver</a></dt>
+        <dd><code>SolverType.NEWTON</code> (default): uses the Hessian H = M + J<sup>T</sup> D J and its Cholesky factor; few iterations, more work each.<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#newton" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="noslip" data-search="noslip a post-processing pass (projected gauss-seidel over friction rows with the unregularized delassus operator) that removes the slip of soft friction.">
+        <dt><a class="self" href="#noslip">noslip</a></dt>
+        <dd>A post-processing pass (projected Gauss-Seidel over friction rows with the unregularized Delassus operator) that removes the slip of soft friction.<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#noslip" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §13</a></span></dd>
+      </div>
+      <div class="gl-entry" id="nvmax" data-search="nvmax make_data/put_data argument: the maximum number of awake dofs per world the compacted sleep solve can hold. defaults to nv.">
+        <dt><a class="self" href="#nvmax">nvmax</a></dt>
+        <dd>make_data/put_data argument: the maximum number of awake DOFs per world the compacted sleep solve can hold. Defaults to nv.<span class="where">Owner: <a href="../chapters/21-islands-and-sleep.html#compact" title="Islands and Sleeping">Ch 21 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="pgs" data-search="pgs (projected gauss-seidel) projected gauss-seidel: sweep over the rows, solve each one exactly with the others fixed, and project the result back onto its feasible set.">
+        <dt><a class="self" href="#pgs">PGS (projected Gauss-Seidel)</a></dt>
+        <dd>Projected Gauss-Seidel: sweep over the rows, solve each one exactly with the others fixed, and project the result back onto its feasible set.<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#noslip" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §13</a></span></dd>
+      </div>
+      <div class="gl-entry" id="primal-solver" data-search="primal solver a solver that searches directly over the accelerations qacc (the primal variables) instead of over the constraint forces.">
+        <dt><a class="self" href="#primal-solver">primal solver</a></dt>
+        <dd>A solver that searches directly over the accelerations qacc (the primal variables) instead of over the constraint forces.<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#problem" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="refsafe" data-search="refsafe the rule timeconst ← max(timeconst, 2 · timestep), applied unless disablebit.refsafe is set, so a too-stiff solref cannot blow up a step.">
+        <dt><a class="self" href="#refsafe">refsafe</a></dt>
+        <dd>The rule timeconst &larr; max(timeconst, 2 &middot; timestep), applied unless <code>DisableBit.REFSAFE</code> is set, so a too-stiff solref cannot blow up a step.<span class="where">Owner: <a href="../chapters/19-constraints-as-optimization.html#softness" title="Constraints as Convex Optimization">Ch 19 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="replay-testing" data-search="replay testing checking reproducibility by recording a run (states, ctrl) and replaying it from a snapshot, comparing bit patterns or short horizons rather than long chaotic trajectories.">
+        <dt><a class="self" href="#replay-testing">replay testing</a></dt>
+        <dd>Checking reproducibility by recording a run (states, ctrl) and replaying it from a snapshot, comparing bit patterns or short horizons rather than long chaotic trajectories.<span class="where">Owner: <a href="../chapters/22-determinism-and-reproducibility.html#replay" title="Determinism and Reproducibility">Ch 22 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="sleep-policy" data-search="sleep policy per-tree tree_sleep_policy chosen by the compiler (auto_never for actuated trees, auto_allowed otherwise); mjwarp 4.0.1 rejects the user policies never, allowed and init.">
+        <dt><a class="self" href="#sleep-policy">sleep policy</a></dt>
+        <dd>Per-tree <code>tree_sleep_policy</code> chosen by the compiler (AUTO_NEVER for actuated trees, AUTO_ALLOWED otherwise); MJWarp 4.0.1 rejects the user policies NEVER, ALLOWED and INIT.<span class="where">Owner: <a href="../chapters/21-islands-and-sleep.html#requirements" title="Islands and Sleeping">Ch 21 §4</a> · also <a href="../chapters/21-islands-and-sleep.html#init-asleep" title="Islands and Sleeping">Ch 21 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="sleep" data-search="sleep (sleeping trees) freezing a kinematic tree (zero qvel and qacc, no contacts with static geometry or other sleepers) after it has been still for mjminawake steps, until something wakes it.">
+        <dt><a class="self" href="#sleep">sleep (sleeping trees)</a></dt>
+        <dd>Freezing a kinematic tree (zero qvel and qacc, no contacts with static geometry or other sleepers) after it has been still for mjMINAWAKE steps, until something wakes it.<span class="where">Owner: <a href="../chapters/21-islands-and-sleep.html#step-map" title="Islands and Sleeping">Ch 21 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="ulp" data-search="ulp unit in the last place: the gap between a float and the next representable float. for float32 near 1.0 it is about 1.2e-7.">
+        <dt><a class="self" href="#ulp">ulp</a></dt>
+        <dd>Unit in the last place: the gap between a float and the next representable float. For float32 near 1.0 it is about 1.2e-7.<span class="where">Owner: <a href="../chapters/22-determinism-and-reproducibility.html#chaos" title="Determinism and Reproducibility">Ch 22 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="warmstart" data-search="warmstart the constraint solver&#x27;s initial guess for qacc, taken from the previous step (d.qacc_warmstart).">
+        <dt><a class="self" href="#warmstart">warmstart</a></dt>
+        <dd>The constraint solver&#x27;s initial guess for qacc, taken from the previous step (d.qacc_warmstart).<span class="where">Owner: <a href="../chapters/20-solvers-cg-newton.html#warmstart" title="The Primal Solvers: CG, Newton and the Exact Linesearch">Ch 20 §12</a> · also <a href="../chapters/08-resets-state-and-control.html#state" title="Resets, State, Mocap and Control Loops">Ch 8 §4</a></span></dd>
+      </div>
+      </dl>
+      <p class="gl-empty">No term in this family matches the filter.</p>
+    </section>
+    <section class="sec gl-group" id="g-perf">
+      <h2><span class="sec-num">9</span>Performance, tools and integration</h2>
+      <p class="muted">Profiling, CLIs, rendering, interop, gradients and RL (Ch 24-30). 36 terms.</p>
+      <dl class="gl-list">
+      <div class="gl-entry" id="adjoint" data-search="adjoint the backward version of a kernel: it maps output cotangents to input cotangents (gradients) using the chain rule.">
+        <dt><a class="self" href="#adjoint">adjoint</a></dt>
+        <dd>The backward version of a kernel: it maps output cotangents to input cotangents (gradients) using the chain rule.<span class="where">Owner: <a href="../chapters/29-gradients-and-system-identification.html#tape" title="Gradients, Sampling-Based Optimization and Parallel System Identification">Ch 29 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="adjoint-rule" data-search="adjoint rule in mujoco_warp/_src/diff.py: the dataclass that says which arrays a wrapped api function differentiates and how its backward is computed.">
+        <dt><a class="self" href="#adjoint-rule">adjoint rule</a></dt>
+        <dd>In mujoco_warp/_src/diff.py: the dataclass that says which arrays a wrapped API function differentiates and how its backward is computed.<span class="where">Owner: <a href="../chapters/29-gradients-and-system-identification.html#register-adjoint" title="Gradients, Sampling-Based Optimization and Parallel System Identification">Ch 29 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="advantage" data-search="advantage a(s,a): how much better action a was than the policy&#x27;s average from state s; estimated from rewards and the value function.">
+        <dt><a class="self" href="#advantage">advantage</a></dt>
+        <dd>A(s,a): how much better action a was than the policy&#x27;s average from state s; estimated from rewards and the value function.<span class="where">Owner: <a href="../chapters/30-capstone-rl-at-scale.html#rl-primer" title="Capstone: GPU-Native Reinforcement Learning at Scale">Ch 30 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="benchmark-suite" data-search="benchmark suite the repo&#x27;s benchmarks/ folder: models plus benchmarks lists that run.py turns into testspeed runs and sweep.py runs nightly across commits.">
+        <dt><a class="self" href="#benchmark-suite">benchmark suite</a></dt>
+        <dd>The repo's <code>benchmarks/</code> folder: models plus <code>BENCHMARKS</code> lists that <code>run.py</code> turns into testspeed runs and <code>sweep.py</code> runs nightly across commits.<span class="where">Owner: <a href="../chapters/25-profiling-benchmarking-tuning.html#suite" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="bvh" data-search="bvh bounding volume hierarchy: a tree of boxes around the geoms that lets a ray skip everything it cannot hit.">
+        <dt><a class="self" href="#bvh">BVH</a></dt>
+        <dd>Bounding volume hierarchy: a tree of boxes around the geoms that lets a ray skip everything it cannot hit.<span class="where">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#bvh" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §3</a> · also <a href="../chapters/05-first-simulation.html#seeing-it" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="cem" data-search="cross-entropy method (cem) cross-entropy method: sample candidates from a gaussian, keep the best (elites), refit the gaussian to them, repeat.">
+        <dt><a class="self" href="#cem">cross-entropy method (CEM)</a></dt>
+        <dd>Cross-entropy method: sample candidates from a Gaussian, keep the best (elites), refit the Gaussian to them, repeat.<span class="where">Owner: <a href="../chapters/29-gradients-and-system-identification.html#cem" title="Gradients, Sampling-Based Optimization and Parallel System Identification">Ch 29 §6</a></span></dd>
+      </div>
+      <div class="gl-entry" id="ctrl-noise" data-search="ctrl noise testspeed&#x27;s default ornstein-uhlenbeck perturbation of ctrl around the keyframe or replayed ctrl, so worlds diverge.">
+        <dt><a class="self" href="#ctrl-noise">ctrl noise</a></dt>
+        <dd>testspeed&#x27;s default Ornstein-Uhlenbeck perturbation of ctrl around the keyframe or replayed ctrl, so worlds diverge.<span class="where">Owner: <a href="../chapters/25-profiling-benchmarking-tuning.html#testspeed" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="dlpack" data-search="dlpack a cross-library c struct that describes a tensor: pointer, device, dtype, shape, strides.">
+        <dt><a class="self" href="#dlpack">DLPack</a></dt>
+        <dd>A cross-library C struct that describes a tensor: pointer, device, dtype, shape, strides.<span class="where">Owner: <a href="../chapters/28-interop-torch-and-jax.html#zero-copy" title="Interop with PyTorch and JAX">Ch 28 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="egl" data-search="egl a way to use opengl without a window or display; mujoco.renderer uses it on colab (mujoco_gl=egl, set before importing mujoco).">
+        <dt><a class="self" href="#egl">EGL</a></dt>
+        <dd>A way to use OpenGL without a window or display; <code>mujoco.Renderer</code> uses it on Colab (<code>MUJOCO_GL=egl</code>, set before importing mujoco).<span class="where">Owner: <a href="../chapters/02-mujoco-essentials.html#rendering" title="MuJoCo Essentials for MJWarp Users">Ch 2 §12</a> · also <a href="../chapters/05-first-simulation.html" title="Your First MJWarp Simulation (and How to See It)">Ch 5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="event-scope" data-search="event_scope warp_util.event_scope: decorator on mjwarp&#x27;s stage functions that records an event before and after the call while an eventtracer is active (skipped inside capture_while/capture_if).">
+        <dt><a class="self" href="#event-scope">event_scope</a></dt>
+        <dd><code>warp_util.event_scope</code>: decorator on MJWarp's stage functions that records an event before and after the call while an EventTracer is active (skipped inside <code>capture_while</code>/<code>capture_if</code>).<span class="where">Owner: <a href="../chapters/25-profiling-benchmarking-tuning.html#event-trace" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25 §3</a> · also <a href="../chapters/07-pipeline-tour.html#instrumentation" title="A Guided Tour of step and forward">Ch 7 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="eventtracer" data-search="eventtracer warp_util.eventtracer: context manager that collects the event_scope timings into a nested tree of stage times; mjwarp-testspeed --event_trace prints it.">
+        <dt><a class="self" href="#eventtracer">EventTracer</a></dt>
+        <dd><code>warp_util.EventTracer</code>: context manager that collects the <code>event_scope</code> timings into a nested tree of stage times; <code>mjwarp-testspeed --event_trace</code> prints it.<span class="where">Owner: <a href="../chapters/25-profiling-benchmarking-tuning.html#event-trace" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25 §3</a> · also <a href="../chapters/07-pipeline-tour.html#instrumentation" title="A Guided Tour of step and forward">Ch 7 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="finite-differences" data-search="finite differences estimate a derivative from function values: (f(x+h) - f(x-h)) / 2h for central differences.">
+        <dt><a class="self" href="#finite-differences">finite differences</a></dt>
+        <dd>Estimate a derivative from function values: (f(x+h) - f(x-h)) / 2h for central differences.<span class="where">Owner: <a href="../chapters/29-gradients-and-system-identification.html#derivatives" title="Gradients, Sampling-Based Optimization and Parallel System Identification">Ch 29 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="forward-mode" data-search="forward-mode autodiff automatic differentiation that pushes a tangent (a direction of change of the inputs) forward through the program, alongside the values.">
+        <dt><a class="self" href="#forward-mode">forward-mode autodiff</a></dt>
+        <dd>Automatic differentiation that pushes a tangent (a direction of change of the inputs) forward through the program, alongside the values.<span class="where">Owner: <a href="../chapters/29-gradients-and-system-identification.html#derivatives" title="Gradients, Sampling-Based Optimization and Parallel System Identification">Ch 29 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="gaussian-splat" data-search="gaussian splat a 3-d gaussian blob with a position, rotation, per-axis scale, colour and opacity; many of them can represent a captured scene.">
+        <dt><a class="self" href="#gaussian-splat">Gaussian splat</a></dt>
+        <dd>A 3-D Gaussian blob with a position, rotation, per-axis scale, colour and opacity; many of them can represent a captured scene.<span class="where">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#splats" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §13</a></span></dd>
+      </div>
+      <div class="gl-entry" id="lidar" data-search="lidar light detection and ranging: a sensor that measures distances along many rays, here simulated with ray casting.">
+        <dt><a class="self" href="#lidar">lidar</a></dt>
+        <dd>Light detection and ranging: a sensor that measures distances along many rays, here simulated with ray casting.<span class="where">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#rays" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mdp" data-search="mdp (markov decision process) markov decision process: states, actions, a transition function, a reward function and a discount.">
+        <dt><a class="self" href="#mdp">MDP (Markov decision process)</a></dt>
+        <dd>Markov decision process: states, actions, a transition function, a reward function and a discount.<span class="where">Owner: <a href="../chapters/30-capstone-rl-at-scale.html#rl-primer" title="Capstone: GPU-Native Reinforcement Learning at Scale">Ch 30 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="megakernel" data-search="megakernel one large kernel that does a whole job (here: every ray of every camera) instead of many small launches.">
+        <dt><a class="self" href="#megakernel">megakernel</a></dt>
+        <dd>One large kernel that does a whole job (here: every ray of every camera) instead of many small launches.<span class="where">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#megakernel" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §9</a> · also <a href="../chapters/05-first-simulation.html#seeing-it" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §8</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mjwarp-record" data-search="mjwarp-record cli that rolls out world 0 and saves a .gif or .webp (--output, --render_mode python|warp). gpu only in 4.0.1.">
+        <dt><a class="self" href="#mjwarp-record">mjwarp-record</a></dt>
+        <dd>CLI that rolls out world 0 and saves a <code>.gif</code> or <code>.webp</code> (<code>--output</code>, <code>--render_mode python|warp</code>). GPU only in 4.0.1.<span class="where">Owner: <a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mjwarp-testspeed" data-search="mjwarp-testspeed mjwarp&#x27;s benchmark command line tool: captures a function in a cuda graph and times nstep replays over nworld worlds.">
+        <dt><a class="self" href="#mjwarp-testspeed">mjwarp-testspeed</a></dt>
+        <dd>MJWarp&#x27;s benchmark command line tool: captures a function in a CUDA graph and times nstep replays over nworld worlds.<span class="where">Owner: <a href="../chapters/25-profiling-benchmarking-tuning.html#testspeed" title="Profiling, Benchmarking and Tuning for Throughput">Ch 25 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mjwarp-viewer" data-search="mjwarp-viewer interactive viewer cli: one world, mjwarp (or --engine c) physics, in mujoco&#x27;s passive viewer or --viewer viser in the browser (4.0.1).">
+        <dt><a class="self" href="#mjwarp-viewer">mjwarp-viewer</a></dt>
+        <dd>Interactive viewer CLI: one world, MJWarp (or <code>--engine c</code>) physics, in MuJoCo's passive viewer or <code>--viewer viser</code> in the browser (4.0.1).<span class="where">Owner: <a href="../chapters/05-first-simulation.html#clis" title="Your First MJWarp Simulation (and How to See It)">Ch 5 §9</a></span></dd>
+      </div>
+      <div class="gl-entry" id="mpc" data-search="mpc (model predictive control) model predictive control: at every control step, optimize the next few actions with a model, apply the first one, repeat.">
+        <dt><a class="self" href="#mpc">MPC (model predictive control)</a></dt>
+        <dd>Model predictive control: at every control step, optimize the next few actions with a model, apply the first one, repeat.<span class="where">Owner: <a href="../chapters/08-resets-state-and-control.html#mpc" title="Resets, State, Mocap and Control Loops">Ch 8 §11</a></span></dd>
+      </div>
+      <div class="gl-entry" id="planar-depth" data-search="planar depth depth measured along the camera&#x27;s viewing axis (distance × -dcam,z), not along the ray, so a flat wall facing the camera has one depth value.">
+        <dt><a class="self" href="#planar-depth">planar depth</a></dt>
+        <dd>Depth measured along the camera's viewing axis (distance &times; -d<sub>cam,z</sub>), not along the ray, so a flat wall facing the camera has one depth value.<span class="where">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#cameras" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §6</a> · also <a href="../chapters/27-rays-lidar-and-batch-rendering.html#depth-seg" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §11</a></span></dd>
+      </div>
+      <div class="gl-entry" id="policy" data-search="policy the controller being learned: a function (here a neural network) from observation to a distribution over actions.">
+        <dt><a class="self" href="#policy">policy</a></dt>
+        <dd>The controller being learned: a function (here a neural network) from observation to a distribution over actions.<span class="where">Owner: <a href="../chapters/30-capstone-rl-at-scale.html#rl-primer" title="Capstone: GPU-Native Reinforcement Learning at Scale">Ch 30 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="ppo" data-search="ppo proximal policy optimization: an on-policy actor-critic method that limits each update with a clipped probability ratio.">
+        <dt><a class="self" href="#ppo">PPO</a></dt>
+        <dd>Proximal policy optimization: an on-policy actor-critic method that limits each update with a clipped probability ratio.<span class="where">Owner: <a href="../chapters/30-capstone-rl-at-scale.html#rl-primer" title="Capstone: GPU-Native Reinforcement Learning at Scale">Ch 30 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="ray" data-search="ray a half-line: an origin point plus a direction. ray casting finds the first surface the half-line meets.">
+        <dt><a class="self" href="#ray">ray</a></dt>
+        <dd>A half-line: an origin point plus a direction. Ray casting finds the first surface the half-line meets.<span class="where">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#rays" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="refit" data-search="refit (bvh refit) updating the bounds of an existing bvh after geoms move (mjw.refit_bvh) instead of rebuilding it; call it after each step, before render.">
+        <dt><a class="self" href="#refit">refit (BVH refit)</a></dt>
+        <dd>Updating the bounds of an existing BVH after geoms move (<code>mjw.refit_bvh</code>) instead of rebuilding it; call it after each step, before <code>render</code>.<span class="where">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#bvh" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §3</a></span></dd>
+      </div>
+      <div class="gl-entry" id="render-context" data-search="render context mjw.create_render_context(...) returns a rendercontext: per-camera resolutions, output buffers, bvhs and options for the batch renderer.">
+        <dt><a class="self" href="#render-context">render context</a></dt>
+        <dd><code>mjw.create_render_context(...)</code> returns a RenderContext: per-camera resolutions, output buffers, BVHs and options for the batch renderer.<span class="where">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#pipeline" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §4</a> · also <a href="../chapters/27-rays-lidar-and-batch-rendering.html#options" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §5</a></span></dd>
+      </div>
+      <div class="gl-entry" id="return" data-search="return the (discounted) sum of rewards from a time step to the end of the episode.">
+        <dt><a class="self" href="#return">return</a></dt>
+        <dd>The (discounted) sum of rewards from a time step to the end of the episode.<span class="where">Owner: <a href="../chapters/30-capstone-rl-at-scale.html#rl-primer" title="Capstone: GPU-Native Reinforcement Learning at Scale">Ch 30 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="reverse-mode" data-search="reverse-mode autodiff automatic differentiation that runs the program forward, records it, then pulls a cotangent (sensitivity of one output) backward through the recorded operations.">
+        <dt><a class="self" href="#reverse-mode">reverse-mode autodiff</a></dt>
+        <dd>Automatic differentiation that runs the program forward, records it, then pulls a cotangent (sensitivity of one output) backward through the recorded operations.<span class="where">Owner: <a href="../chapters/29-gradients-and-system-identification.html#derivatives" title="Gradients, Sampling-Based Optimization and Parallel System Identification">Ch 29 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="segmentation" data-search="segmentation an image whose pixels hold object ids instead of colours.">
+        <dt><a class="self" href="#segmentation">segmentation</a></dt>
+        <dd>An image whose pixels hold object ids instead of colours.<span class="where">Owner: <a href="../chapters/27-rays-lidar-and-batch-rendering.html#depth-seg" title="Rays, Lidar and Batch Rendering for Thousands of Worlds">Ch 27 §11</a></span></dd>
+      </div>
+      <div class="gl-entry" id="system-identification" data-search="system identification estimating the physical parameters of a model (mass, damping, friction, ...) so that its simulated behaviour matches recorded data.">
+        <dt><a class="self" href="#system-identification">system identification</a></dt>
+        <dd>Estimating the physical parameters of a model (mass, damping, friction, ...) so that its simulated behaviour matches recorded data.<span class="where">Owner: <a href="../chapters/29-gradients-and-system-identification.html#sysid" title="Gradients, Sampling-Based Optimization and Parallel System Identification">Ch 29 §7</a></span></dd>
+      </div>
+      <div class="gl-entry" id="value-function" data-search="value function v(s): the expected return when starting in state s and following the current policy.">
+        <dt><a class="self" href="#value-function">value function</a></dt>
+        <dd>V(s): the expected return when starting in state s and following the current policy.<span class="where">Owner: <a href="../chapters/30-capstone-rl-at-scale.html#rl-primer" title="Capstone: GPU-Native Reinforcement Learning at Scale">Ch 30 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="jax-callable" data-search="wp.jax_callable warp function that turns an annotated python function of warp arrays into a jax operation (an xla ffi custom call).">
+        <dt><a class="self" href="#jax-callable">wp.jax_callable</a></dt>
+        <dd>Warp function that turns an annotated Python function of Warp arrays into a JAX operation (an XLA FFI custom call).<span class="where">Owner: <a href="../chapters/28-interop-torch-and-jax.html#jax-bridge" title="Interop with PyTorch and JAX">Ch 28 §4</a></span></dd>
+      </div>
+      <div class="gl-entry" id="wp-tape" data-search="wp.tape warp&#x27;s reverse-mode recorder: launches made inside `with wp.tape():` are recorded; tape.backward() runs their adjoints in reverse order.">
+        <dt><a class="self" href="#wp-tape">wp.Tape</a></dt>
+        <dd>Warp&#x27;s reverse-mode recorder: launches made inside `with wp.Tape():` are recorded; tape.backward() runs their adjoints in reverse order.<span class="where">Owner: <a href="../chapters/29-gradients-and-system-identification.html#tape" title="Gradients, Sampling-Based Optimization and Parallel System Identification">Ch 29 §2</a></span></dd>
+      </div>
+      <div class="gl-entry" id="wp-to-torch" data-search="wp.to_torch wp.to_torch(arr): a torch tensor that views the same device memory as a warp array, without copying.">
+        <dt><a class="self" href="#wp-to-torch">wp.to_torch</a></dt>
+        <dd><code>wp.to_torch(arr)</code>: a torch tensor that views the same device memory as a Warp array, without copying.<span class="where">Owner: <a href="../chapters/28-interop-torch-and-jax.html#zero-copy" title="Interop with PyTorch and JAX">Ch 28 §1</a></span></dd>
+      </div>
+      <div class="gl-entry" id="zero-copy" data-search="zero-copy two libraries describe the same memory block with their own array objects; no bytes are moved.">
+        <dt><a class="self" href="#zero-copy">zero-copy</a></dt>
+        <dd>Two libraries describe the same memory block with their own array objects; no bytes are moved.<span class="where">Owner: <a href="../chapters/28-interop-torch-and-jax.html#zero-copy" title="Interop with PyTorch and JAX">Ch 28 §1</a></span></dd>
+      </div>
+      </dl>
+      <p class="gl-empty">No term in this family matches the filter.</p>
+    </section>
+    <section class="sec" id="summary">
+      <h2><span class="sec-num">10</span>Where next</h2>
+      <div class="cards">
+        <a class="card" href="api-at-a-glance.html"><span class="card-num">API</span><h3>API at a glance</h3><p>Every public mujoco_warp name with its signature and the chapter that teaches it.</p></a>
+        <a class="card" href="repo-tour.html"><span class="card-num">REPO</span><h3>Repository tour</h3><p>What lives where in the mujoco_warp repository.</p></a>
+        <a class="card" href="../index.html"><span class="card-num">HOME</span><h3>Course home</h3><p>All 30 chapters.</p></a>
+      </div>
+      <p class="stuck">Stuck? See <a href="troubleshooting.html">Troubleshooting</a> or the <a href="course-map.html">course map</a>.</p>
+    </section>
+
+    <footer class="chapter-footer">
+      <nav class="pager" aria-label="Reference pager">
+        <a class="prev" href="../index.html"><span class="dir">Previous</span><span class="ttl">Course home</span></a>
+        <a class="index" href="../index.html"><span class="dir">All chapters</span><span class="ttl">Course home</span></a>
+        <a class="next" href="api-at-a-glance.html"><span class="dir">Next</span><span class="ttl">API at a glance</span></a>
+      </nav>
+      <p class="site-footer">MuJoCo Warp course · mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1 · source tree at commit 8f5b9f1</p>
+    </footer>
+  </main>
+</div>
+
+<script defer src="../assets/course.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  MW.onReady(function () {
+
+    var q = document.getElementById("gl-q"), cnt = document.getElementById("gl-count");
+    var all = MW.$$(".gl-entry"), groups = MW.$$(".gl-group");
+    function apply() {
+      var s = q.value.trim().toLowerCase(), n = 0;
+      all.forEach(function (e) { var ok = !s || e.getAttribute("data-search").indexOf(s) >= 0 || e.id.indexOf(s) >= 0; e.hidden = !ok; if (ok) n++; });
+      groups.forEach(function (g) { var any = MW.$$(".gl-entry:not([hidden])", g).length > 0; MW.$(".gl-empty", g).style.display = any ? "none" : "block"; });
+      cnt.textContent = n + " of " + all.length + " terms";
+    }
+    q.addEventListener("input", apply);
+    apply();
+    // an alias anchor (#round-robin) highlights its entry
+    function flash() {
+      var id = decodeURIComponent(location.hash.slice(1)); if (!id) return;
+      var el = document.getElementById(id); if (!el) return;
+      var entry = el.classList.contains("gl-alias") ? el.parentNode : el;
+      if (entry.classList.contains("gl-entry")) { MW.$$(".gl-entry.flash").forEach(function (x) { x.classList.remove("flash"); }); entry.classList.add("flash"); }
+    }
+    window.addEventListener("hashchange", flash); flash();
+
+  });
+});
+</script>
+</body>
+</html>

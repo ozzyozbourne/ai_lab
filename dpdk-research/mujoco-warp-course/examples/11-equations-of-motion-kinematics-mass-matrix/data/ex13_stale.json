@@ -1,0 +1,1 @@
+{"errors": {"public defaults: fwd_position() + fwd_acceleration()": 9.54e-06, "_forward pairing: fwd_position(False) + fwd_acceleration(True)": 0.0, "factor twice: fwd_position() + fwd_acceleration(True)": 0.0, "BAD MIX: fwd_position(False) + fwd_acceleration()": 68.9}, "ref0": [3.907, -30.1454], "bad0": [14.4256, -53.3916]}

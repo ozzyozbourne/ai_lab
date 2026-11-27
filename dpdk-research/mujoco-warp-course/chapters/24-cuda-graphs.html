@@ -1,0 +1,2534 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 24 · CUDA Graphs: Capture, Replay and What Gets Baked</title>
+<meta name="description" content="Record mjw.step into a CUDA graph and replay it: what is baked at capture time, what stays live, which Option knobs need a recompile or a recapture, conditional nodes and the CUDA 12.4 fallback.">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../assets/course.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+  /* Chapter 24 local styles */
+  .tl-wrap canvas { width: 100%; display: block; }
+  .vcr-reel { transform-box: fill-box; transform-origin: center; }
+  .anim-tick { animation: ch24-tick 5s steps(1, end) infinite; opacity: 0; }
+  .anim-tick.t1 { animation-delay: 0s; } .anim-tick.t2 { animation-delay: 1s; } .anim-tick.t3 { animation-delay: 2s; }
+  .anim-tick.t4 { animation-delay: 3s; } .anim-tick.t5 { animation-delay: 4s; }
+  @keyframes ch24-tick { 0% { opacity: 1; } 20% { opacity: 0; } 100% { opacity: 0; } }
+  .is-paused .anim-tick { animation: none; opacity: 0; }
+  .is-paused .anim-tick.t5 { opacity: 1; }
+  /* circuit */
+  .cir .wire { stroke: var(--border-strong); stroke-width: 3; fill: none; }
+  .cir .wire.live { stroke: var(--accent); }
+  .cir .new-sock, .cir .cut { display: none; }
+  .cir[data-mode="replace"] .new-sock, .cir[data-mode="replace"] .cut { display: inline; }
+  .cir[data-mode="replace"] .flow-grp { display: none; }
+  .cir .flow-new { stroke: var(--accent); stroke-width: 3; stroke-dasharray: 6 8; fill: none; }
+  /* knob board */
+  .kb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 8px 0 12px; }
+  .kb-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 10px 8px; background: var(--surface); cursor: pointer; text-align: left; font: inherit; color: inherit; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .kb-card:hover, .kb-card:focus-visible { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px var(--accent-soft); }
+  .kb-card[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+  .kb-card .kb-name { font: 600 13px var(--font-mono); overflow-wrap: anywhere; }
+  .kb-card .kb-kind { font-size: 12px; color: var(--muted); }
+  .kb-card svg { width: 38px; height: 38px; }
+  .kb-dial-hand { transform-box: view-box; transform-origin: 19px 19px; transition: transform .5s ease; }
+  .kb-card.turned .kb-dial-hand { transform: rotate(110deg); }
+  .kb-tag { display: inline-block; font: 600 11px var(--font-mono); padding: 2px 7px; border-radius: 99px; width: max-content; max-width: 100%; white-space: normal; }
+  .kb-live { background: var(--ok-soft); color: var(--ok); }
+  .kb-recapture { background: var(--warn-soft); color: var(--warn-ink); }
+  .kb-recompile { background: var(--danger-soft); color: var(--danger-ink); }
+  .kb-src { font-size: 11px; color: var(--muted); }
+  .kb-stage svg { width: 100%; max-width: 560px; margin: 0 auto; display: block; }
+  .kb-tape-cut, .kb-spinner, .kb-flow { display: none; }
+  .kb-stage[data-v="live"] .kb-flow { display: inline; }
+  .kb-stage[data-v="recapture"] .kb-tape-cut { display: inline; }
+  .kb-stage[data-v="recompile"] .kb-tape-cut, .kb-stage[data-v="recompile"] .kb-spinner { display: inline; }
+  .kb-spinner { transform-box: fill-box; transform-origin: center; }
+  .kb-filter { margin: 4px 0 0; }
+  @media (max-width: 600px) {
+    .kb-stage .s-small { font-size: 15px; }   /* the 400-unit viewBox renders at ~0.7 scale on a phone */
+  }
+  /* conditional diagram */
+  .cond .unrolled { display: none; }
+  .cond[data-gc="false"] .unrolled { display: inline; }
+  .cond[data-gc="false"] .loopnode { display: none; }
+  /* flowchart */
+  .fc-node rect, .fc-node polygon { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1.5; transition: stroke .2s, fill .2s; }
+  .fc-node.on rect, .fc-node.on polygon { stroke: var(--accent); stroke-width: 3; fill: var(--accent-soft); }
+  .fc-edge { stroke: var(--border-strong); stroke-width: 1.6; fill: none; transition: stroke .2s; }
+  .fc-edge.on { stroke: var(--accent); stroke-width: 3; }
+  /* throughput chart */
+  .tp-chart svg { width: 100%; display: block; }
+  .tp-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font: 12px var(--font-mono); margin-top: 6px; }
+  .tp-legend span::before { content: ""; display: inline-block; width: 16px; height: 3px; margin-right: 6px; vertical-align: middle; background: var(--c); }
+  .stepper .tape-box { transition: opacity .25s; }
+  .w-dot circle { fill: var(--surface-2); stroke-width: 3; transition: fill .25s, stroke .25s, stroke-width .25s; }
+  .w-dot .w-lbl { fill: var(--text); }
+  .w-dot .w-chk { fill: var(--ok); opacity: 0; transition: opacity .25s; }
+  .w-dot.step-active circle { fill: var(--ok-soft); stroke: var(--ok) !important; stroke-width: 5; }
+  .w-dot.step-active .w-chk { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) { .w-dot circle, .w-dot .w-chk { transition: none; } }
+  .mini-tbl td, .mini-tbl th { white-space: nowrap; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="icon-btn toc-toggle" type="button" aria-label="Table of contents">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">Ch 24 of 30</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Chapter navigation">
+    <a href="23-soft-bodies-flex-discrete-integrator.html" class="prev" aria-label="Previous chapter"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">Prev</span></a>
+    <a href="25-profiling-benchmarking-tuning.html" class="next" aria-label="Next chapter"><span class="lbl">Next</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol data-auto></ol>
+    <p class="toc-progress" aria-live="off"></p>
+  </aside>
+
+  <main id="main" class="content">
+    <header class="chapter-hero">
+      <p class="eyebrow">Part VI · Chapter 24</p>
+      <h1>CUDA Graphs: Capture, Replay and What Gets Baked</h1>
+      <p class="lede">One <code>mjw.step</code> is about a hundred kernel launches, each issued by Python. A CUDA graph
+        records those launches once and replays all of them with a single call. That is the standard way to run MJWarp
+        on a GPU, and it comes with one rule you must understand exactly: the graph freezes every decision Python made
+        while recording, and it remembers the <em>addresses</em> of your arrays, not their values.</p>
+      <div class="hero-meta">
+        <span class="badge level-expert">Expert</span>
+        <span>About 75 min</span><span class="sep">·</span>
+        <span class="prereqs">Prerequisites: <a href="06-batched-data-layout.html">Ch 6</a>, <a href="07-pipeline-tour.html">Ch 7</a> (<a href="20-solvers-cg-newton.html">Ch 20</a> recommended)</span>
+      </div>
+      <div class="hero-grid">
+        <div>
+          <h2 class="sr-only">You will learn</h2>
+          <ul class="learn-list">
+            <li>How to capture <code>mjw.step</code> (and your own kernels) with <code>wp.ScopedCapture</code> and replay it with <code>wp.capture_launch</code>.</li>
+            <li>What is baked into a graph (Python branches on <code>m.opt.*</code>, sizes, array addresses) and what stays live (array contents).</li>
+            <li>The knob board: which <code>Option</code> fields update live, which compile new kernels, and which need a recapture, measured on a real run.</li>
+            <li>How conditional graph nodes (<code>wp.capture_while</code>, <code>wp.capture_if</code>) let the GPU loop the solver by itself, and the fallback for CUDA older than 12.4.</li>
+            <li>How to measure eager vs graph throughput correctly, and the reusable <code>my_env.capture_step</code> helper.</li>
+          </ul>
+        </div>
+        <div>
+          <div class="hero-actions">
+            <a class="btn btn-colab" href="https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/main/dpdk-research/mujoco-warp-course/notebooks/24-cuda-graphs.ipynb" target="_blank" rel="noopener">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M9 7.5a5 5 0 1 0 0 9"/><path d="M15 7.5a5 5 0 1 1 0 9"/></svg>
+              Open in Colab
+            </a>
+            <a class="btn" href="../notebooks/24-cuda-graphs.ipynb" download>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 21h16"/></svg>
+              Download notebook
+            </a>
+          </div>
+          <p class="small muted" style="margin-top:10px">In Colab: Runtime &gt; Change runtime type &gt; GPU, then run the first cell. Every example also runs on CPU: Warp 1.19 can record and replay graphs on its CPU device. CPU timings in this chapter are CPU numbers, never GPU performance.</p>
+        </div>
+      </div>
+    </header>
+
+    <section class="recap" aria-labelledby="recap-h">
+      <h2 id="recap-h" data-toc="Recap">Before you start: recap</h2>
+      <ul>
+        <li>A CUDA graph records launches once and replays them; conditional nodes loop on device; <a href="07-pipeline-tour.html#cuda-graphs">Ch 7 §10</a>. This chapter owns the topic: the code, the rules and the measurements.</li>
+        <li><code>arr.assign(x)</code> changes the contents of an existing array; <code>d.qpos = wp.array(x)</code> replaces the object with new memory (<a href="06-batched-data-layout.html#replace-vs-assign">Ch 6 §5</a>).</li>
+        <li>An eager <code>mjw.step</code> of a tiny model is about 100 launches with a fixed cost each (Example 24.1 counts 104 for the pendulum; Ch 6's model needs ≈95), so throughput grows with <code>nworld</code> until the device is full (<a href="06-batched-data-layout.html#throughput">Ch 6 §11</a>).</li>
+        <li>The first call compiles every kernel (JIT, then a disk cache); a value used through <code>wp.static</code> is a compile-time constant, so a new value means a new kernel (<a href="04-warp-and-the-gpu.html#static">Ch 4 §7</a>, <a href="04-warp-and-the-gpu.html#jit">§8</a>).</li>
+        <li>GPU launches are asynchronous: call <code>wp.synchronize()</code> before you stop a clock (<a href="04-warp-and-the-gpu.html#timing">Ch 4 §10</a>).</li>
+        <li>The solver iterates until every world converged or <code>m.opt.iterations</code> is reached, and writes <code>d.solver_niter</code> per world (<a href="20-solvers-cg-newton.html">Ch 20</a>).</li>
+      </ul>
+    </section>
+
+    <!-- ================================================================ 1 -->
+    <section class="sec" id="why">
+      <h2><span class="sec-num">1</span>Why graphs: the cost is in the launching</h2>
+      <p>Every MJWarp function you call from Python, from <code>mjw.step</code> down to <code>smooth.kinematics</code>,
+        ends in calls to <code>wp.launch</code> or <code>wp.launch_tiled</code>. Each launch is a small piece of Python
+        work: Warp checks and packs the arguments, finds the compiled kernel and hands it to the driver. That costs a few
+        microseconds on the host, whatever the kernel does. Example 24.1 counts the launches in one step of the double
+        pendulum: <strong>98 <code>wp.launch</code> + 6 <code>wp.launch_tiled</code></strong>.</p>
+      <p>Now think about a small model on a big GPU. A kernel over a few thousand worlds may finish in a few
+        microseconds too. So the GPU spends much of its time waiting for Python to issue the next launch: the
+        <abbr class="gl" data-term="kernel" title="A function compiled by Warp that runs once per thread index on the device.">kernels</abbr>
+        are cheap, the <em>launching</em> is not. The repository's own tutorial notebook says it plainly:
+        <code>mjw.step</code> "dispatches hundreds of Warp function calls to the GPU serially, each with a small dispatch
+        overhead cost". The solver adds a second, worse cost: to decide whether to run one more iteration it needs a
+        counter that lives on the GPU, and copying it to the host means waiting for the GPU to finish, every iteration.</p>
+      <p>A <abbr class="gl" data-term="cuda-graph" title="A recorded sequence of GPU operations that can be replayed with one launch, without Python in between.">CUDA graph</abbr>
+        removes both costs. You run one step while Warp is <em>recording</em>. The result is a graph: a list (in general
+        a DAG) of kernel nodes with their arguments filled in. Replaying it is one host call; the driver then feeds the
+        GPU node after node with no Python in between. The widget below is a cartoon of the two timelines. Move the
+        slider: more worlds make each kernel longer, and at some point the GPU is busy even in eager mode.</p>
+
+      <figure class="fig widget tl-wrap" id="tl-fig">
+        <p class="widget-title">Eager launches vs one graph launch <span class="badge illustrative">Illustrative timings</span></p>
+        <canvas id="tl-canvas" role="img" aria-label="Timeline with a CPU lane issuing kernel launches and a GPU lane running them; eager mode has gaps, graph mode packs the kernels together"></canvas>
+        <div class="control-row">
+          <div class="seg" id="tl-mode" role="group" aria-label="Execution mode"><button aria-pressed="true" data-mode="eager">Eager mjw.step</button><button aria-pressed="false" data-mode="graph">Graph replay</button></div>
+          <div class="control"><label for="tl-nw">nworld</label><input id="tl-nw" type="range" min="0" max="16" step="1" value="6"><output id="tl-nw-out">64</output></div>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button></div>
+        <div class="fig-caption-line" id="tl-read" aria-live="polite"></div>
+        <figcaption><span class="fig-num">Figure 24.1.</span>Two lanes for 24 of the ~100 launches of one step. Top: the CPU issues launches (fixed
+          cost each); bottom: the GPU runs kernels whose length grows with <code>nworld</code>. In eager mode the GPU idles
+          between kernels while it waits for the host; in graph mode one host call feeds kernels back to back. The
+          microsecond costs are made up to show the shape; Example 24.4 measures real numbers on your device.</figcaption>
+      </figure>
+
+      <p>Two consequences follow, and they organize this chapter:</p>
+      <ol>
+        <li><strong>Graphs are the normal way to run MJWarp on a GPU.</strong> <code>mjwarp-testspeed</code> times exactly
+          this: <code>_src/cli.py::unroll</code> captures the function once inside <code>wp.ScopedCapture</code> and then
+          calls <code>wp.capture_launch(graph)</code> per step.</li>
+        <li><strong>A graph is a recording.</strong> Whatever Python decided while recording (which kernels, which
+          branches, how many iterations, which arrays) is frozen. Only the <em>numbers inside the arrays</em> are read
+          again on every replay. Most bugs with graphs come from forgetting this.</li>
+      </ol>
+    </section>
+
+    <!-- ================================================================ 2 -->
+    <section class="sec" id="pattern">
+      <h2><span class="sec-num">2</span>The canonical pattern: warm up, capture, replay</h2>
+      <p>The whole API is two names: the context manager <code>wp.ScopedCapture()</code> and the function
+        <code>wp.capture_launch(graph)</code>. Here is the pattern every MJWarp GPU program uses:</p>
+      <div class="code-block"><pre><code class="language-python">mjw.step(m, d)                        # 1. warm-up: compile (or load) every kernel
+with wp.ScopedCapture() as capture:   # 2. record one step: launches are recorded, not run
+    mjw.step(m, d)
+graph = capture.graph
+
+for _ in range(1000):                 # 3. replay: one call runs the whole recorded step
+    wp.capture_launch(graph)
+wp.synchronize()                      # wait for the device before reading results or clocks</code></pre></div>
+      <p>Look at the three phases through <code>d.time</code>, which <code>mjw.step</code> advances by
+        <code>m.opt.timestep</code> (0.01 s for the pendulum). The warm-up step runs, so time becomes 0.01. Capturing does
+        <em>not</em> run the step, so time stays 0.01. Each replay runs it, so five replays give 0.06. Think of a video
+        recorder: capture is REC, replay is PLAY.</p>
+
+      <figure class="fig" data-anim>
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 640 230" role="img" aria-labelledby="f2t f2d">
+            <title id="f2t">Capture records, replay plays</title>
+            <desc id="f2d">Left, a tape recorder in REC mode: the reels turn, launch boxes are written to the tape, and the d.time counter stays at 0.01. Right, the same tape in PLAY mode: the counter ticks 0.02, 0.03 up to 0.06.</desc>
+            <g class="hot" data-info="<strong>Capture = REC.</strong> Inside <code>with wp.ScopedCapture()</code> every <code>wp.launch</code> is appended to the graph instead of running. <code>d.time</code> is not advanced: Example 24.1 prints 0.01 before and after the block.">
+              <rect x="12" y="16" width="296" height="196" rx="14" class="s-box"/>
+              <circle cx="40" cy="42" r="8" class="s-danger anim-blink"/>
+              <text x="56" y="47" class="s-label">REC: wp.ScopedCapture()</text>
+              <rect x="40" y="66" width="240" height="70" rx="10" class="s-box-2"/>
+              <g class="vcr-reel anim-spin speed-slow"><circle cx="100" cy="101" r="24" class="s-accent2-soft"/><path d="M100 79v44M78 101h44" class="s-accent2-stroke" stroke-width="3"/></g>
+              <g class="vcr-reel anim-spin speed-slow"><circle cx="220" cy="101" r="24" class="s-accent2-soft"/><path d="M220 79v44M198 101h44" class="s-accent2-stroke" stroke-width="3"/></g>
+              <g>
+                <rect x="44" y="150" width="20" height="14" rx="3" class="s-accent"/>
+                <rect x="68" y="150" width="20" height="14" rx="3" class="s-accent"/>
+                <rect x="92" y="150" width="20" height="14" rx="3" class="s-accent"/>
+                <rect x="116" y="150" width="20" height="14" rx="3" class="s-accent"/>
+                <rect x="140" y="150" width="20" height="14" rx="3" class="s-accent"/>
+                <rect x="164" y="150" width="20" height="14" rx="3" class="s-accent"/>
+                <text x="194" y="161" class="s-small">… 104 launches</text>
+              </g>
+              <text x="40" y="196" class="s-mono s-text" font-size="14">d.time = 0.01</text>
+              <text x="160" y="196" class="s-small">(frozen while recording)</text>
+            </g>
+            <g class="hot" data-info="<strong>Replay = PLAY.</strong> <code>wp.capture_launch(graph)</code> runs every recorded launch, in order, with the arguments recorded at capture time. Each call advances <code>d.time</code> by one timestep.">
+              <rect x="332" y="16" width="296" height="196" rx="14" class="s-box"/>
+              <path d="M354 34 L370 42 L354 50 Z" class="s-ok"/>
+              <text x="378" y="47" class="s-label">PLAY: wp.capture_launch(graph)</text>
+              <rect x="360" y="66" width="240" height="70" rx="10" class="s-box-2"/>
+              <g class="vcr-reel anim-spin"><circle cx="420" cy="101" r="24" class="s-accent-soft"/><path d="M420 79v44M398 101h44" class="s-accent-stroke" stroke-width="3"/></g>
+              <g class="vcr-reel anim-spin"><circle cx="540" cy="101" r="24" class="s-accent-soft"/><path d="M540 79v44M518 101h44" class="s-accent-stroke" stroke-width="3"/></g>
+              <rect x="364" y="150" width="232" height="14" rx="3" class="s-accent-soft"/>
+              <rect x="364" y="150" width="60" height="14" rx="3" class="s-accent anim-slide" style="--dx:172px"/>
+              <text x="360" y="196" class="s-mono s-text" font-size="14">d.time =</text>
+              <g class="s-mono s-text" font-size="14">
+                <text x="436" y="196" class="anim-tick t1">0.02</text>
+                <text x="436" y="196" class="anim-tick t2">0.03</text>
+                <text x="436" y="196" class="anim-tick t3">0.04</text>
+                <text x="436" y="196" class="anim-tick t4">0.05</text>
+                <text x="436" y="196" class="anim-tick t5">0.06</text>
+              </g>
+              <text x="484" y="196" class="s-small">(one step per call)</text>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="badge illustrative">Illustrative</span></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a panel."></div>
+        <figcaption><span class="fig-num">Figure 24.2.</span>The video-recorder picture. The values of <code>d.time</code> are the
+          ones Example 24.1 prints.</figcaption>
+      </figure>
+
+      <figure class="code-example" data-file="ex1_capture.py">
+        <div class="code-head">
+          <span class="code-title">Example 24.1</span>
+          <span class="code-file">examples/24-cuda-graphs/ex1_capture.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 24.1 - warm up, capture one mjw.step into a graph, replay it 5 times.
+
+Capturing RECORDS the kernel launches of one step; it does not run them, so d.time is the same
+before and after the `with wp.ScopedCapture()` block. Each wp.capture_launch(graph) then runs
+the whole recorded step with one call. We also count the launches recorded during capture by
+wrapping wp.launch / wp.launch_tiled (the same trick as Example 7.5).
+Works on CPU (Warp 1.19 records CPU graphs) and on a CUDA GPU without changes.
+Run: python ex1_capture.py
+"""
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+PENDULUM = """
+&lt;mujoco model="double_pendulum"&gt;
+  &lt;option timestep="0.01"&gt;&lt;flag energy="enable"/&gt;&lt;/option&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 -2 3" dir="0 1 -1"/&gt;
+    &lt;camera name="side" pos="0 -3 1" xyaxes="1 0 0 0 0 1"/&gt;
+    &lt;body name="link1" pos="0 0 1.5"&gt;
+      &lt;joint name="hinge1" type="hinge" axis="0 1 0"/&gt;
+      &lt;geom type="capsule" fromto="0 0 0 0 0 -.5" size=".04" mass="1"/&gt;
+      &lt;body name="link2" pos="0 0 -.5"&gt;
+        &lt;joint name="hinge2" type="hinge" axis="0 1 0"/&gt;
+        &lt;geom type="capsule" fromto="0 0 0 0 0 -.5" size=".04" mass="1"/&gt;
+        &lt;site name="tip" pos="0 0 -.5"/&gt;
+      &lt;/body&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+  &lt;actuator&gt;&lt;motor name="shoulder" joint="hinge1" gear="1" ctrlrange="-5 5"/&gt;&lt;/actuator&gt;
+  &lt;sensor&gt;
+    &lt;jointpos name="q1" joint="hinge1"/&gt;
+    &lt;jointvel name="v1" joint="hinge1"/&gt;
+    &lt;framepos name="tip_pos" objtype="site" objname="tip"/&gt;
+  &lt;/sensor&gt;
+  &lt;keyframe&gt;&lt;key name="horizontal" qpos="1.5708 0"/&gt;&lt;/keyframe&gt;
+&lt;/mujoco&gt;
+"""
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 8
+
+mjm = mujoco.MjModel.from_xml_string(PENDULUM)
+m = mjw.put_model(mjm)
+d = mjw.make_data(mjm, nworld=NWORLD)
+d.qpos.assign(np.tile(mjm.key_qpos[0], (NWORLD, 1)))      # start horizontal in every world
+
+# Rule G: CUDA &lt; 12.4 has no conditional graph nodes; fall back to fixed iteration counts.
+if wp.get_device().is_cuda and not wp.is_conditional_graph_supported():
+    m.opt.graph_conditional = False
+    print("note: CUDA &lt; 12.4, using m.opt.graph_conditional = False")
+
+
+def t0():
+    return f"{d.time.numpy()[0]:.2f}"
+
+
+print("device:", wp.get_device(), "| nworld:", NWORLD)
+print("after make_data:        d.time =", t0())
+
+mjw.step(m, d)                                  # 1. warm-up: compiles (or loads) every kernel
+print("after 1 warm-up step:   d.time =", t0())
+
+# count launches while capturing (wrap the two launch functions MJWarp calls)
+count = {"launch": 0, "launch_tiled": 0}
+orig = {name: getattr(wp, name) for name in count}
+
+
+def counting(name):
+    def wrapper(*args, **kwargs):
+        count[name] += 1
+        return orig[name](*args, **kwargs)
+    return wrapper
+
+
+for name in count:
+    setattr(wp, name, counting(name))
+try:
+    with wp.ScopedCapture() as capture:         # 2. record one step
+        mjw.step(m, d)
+finally:
+    for name in count:
+        setattr(wp, name, orig[name])
+graph = capture.graph
+print("after capture:          d.time =", t0(), "(recorded, not executed)")
+print(f"launches recorded: {count['launch']} wp.launch + {count['launch_tiled']} "
+      f"wp.launch_tiled")
+
+for i in range(5):                              # 3. replay: one call runs the whole step
+    wp.capture_launch(graph)
+    print(f"after replay {i + 1}:         d.time =", t0())
+wp.synchronize()
+
+print("hinge angles, world 0:", d.qpos.numpy()[0])
+print("all worlds identical:", bool(np.all(d.qpos.numpy() == d.qpos.numpy()[0])))</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 24.1"</span><span>CPU: <code>python -I ex1_capture.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=8; on GPU nworld=4096, same times</span></summary>
+<pre class="output">device: cpu | nworld: 8
+after make_data:        d.time = 0.00
+after 1 warm-up step:   d.time = 0.01
+after capture:          d.time = 0.01 (recorded, not executed)
+launches recorded: 98 wp.launch + 6 wp.launch_tiled
+after replay 1:         d.time = 0.02
+after replay 2:         d.time = 0.03
+after replay 3:         d.time = 0.04
+after replay 4:         d.time = 0.05
+after replay 5:         d.time = 0.06
+hinge angles, world 0: [1.5203 0.0635]
+all worlds identical: True</pre>
+        </details>
+      </figure>
+
+      <p>Walk through the same run one state at a time. The tape at the top fills during capture; the counter only moves
+        on warm-up and replay.</p>
+
+      <div class="stepper" aria-label="Stepper: warm-up, capture and replay">
+        <div class="stepper-head"><h4>Warm up, record, replay</h4><span class="stepper-fn">ex1_capture.py · wp.ScopedCapture / wp.capture_launch</span></div>
+        <div class="stepper-body">
+          <div class="stepper-fig">
+            <svg viewBox="0 0 360 230" role="img" aria-label="A graph tape that fills with launch boxes during capture, and a d.time counter">
+              <text x="8" y="18" class="s-small">graph tape (recorded launches)</text>
+              <rect x="8" y="26" width="344" height="34" rx="8" class="s-box"/>
+              <g data-steps="3-">
+                <rect x="14" y="32" width="26" height="22" rx="4" class="s-accent"/>
+                <rect x="44" y="32" width="26" height="22" rx="4" class="s-accent"/>
+                <rect x="74" y="32" width="26" height="22" rx="4" class="s-accent"/>
+              </g>
+              <g data-steps="4-">
+                <rect x="104" y="32" width="26" height="22" rx="4" class="s-accent"/>
+                <rect x="134" y="32" width="26" height="22" rx="4" class="s-accent"/>
+                <rect x="164" y="32" width="26" height="22" rx="4" class="s-accent"/>
+                <rect x="194" y="32" width="26" height="22" rx="4" class="s-accent"/>
+                <rect x="224" y="32" width="26" height="22" rx="4" class="s-accent"/>
+                <text x="258" y="48" class="s-small">… 104</text>
+              </g>
+              <text x="8" y="92" class="s-small">mode</text>
+              <text x="8" y="112" class="s-label" data-steps="0">idle</text>
+              <text x="8" y="112" class="s-label" data-steps="1">eager (runs now)</text>
+              <text x="8" y="112" class="s-label" data-steps="2-4" fill="var(--danger)">REC: recording</text>
+              <text x="8" y="112" class="s-label" data-steps="5-" fill="var(--ok)">PLAY: replaying</text>
+              <text x="8" y="150" class="s-small">d.time (world 0)</text>
+              <rect x="8" y="158" width="150" height="44" rx="10" class="s-box-2"/>
+              <g class="s-mono s-text" font-size="20">
+                <text x="24" y="188" data-steps="0">0.00</text>
+                <text x="24" y="188" data-steps="1-4">0.01</text>
+                <text x="24" y="188" data-steps="5">0.02</text>
+                <text x="24" y="188" data-steps="6">0.06</text>
+              </g>
+              <g data-steps="1"><rect x="190" y="160" width="160" height="40" rx="10" class="s-warn" opacity=".25"/><text x="270" y="185" text-anchor="middle" class="s-small">JIT: compile / load kernels</text></g>
+              <g data-steps="5-"><path d="M190 180 h40" class="s-accent-stroke" stroke-width="3"/><text x="236" y="185" class="s-small">1 host call per step</text></g>
+            </svg>
+          </div>
+          <div class="stepper-side">
+            <pre class="stepper-code">d = mjw.make_data(mjm, nworld=NWORLD)
+mjw.step(m, d)                     # warm-up
+with wp.ScopedCapture() as capture:
+    mjw.step(m, d)                 # recorded
+graph = capture.graph
+for i in range(5):
+    wp.capture_launch(graph)       # replayed</pre>
+            <table class="stepper-vars"></table>
+          </div>
+        </div>
+        <div class="stepper-caption" aria-live="polite"></div>
+        <div class="stepper-controls">
+          <button class="btn btn-sm" data-act="prev">Prev</button>
+          <button class="btn btn-sm btn-primary" data-act="next">Step</button>
+          <button class="btn btn-sm" data-act="play">Play</button>
+          <button class="btn btn-sm btn-ghost" data-act="reset">Reset</button>
+          <input type="range">
+          <span class="stepper-count"></span>
+        </div>
+        <script type="application/json" class="stepper-data">
+        [
+          {"line": 1, "vars": {"d.time": "0.00", "recorded": 0, "graph": "-"}, "caption": "Fresh <code>Data</code>: all worlds at t = 0. Nothing is compiled yet."},
+          {"line": 2, "vars": {"d.time": "0.01", "recorded": 0, "graph": "-"}, "caption": "The warm-up step runs eagerly. Warp compiles every kernel the step needs (or loads it from the disk cache) and executes it. Time advances to 0.01."},
+          {"line": 3, "vars": {"d.time": "0.01", "recorded": 0, "graph": "recording"}, "caption": "Entering <code>wp.ScopedCapture()</code> starts recording on the current device (CUDA stream capture on a GPU, Warp's APIC recorder on CPU)."},
+          {"line": 4, "vars": {"d.time": "0.01", "recorded": 3, "graph": "recording"}, "caption": "<code>mjw.step</code> runs its Python code as usual: all the <code>if m.opt...</code> branches are taken now. But each <code>wp.launch</code> is <em>appended to the graph</em>, with its arguments, instead of running."},
+          {"line": 4, "vars": {"d.time": "0.01", "recorded": 104, "graph": "recording"}, "caption": "The step is done: 98 <code>wp.launch</code> + 6 <code>wp.launch_tiled</code> recorded (Example 24.1). <code>d.time</code> is still 0.01, because nothing ran."},
+          {"line": 7, "vars": {"d.time": "0.02", "recorded": 104, "graph": "ready"}, "caption": "<code>wp.capture_launch(graph)</code>: one host call runs all 104 recorded launches in order. Time advances to 0.02."},
+          {"line": 7, "vars": {"d.time": "0.06", "recorded": 104, "graph": "ready"}, "caption": "After five replays: 0.06 s. The same graph can be replayed as often as you like, as long as the arrays it was recorded with still exist."}
+        ]
+        </script>
+      </div>
+
+      <div class="callout pitfall"><p class="callout-title">Pitfall: no host reads inside a capture</p><p>Inside the
+        <code>with</code> block, do not call <code>.numpy()</code>, <code>.item()</code>, <code>print(arr)</code> or
+        anything else that copies device data to the host. On a GPU such a copy needs the device to finish, which is not
+        possible while a stream is being recorded. The repository's <code>CONTRIBUTING.md</code> makes this a rule for
+        MJWarp itself ("Avoid CPU-GPU synchronization (<code>.numpy()</code>, <code>.item()</code>, D2H copies) during
+        simulation steps"). Read results after <code>wp.capture_launch</code>, outside the block. <code>wp.printf</code>
+        inside kernels is fine.</p></div>
+
+      <details class="callout deeper">
+        <summary class="callout-title">Going deeper: is the warm-up step needed? What does capture do on CPU?</summary>
+        <p><strong>Warm-up.</strong> The warm-up is a habit, not a law. <code>_src/cli.py::unroll</code> (the core of
+          <code>mjwarp-testspeed</code>) captures without one, and reports the capture time as <code>jit_duration</code>:
+          on CUDA 12.3+ drivers Warp can load modules while a stream is being captured. On older drivers Warp may need
+          to load modules before capture (see the <code>force_module_load</code> argument of <code>wp.ScopedCapture</code>).
+          The course examples warm up because it keeps JIT time out of the capture and makes Example 24.1 easy to read.
+          The helper <code>my_env.capture_step</code> does <em>not</em> warm up, so calling it never advances your
+          simulation.</p>
+        <p><strong>CPU.</strong> Warp 1.19's <code>ScopedCapture</code> docstring says it "works on both CPU and CUDA
+          devices". On CPU the launches are recorded into Warp's API capture (APIC) stream, and
+          <code>capture_launch</code> "replays recorded operations in a C++ loop inside Warp". That is why every example
+          in this chapter runs here, and why a replayed graph is much faster than eager stepping even on CPU: the Python
+          per-launch work disappears. The CPU device still runs the kernel threads one after another, so CPU numbers say
+          nothing about GPU speed.</p>
+        <p><strong>Allocations.</strong> Some integrators allocate inside the step (<code>forward.py::rungekutta4</code>
+          clones <code>qpos</code> and <code>qvel</code>; <code>euler</code> allocates scratch for implicit damping). Those
+          allocations are recorded with the graph as well. What you cannot do is allocate inside the body of a
+          <em>conditional</em> node (§5): the source says so in several places ("inside wp.capture_while, where memory
+          cannot be allocated"), which is why MJWarp preallocates solver scratch.</p>
+      </details>
+    </section>
+
+    <!-- ================================================================ 3 -->
+    <section class="sec" id="baked-live">
+      <h2><span class="sec-num">3</span>Baked vs live: what a graph remembers</h2>
+      <p>While you record, <code>mjw.step</code> runs as ordinary Python. It reads <code>m.opt.integrator</code> and
+        picks a function (<code>forward.py::step</code> branches with <code>if m.opt.integrator ==
+        IntegratorType.EULER: euler(m, d) elif ... RK4 ...</code>); it reads sizes like <code>m.nv</code> and
+        <code>d.nworld</code> to choose launch dimensions; it calls kernel factories with Python values; and it passes
+        array objects to <code>wp.launch</code>. A recorded launch stores two kinds of things:</p>
+      <ul>
+        <li><strong>Baked (frozen at capture time):</strong> which kernels are in the graph and in which order (every
+          Python <code>if</code> and <code>for</code> already ran), each launch's dimensions, every scalar argument
+          (a Python <code>int</code> or <code>float</code> passed as an input, such as <code>m.opt.iterations</code>),
+          every compile-time constant inside the kernels (values read through <code>wp.static</code> or used to build a
+          kernel), and the <strong>device address</strong> of every array argument.</li>
+        <li><strong>Live (read from memory on every replay):</strong> the <em>contents</em> of those arrays. That includes
+          all of <code>d.*</code> and every model field that is an array: <code>d.ctrl</code>, <code>d.qpos</code>,
+          <code>d.mocap_pos</code>, <code>m.body_mass</code>, <code>m.geom_friction</code>, and the array-valued
+          options <code>m.opt.timestep</code>, <code>m.opt.gravity</code>, <code>m.opt.tolerance</code>, ...</li>
+      </ul>
+      <p>The picture: the graph is a circuit board soldered at capture time. Arrays are sockets: you can change what
+        flows through a socket (assign new contents), and the circuit sees it. Python <code>if</code>s are switches that
+        were soldered in one position. And if you replace an array object, you plug in a new socket somewhere else,
+        but the board is still wired to the old one.</p>
+
+      <figure class="fig">
+        <div class="fig-frame scroll-x">
+          <svg class="cir" id="cir" data-mode="assign" viewBox="0 0 640 270" role="img" aria-labelledby="f3t f3d">
+            <title id="f3t">The graph as a soldered circuit</title>
+            <desc id="f3d">A circuit board labelled captured graph, with switches soldered for the integrator, the solver loop and the sizes, and a separate bus of recorded array addresses wired to three sockets d.ctrl, m.opt.timestep and d.qpos. In assign mode new values flow into the sockets; in replace mode a new d.qpos socket sits unconnected while the wire still goes to the old one.</desc>
+            <defs><marker id="f3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <g class="hot" data-info="<strong>The captured graph.</strong> Its kernel list, launch sizes, scalar arguments and array addresses were fixed when you recorded it.">
+              <rect x="16" y="20" width="300" height="230" rx="16" class="s-box"/>
+              <text x="32" y="44" class="s-label">captured graph</text>
+            </g>
+            <g class="hot" data-info="<strong>Soldered switch: integrator.</strong> <code>forward.py::step</code> chose <code>euler(m, d)</code> in Python while recording. Setting <code>m.opt.integrator = RK4</code> later changes a Python attribute nobody reads during replay (Example 24.2, part 3).">
+              <rect x="36" y="62" width="130" height="50" rx="10" class="s-box-2"/>
+              <text x="101" y="81" text-anchor="middle" class="s-small s-mono">if integrator ==</text>
+              <circle cx="52" cy="98" r="4" class="s-accent"/>
+              <text x="60" y="102" class="s-small" font-weight="700" fill="var(--accent-ink)">EULER</text>
+              <text x="112" y="102" class="s-small" text-decoration="line-through">RK4</text>
+            </g>
+            <g class="hot" data-info="<strong>Soldered switch: solver loop.</strong> With <code>graph_conditional=False</code> the Python <code>for _ in range(m.opt.iterations)</code> unrolled into that many copies at capture; with True, the iteration count limit was passed as a scalar kernel argument. Either way, changing <code>m.opt.iterations</code> afterwards is ignored by the graph (knob board, §4).">
+              <rect x="36" y="124" width="130" height="50" rx="10" class="s-box-2"/>
+              <text x="101" y="144" text-anchor="middle" class="s-small s-mono">iterations = 100</text>
+              <text x="101" y="162" text-anchor="middle" class="s-small">baked into the launches</text>
+            </g>
+            <g class="hot" data-info="<strong>Baked sizes.</strong> <code>d.nworld</code>, <code>m.nv</code>, <code>njmax</code>, <code>naconmax</code>: every launch dimension. A graph is tied to the exact <code>Model</code>/<code>Data</code> it was recorded with.">
+              <rect x="36" y="186" width="130" height="46" rx="10" class="s-box-2"/>
+              <text x="101" y="206" text-anchor="middle" class="s-small s-mono">dim=(nworld, nv)</text>
+              <text x="101" y="222" text-anchor="middle" class="s-small">sizes</text>
+            </g>
+            <!-- wires from the graph's recorded addresses (a bus, separate from the switches) to sockets -->
+            <g class="hot" data-info="<strong>Recorded array addresses.</strong> Every recorded launch holds the device addresses of its array arguments. On each replay the kernels read and write memory at those addresses. The switches on the left are not wired to anything: they were decided once, in Python, at capture.">
+              <rect x="196" y="62" width="14" height="172" rx="7" class="s-accent-soft"/>
+              <text x="203" y="56" text-anchor="middle" class="s-small">recorded addresses</text>
+              <text x="258" y="246" text-anchor="middle" class="s-small">pointer read at replay</text>
+            </g>
+            <path d="M210 70 H 380" class="wire live"/>
+            <path d="M210 149 H 380" class="wire live"/>
+            <path d="M210 228 H 380" class="wire live"/>
+            <g class="hot" data-info="<strong>Socket <code>d.ctrl</code>.</strong> The graph reads it at its recorded address on every replay. <code>d.ctrl.assign(...)</code> writes new numbers into the same memory: the next replay uses them.">
+              <rect x="380" y="52" width="110" height="36" rx="8" class="s-accent-soft"/><text x="435" y="75" text-anchor="middle" class="s-mono s-text" font-size="12">d.ctrl</text>
+            </g>
+            <g class="hot" data-info="<strong>Socket <code>m.opt.timestep</code>.</strong> An array with one float per world (or one shared). <code>m.opt.timestep.assign([0.005])</code> is live (Example 24.2, part 2).">
+              <rect x="380" y="131" width="110" height="36" rx="8" class="s-accent-soft"/><text x="435" y="154" text-anchor="middle" class="s-mono s-text" font-size="12">m.opt.timestep</text>
+            </g>
+            <g class="hot" data-info="<strong>Socket <code>d.qpos</code> (the old array).</strong> The graph writes the new positions here on every replay, whatever object <code>d.qpos</code> currently names.">
+              <rect x="380" y="210" width="110" height="36" rx="8" class="s-accent-soft"/><text x="435" y="233" text-anchor="middle" class="s-mono s-text" font-size="12">d.qpos (old)</text>
+            </g>
+            <!-- assign: values flowing in -->
+            <g class="flow-grp">
+              <path d="M600 70 H 494" class="flow-new anim-flow" marker-end="url(#f3-arrow)"/>
+              <path d="M600 149 H 494" class="flow-new anim-flow" marker-end="url(#f3-arrow)"/>
+              <path d="M600 228 H 494" class="flow-new anim-flow" marker-end="url(#f3-arrow)"/>
+              <text x="598" y="58" text-anchor="end" class="s-small s-mono">.assign(x)</text>
+            </g>
+            <!-- replace: a new, unconnected socket -->
+            <g class="new-sock hot" data-info="<strong>The NEW array.</strong> <code>d.qpos = wp.array(...)</code> allocated new memory at a new address. No recorded launch knows it: it keeps its initial values forever (Example 24.3: z stays 2.0000).">
+              <rect x="512" y="196" width="116" height="36" rx="8" class="s-box-2" stroke-dasharray="5 4"/>
+              <text x="570" y="219" text-anchor="middle" class="s-mono s-text" font-size="12">d.qpos (new)</text>
+              <text x="570" y="252" text-anchor="middle" class="s-small" fill="var(--danger)">not wired</text>
+            </g>
+            <g class="cut"><text x="435" y="264" text-anchor="middle" class="s-small" fill="var(--danger)">graph still writes here</text></g>
+          </svg>
+        </div>
+        <div class="fig-toolbar">
+          <div class="seg" id="cir-mode" role="group" aria-label="Change mode"><button aria-pressed="true" data-mode="assign">assign contents</button><button aria-pressed="false" data-mode="replace">replace the object</button></div>
+          <span class="badge illustrative">Illustrative</span>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a switch or a socket."></div>
+        <figcaption><span class="fig-num">Figure 24.3.</span>Baked switches, live sockets. Toggle between assigning new contents
+          (the graph sees them) and replacing an array object (the graph keeps the old socket).</figcaption>
+      </figure>
+
+      <p>Example 24.2 tests three changes after capture. Each line restarts all worlds from the same state, runs 20
+        steps eagerly and 20 replays, and compares.</p>
+
+      <figure class="code-example" data-file="ex2_baked_vs_live.py">
+        <div class="code-head">
+          <span class="code-title">Example 24.2</span>
+          <span class="code-file">examples/24-cuda-graphs/ex2_baked_vs_live.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 24.2 - baked vs live: what a captured graph sees when you change things after capture.
+
+We capture one step of PENDULUM, then change three things and replay 20 steps from the same
+start state, comparing with eager mjw.step:
+  1. d.ctrl            via .assign()   -&gt; an array's CONTENTS: live, the graph uses it
+  2. m.opt.timestep    via .assign()   -&gt; also an array (one float per world): live
+  3. m.opt.integrator  = RK4           -&gt; a Python int read while recording: baked, ignored
+Run: python ex2_baked_vs_live.py
+"""
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+PENDULUM = """
+&lt;mujoco model="double_pendulum"&gt;
+  &lt;option timestep="0.01"&gt;&lt;flag energy="enable"/&gt;&lt;/option&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 -2 3" dir="0 1 -1"/&gt;
+    &lt;camera name="side" pos="0 -3 1" xyaxes="1 0 0 0 0 1"/&gt;
+    &lt;body name="link1" pos="0 0 1.5"&gt;
+      &lt;joint name="hinge1" type="hinge" axis="0 1 0"/&gt;
+      &lt;geom type="capsule" fromto="0 0 0 0 0 -.5" size=".04" mass="1"/&gt;
+      &lt;body name="link2" pos="0 0 -.5"&gt;
+        &lt;joint name="hinge2" type="hinge" axis="0 1 0"/&gt;
+        &lt;geom type="capsule" fromto="0 0 0 0 0 -.5" size=".04" mass="1"/&gt;
+        &lt;site name="tip" pos="0 0 -.5"/&gt;
+      &lt;/body&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+  &lt;actuator&gt;&lt;motor name="shoulder" joint="hinge1" gear="1" ctrlrange="-5 5"/&gt;&lt;/actuator&gt;
+  &lt;sensor&gt;
+    &lt;jointpos name="q1" joint="hinge1"/&gt;
+    &lt;jointvel name="v1" joint="hinge1"/&gt;
+    &lt;framepos name="tip_pos" objtype="site" objname="tip"/&gt;
+  &lt;/sensor&gt;
+  &lt;keyframe&gt;&lt;key name="horizontal" qpos="1.5708 0"/&gt;&lt;/keyframe&gt;
+&lt;/mujoco&gt;
+"""
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 4
+NSTEP = 20
+
+mjm = mujoco.MjModel.from_xml_string(PENDULUM)
+m = mjw.put_model(mjm)
+d = mjw.make_data(mjm, nworld=NWORLD)
+if wp.get_device().is_cuda and not wp.is_conditional_graph_supported():
+    m.opt.graph_conditional = False                    # Rule G fallback (CUDA &lt; 12.4)
+    print("note: CUDA &lt; 12.4, using m.opt.graph_conditional = False")
+
+q0 = np.tile(mjm.key_qpos[0], (NWORLD, 1))             # start horizontal, at rest, t = 0
+
+
+def restart():
+    """Put every world back at the start state (in place: the graph keeps working)."""
+    d.qpos.assign(q0)
+    d.qvel.zero_()
+    d.time.zero_()
+
+
+def rollout(use_graph):
+    restart()
+    for _ in range(NSTEP):
+        if use_graph:
+            wp.capture_launch(graph)
+        else:
+            mjw.step(m, d)
+    wp.synchronize()
+    return d.qpos.numpy().copy(), float(d.time.numpy()[0])
+
+
+mjw.step(m, d)                                         # warm-up (compile)
+with wp.ScopedCapture() as capture:                    # recorded with ctrl 0, dt 0.01, EULER
+    mjw.step(m, d)
+graph = capture.graph
+
+
+def report(label, eager, replay, eager_old=None):
+    (qe, te), (qg, tg) = eager, replay
+    print(f"--- {label}")
+    print(f"  eager : qpos w0 {qe[0]}  t {te:.3f}")
+    print(f"  graph : qpos w0 {qg[0]}  t {tg:.3f}")
+    print(f"  max |graph - eager| = {np.abs(qg - qe).max():.2e}")
+    if eager_old is not None:
+        print(f"  max |graph - eager with OLD value| = {np.abs(qg - eager_old[0]).max():.2e}")
+
+
+# 1. ctrl: assign new contents, a different torque per world
+d.ctrl.assign(np.linspace(-2.0, 2.0, NWORLD).reshape(NWORLD, 1))
+report("1. d.ctrl.assign(...)        (array contents)", rollout(False), rollout(True))
+
+# 2. timestep: m.opt.timestep is a wp.array with one entry (shared by all worlds)
+m.opt.timestep.assign([0.005])
+report("2. m.opt.timestep.assign(...) (array contents)", rollout(False), rollout(True))
+
+# 3. integrator: a Python int; mjw.step branches on it in Python while recording
+euler = rollout(False)                                 # eager, still EULER
+m.opt.integrator = int(mjw.IntegratorType.RK4)
+report("3. m.opt.integrator = RK4    (Python int)", rollout(False), rollout(True), euler)
+
+m.opt.integrator = int(mjw.IntegratorType.EULER)       # put it back before any recapture
+print("verdict: ctrl live, timestep live, integrator baked (recapture after changing it)")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 24.2"</span><span>CPU: <code>python -I ex2_baked_vs_live.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=4; on GPU nworld=4096, same numbers</span></summary>
+<pre class="output">--- 1. d.ctrl.assign(...)        (array contents)
+  eager : qpos w0 [0.9021 0.9262]  t 0.200
+  graph : qpos w0 [0.9021 0.9262]  t 0.200
+  max |graph - eager| = 0.00e+00
+--- 2. m.opt.timestep.assign(...) (array contents)
+  eager : qpos w0 [1.3827 0.3056]  t 0.100
+  graph : qpos w0 [1.3827 0.3056]  t 0.100
+  max |graph - eager| = 0.00e+00
+--- 3. m.opt.integrator = RK4    (Python int)
+  eager : qpos w0 [1.3915 0.2915]  t 0.100
+  graph : qpos w0 [1.3827 0.3056]  t 0.100
+  max |graph - eager| = 1.42e-02
+  max |graph - eager with OLD value| = 0.00e+00
+verdict: ctrl live, timestep live, integrator baked (recapture after changing it)</pre>
+        </details>
+      </figure>
+
+      <p>Read part 3 carefully. After <code>m.opt.integrator = RK4</code>, eager stepping really uses RK4 (the
+        positions change), but the replay is bit-for-bit the old Euler result (<code>max |graph - eager with OLD
+        value| = 0</code>). Nothing warns you. Also note the order in the script: <code>restart()</code> uses
+        <code>.assign()</code> and <code>.zero_()</code> on the existing arrays, never new ones, precisely so that the
+        graph keeps working.</p>
+
+      <div class="callout recall"><p class="callout-title">Recall from Ch 6</p><p><a href="06-batched-data-layout.html#replace-vs-assign">Ch 6 §5</a>
+        owns replace vs assign: <code>d.qpos.assign(x)</code> writes into the existing memory, while
+        <code>d.qpos = wp.array(x)</code> rebinds the attribute to a new array. Eagerly both work. With a graph only one
+        does, as Example 24.3 shows.</p></div>
+
+      <figure class="code-example" data-file="ex3_replace_after_capture.py">
+        <div class="code-head">
+          <span class="code-title">Example 24.3</span>
+          <span class="code-file">examples/24-cuda-graphs/ex3_replace_after_capture.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 24.3 - replacing an array after capture: the graph keeps writing the OLD array.
+
+A graph stores the device addresses of the arrays it was recorded with. `d.qpos = wp.array(...)`
+makes d point at a NEW array, but the graph still reads and writes the old one, so the new
+array never changes and nothing warns you. Fix 1: change contents in place with .assign().
+Fix 2: recapture after the replacement. (Ch 6 owns replace vs assign; this is the graph side.)
+Run: python ex3_replace_after_capture.py
+"""
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+BALL_DROP = """
+&lt;mujoco model="ball_drop"&gt;
+  &lt;option timestep="0.002"/&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 0 3" dir="0 0 -1"/&gt;
+    &lt;geom name="floor" type="plane" size="5 5 .1" rgba=".8 .8 .8 1"/&gt;
+    &lt;body name="ball" pos="0 0 1"&gt;
+      &lt;freejoint/&gt;
+      &lt;geom name="ball" type="sphere" size=".1" mass="1" rgba="1 .3 .3 1"/&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+&lt;/mujoco&gt;
+"""
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 4
+NREPLAY = 50
+
+mjm = mujoco.MjModel.from_xml_string(BALL_DROP)
+m = mjw.put_model(mjm)
+d = mjw.make_data(mjm, nworld=NWORLD, nconmax=4, njmax=16)
+if wp.get_device().is_cuda and not wp.is_conditional_graph_supported():
+    m.opt.graph_conditional = False                    # Rule G fallback (CUDA &lt; 12.4)
+    print("note: CUDA &lt; 12.4, using m.opt.graph_conditional = False")
+
+mjw.step(m, d)                                         # warm-up
+with wp.ScopedCapture() as capture:
+    mjw.step(m, d)
+graph = capture.graph
+
+start = np.tile(mjm.qpos0, (NWORLD, 1)).astype(np.float32)
+start[:, 2] = 2.0                                      # every ball starts at z = 2 m
+
+
+def z(arr):
+    return f"{arr.numpy()[0, 2]:.4f}"
+
+
+# --- WRONG: replace the array object ------------------------------------------------------
+old = d.qpos
+d.qpos = wp.array(start, dtype=float)                  # new allocation, new address
+d.qvel.zero_()
+for _ in range(NREPLAY):
+    wp.capture_launch(graph)
+wp.synchronize()
+print(f"replace: new d.qpos z = {z(d.qpos)}  (never written by the graph)")
+print(f"         old array  z = {z(old)}  (the graph kept stepping this one)")
+print("         same object?", d.qpos is old, "| same address?", d.qpos.ptr == old.ptr)
+
+# --- RIGHT (fix 1): restore the old object and change its contents in place ---------------
+d.qpos = old
+d.qpos.assign(start)
+d.qvel.zero_()
+for _ in range(NREPLAY):
+    wp.capture_launch(graph)
+wp.synchronize()
+print(f"assign:  d.qpos z = {z(d.qpos)}  (falls from 2.0 as expected)")
+
+# --- RIGHT (fix 2): replace, then recapture so the graph records the new address ----------
+d.qpos = wp.array(start, dtype=float)
+d.qvel.zero_()
+with wp.ScopedCapture() as capture:
+    mjw.step(m, d)
+graph = capture.graph
+for _ in range(NREPLAY):
+    wp.capture_launch(graph)
+wp.synchronize()
+print(f"replace + recapture: d.qpos z = {z(d.qpos)}  (matches the assign result)")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 24.3"</span><span>CPU: <code>python -I ex3_replace_after_capture.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=4; same on GPU</span></summary>
+<pre class="output">replace: new d.qpos z = 2.0000  (never written by the graph)
+         old array  z = 0.9499  (the graph kept stepping this one)
+         same object? False | same address? False
+assign:  d.qpos z = 1.9500  (falls from 2.0 as expected)
+replace + recapture: d.qpos z = 1.9500  (matches the assign result)</pre>
+        </details>
+      </figure>
+
+      <p>The replaced array still says z = 2.0 after 50 replays: the graph never touched it. The old array, which
+        <code>d</code> no longer points to, kept falling (from about 1.0, where the warm-up left it, to 0.95). The
+        two fixes give the same answer, 1.95 m after 50 steps of 2 ms. In practice: <strong>after a capture, write
+        inputs with <code>.assign()</code>, <code>.fill_()</code>, <code>.zero_()</code>, <code>wp.copy()</code> or your
+        own kernels, and recapture whenever you replace an array.</strong> Helpers from earlier chapters were written
+        this way on purpose: <code>my_env.randomize</code> (Ch 10) keeps its seed in a one-element device array, so a
+        captured graph that contains it uses the current seed, and <code>my_env.reset_done</code> (Ch 8) resets in place.</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Thing you change after capture</th><th>How</th><th>Graph sees it?</th><th>What to do</th></tr></thead>
+          <tbody>
+            <tr><td><code>d.ctrl</code>, <code>d.qpos</code>, <code>d.qvel</code>, <code>d.mocap_pos</code>, <code>d.xfrc_applied</code>, ...</td><td><code>.assign</code>, <code>.fill_</code>, <code>wp.copy</code>, a kernel</td><td>yes (live)</td><td>nothing</td></tr>
+            <tr><td>array model fields: <code>m.body_mass</code>, <code>m.geom_friction</code>, <code>m.actuator_gainprm</code>, ...</td><td>in place, as above</td><td>yes (live)</td><td>if derived constants depend on them, call <code>mjw.set_const</code> eagerly (Ch 10)</td></tr>
+            <tr><td>array options: <code>m.opt.timestep</code>, <code>gravity</code>, <code>tolerance</code>, <code>wind</code>, ...</td><td>in place</td><td>yes (live)</td><td>nothing</td></tr>
+            <tr><td>any of the above</td><td><code>x = wp.array(...)</code> (new object)</td><td>no: graph keeps the old address</td><td>recapture (or assign instead)</td></tr>
+            <tr><td>Python-valued options: <code>integrator</code>, <code>solver</code>, <code>iterations</code>, flags, ...</td><td><code>m.opt.x = v</code></td><td>no (baked)</td><td>recapture; some also compile new kernels (§4)</td></tr>
+            <tr><td><code>nworld</code>, <code>nconmax</code>, <code>njmax</code>, a different <code>Model</code></td><td>new <code>make_data</code>/<code>put_model</code></td><td>no</td><td>capture a new graph for the new objects</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ================================================================ 4 -->
+    <section class="sec" id="knob-board">
+      <h2><span class="sec-num">4</span>The knob board: live, recompile or recapture</h2>
+      <p>The <code>Option</code> dataclass in <code>_src/types.py</code> tells you most of the answer by its field types.
+        Eleven fields are declared as arrays with a <code>"*"</code> (batchable) leading dimension:
+        <code>timestep</code>, <code>tolerance</code>, <code>ls_tolerance</code>, <code>noslip_tolerance</code>,
+        <code>ccd_tolerance</code>, <code>sleep_tolerance</code>, <code>gravity</code>, <code>wind</code>,
+        <code>magnetic</code>, <code>density</code>, <code>viscosity</code>, plus the warp-only
+        <code>impratio_invsqrt</code>. Kernels read them as <code>opt_timestep[worldid % opt_timestep.shape[0]]</code>, so
+        they are live, and they can even differ per world (Ch 10). Everything else is a Python <code>int</code> or
+        <code>bool</code>: <code>integrator</code>, <code>cone</code>, <code>solver</code>, <code>iterations</code>,
+        <code>ls_iterations</code>, <code>ccd_iterations</code>, <code>disableflags</code>, <code>enableflags</code>,
+        <code>broadphase</code>, <code>graph_conditional</code>, <code>warn_overflow</code>, <code>deterministic</code>, ...
+        A captured graph never sees a change to those. Among them there are two different costs:</p>
+      <ul>
+        <li><strong>Recapture only.</strong> The value is used by Python control flow or passed as a plain scalar launch
+          argument. Eager stepping picks up the change at once, with the kernels that are already compiled. Example:
+          <code>iterations</code> is passed to <code>_solve_done</code> and <code>_solve_beta_finalize_tiled</code>
+          (4.0.1 wheel; <code>_solve_search_update_cg_tiled</code> at the dev commit) as the scalar input <code>opt_iterations</code>; <code>integrator</code> is a branch in
+          <code>forward.py::step</code>.</li>
+        <li><strong>Recompile and recapture.</strong> The value is a compile-time constant of some kernel: it goes
+          into a kernel factory (often <code>@cache_kernel</code>) or through <code>wp.static</code>. A new value
+          means a new kernel, compiled on first use. Example: <code>solver.py::_linesearch_iterative_kernel(ls_iterations,
+          cone_type, ...)</code> sets <code>LS_ITERATIONS = ls_iterations</code> and unrolls <code>for _ in
+          range(LS_ITERATIONS)</code>; <code>forward.py::_next_time_builder(warn_overflow)</code> tests
+          <code>wp.static(bool(warn_overflow &amp; OverflowType.NEFC))</code>. A Python branch can cost a compile too:
+          when it leads to kernels whose module has not been loaded yet, the first step after the change compiles
+          them. Switching <code>solver</code> or <code>broadphase</code> does that, and so do some
+          <code>disableflags</code> bits (others only change which already-loaded kernels launch).</li>
+      </ul>
+      <p>Example 24.6 measures this instead of trusting the reading. For each knob it captures a step of
+        <code>box_stack(3)</code> with the CG solver, changes the knob, and runs 10 steps three ways from the same saved
+        state: replaying the old graph, stepping eagerly with the new value, and stepping eagerly with the old value. It
+        also counts how many Warp modules the first eager step after the change had to load: a non-zero count means new
+        compiled code.</p>
+
+      <figure class="fig widget" id="kb-fig">
+        <p class="widget-title">The knob board <span class="badge data-driven">Real data</span> <span class="badge illustrative">consequence animation</span></p>
+        <div class="seg kb-filter" id="kb-filter" role="group" aria-label="Which knobs"><button aria-pressed="true" data-f="measured">Measured (Example 24.6)</button><button aria-pressed="false" data-f="all">+ more fields (from source)</button></div>
+        <div class="kb-grid" id="kb-grid" role="group" aria-label="Option fields: choose one to turn it"></div>
+        <div class="kb-stage fig-frame" id="kb-stage" data-v="live">
+          <svg viewBox="0 0 400 150" role="img" aria-labelledby="f4t f4d">
+            <title id="f4t">Consequence of turning a knob</title>
+            <desc id="f4d">A graph tape of recorded launches. For a live knob a new value flows into the tape. For a recapture knob the tape is cut. For a recompile knob a compile spinner appears and the tape is cut.</desc>
+            <defs><marker id="f4-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <text x="12" y="22" class="s-small">graph recorded before the change</text>
+            <rect x="12" y="32" width="376" height="40" rx="10" class="s-box"/>
+            <g id="kb-tape"></g>
+            <g class="kb-flow">
+              <path d="M200 132 V 78" class="s-accent-stroke anim-flow" stroke-width="3" marker-end="url(#f4-arrow)"/>
+              <text x="210" y="106" class="s-small" id="kb-flow-lbl"><tspan x="210">new contents,</tspan><tspan x="210" dy="18">read at replay</tspan></text>
+            </g>
+            <g class="kb-tape-cut">
+              <path d="M200 24 V 82" class="s-danger-stroke" stroke-width="3" stroke-dasharray="5 4"/>
+              <path d="M188 90 l24 24 M212 90 l-24 24" class="s-danger-stroke" stroke-width="3"/>
+              <text x="222" y="108" class="s-small" fill="var(--danger)">stale: recapture</text>
+            </g>
+            <g class="kb-spinner anim-spin"><circle cx="40" cy="112" r="14" fill="none" class="s-warn-stroke" stroke-width="4" stroke-dasharray="20 12"/></g>
+            <g class="kb-spinner-lbl"><text x="60" y="117" class="s-small kb-spin-text" display="none">JIT: new kernel</text></g>
+          </svg>
+        </div>
+        <div class="fig-caption-line" id="kb-read" aria-live="polite" data-placeholder="Choose a knob to turn it."></div>
+        <figcaption><span class="fig-num">Figure 24.4.</span>Each card is an <code>m.opt</code> field. Choosing it shows the
+          measured evidence from <code>ex6_knob_board.py --dump-json</code> (mujoco-warp 4.0.1, CPU run, nworld=2, 10 steps
+          per comparison) and plays the consequence. The extra cards (second toggle) are classified from the source
+          code, not measured, and say which file decides.</figcaption>
+        <script type="application/json" id="data-ch24-ex6" data-json-file="examples/24-cuda-graphs/data/ex6_knobs.json">{"device":"cpu","nworld":2,"nstep":10,"rows":[{"field":"timestep","change":"fill_(0.002)","graph_vs_new":0.0,"graph_vs_old":0.00868,"new_vs_old":0.00868,"new_modules":0,"verdict":"live"},{"field":"gravity","change":"fill_((0, 0, -3))","graph_vs_new":0.0,"graph_vs_old":0.00671,"new_vs_old":0.00671,"new_modules":0,"verdict":"live"},{"field":"tolerance","change":"fill_(0.1)","graph_vs_new":0.0,"graph_vs_old":0.00183,"new_vs_old":0.00183,"new_modules":0,"verdict":"live"},{"field":"iterations","change":"= 2","graph_vs_new":0.0591,"graph_vs_old":0.0,"new_vs_old":0.0591,"new_modules":0,"verdict":"recapture"},{"field":"ls_iterations","change":"= 1","graph_vs_new":0.000337,"graph_vs_old":0.0,"new_vs_old":0.000337,"new_modules":1,"verdict":"recompile + recapture"},{"field":"integrator","change":"= RK4","graph_vs_new":0.00289,"graph_vs_old":0.0,"new_vs_old":0.00289,"new_modules":0,"verdict":"recapture"},{"field":"warn_overflow","change":"= ALL","graph_vs_new":0.0,"graph_vs_old":0.0,"new_vs_old":0.0,"new_modules":4,"verdict":"recompile + recapture"}]}</script>
+      </figure>
+
+      <figure class="code-example" data-file="ex6_knob_board.py">
+        <div class="code-head">
+          <span class="code-title">Example 24.6</span><span class="badge private-api">private API</span>
+          <span class="code-file">examples/24-cuda-graphs/ex6_knob_board.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 24.6 - the knob board: which Option changes a captured graph sees.
+
+For each knob we capture one step of box_stack(3) (CG solver, so the solver iterates), change
+the knob, and run 10 steps three ways from the same saved state:
+  graph   - replay the graph captured BEFORE the change
+  new     - eager mjw.step with the new value
+  old     - eager mjw.step with the old value (run before the change)
+and count the Warp modules loaded by the first eager step after the change (new compiled code).
+Verdict: live (graph == new), recapture (graph == old, no new code),
+recompile + recapture (new code was compiled; the old graph cannot contain it).
+The module count reads warp._src.context.user_modules (private Warp API, may change). Run it in a
+fresh process (the notebook runs it with !python): a second run in the same Python session, or a
+session that already used a value, finds those modules loaded (+mod 0).
+Run: python ex6_knob_board.py [--dump-json PATH]
+"""
+import argparse
+import json
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+from warp._src import context as wp_context      # private: only to count loaded modules
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dump-json", default=None)
+args, _ = parser.parse_known_args()
+
+
+def box_stack(n=5, size=0.1):
+    bodies = "".join(
+        f'&lt;body name="box{i}" pos="0 0 {size + 2*size*i + 0.001*i:.4f}"&gt;&lt;freejoint/&gt;'
+        f'&lt;geom type="box" size="{size} {size} {size}"/&gt;&lt;/body&gt;' for i in range(n))
+    return (f'&lt;mujoco model="box_stack"&gt;&lt;option timestep="0.005"/&gt;&lt;worldbody&gt;'
+            f'&lt;light pos="0 0 3" dir="0 0 -1"/&gt;&lt;geom name="floor" type="plane" size="5 5 .1"/&gt;'
+            f'{bodies}&lt;/worldbody&gt;&lt;/mujoco&gt;')
+
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 1024 if ON_GPU else 2
+NSTEP = 10
+SIG = int(mjw.State.INTEGRATION)
+
+mjm = mujoco.MjModel.from_xml_string(box_stack(3))
+mjm.opt.solver = mujoco.mjtSolver.mjSOL_CG       # CG iterates more than Newton: knobs show
+mjm.opt.tolerance = 1e-10                        # put_model clamps this to 1e-6 (float32)
+
+
+def set_array(arr, value):
+    arr.fill_(value)                             # in place: same array object, new contents
+
+
+KNOBS = [  # (field, what we do, function applying the change)
+    ("timestep", "fill_(0.002)", lambda m: set_array(m.opt.timestep, 0.002)),
+    ("gravity", "fill_((0, 0, -3))", lambda m: set_array(m.opt.gravity, wp.vec3(0.0, 0.0, -3.0))),
+    ("tolerance", "fill_(0.1)", lambda m: set_array(m.opt.tolerance, 0.1)),
+    ("iterations", "= 2", lambda m: setattr(m.opt, "iterations", 2)),
+    ("ls_iterations", "= 1", lambda m: setattr(m.opt, "ls_iterations", 1)),
+    ("integrator", "= RK4", lambda m: setattr(m.opt, "integrator", int(mjw.IntegratorType.RK4))),
+    ("warn_overflow", "= ALL", lambda m: setattr(m.opt, "warn_overflow",
+                                                  int(mjw.OverflowType.ALL))),
+]
+
+
+def loaded_modules():
+    return sum(len(mod.execs) for mod in wp_context.user_modules.values())
+
+
+def measure(change):
+    m = mjw.put_model(mjm)
+    m.opt.warn_overflow = 0                      # quiet baseline (and a knob we test below)
+    if wp.get_device().is_cuda and not wp.is_conditional_graph_supported():
+        m.opt.graph_conditional = False          # Rule G fallback (CUDA &lt; 12.4)
+    d = mjw.make_data(mjm, nworld=NWORLD, nconmax=16, njmax=64)
+    for _ in range(20):                          # let the boxes land, then kick them
+        mjw.step(m, d)
+    rng = np.random.default_rng(0)
+    qvel = d.qvel.numpy()
+    qvel[:, 0::6] += rng.normal(0.0, 1.0, (NWORLD, 3))
+    d.qvel.assign(qvel)
+    state = wp.zeros((NWORLD, mujoco.mj_stateSize(mjm, SIG)), dtype=float)
+    mjw.get_state(m, d, state, SIG)
+    with wp.ScopedCapture() as capture:
+        mjw.step(m, d)
+    graph = capture.graph
+
+    def rollout(fn):
+        mjw.set_state(m, d, state, SIG)
+        for _ in range(NSTEP):
+            fn()
+        wp.synchronize()
+        return d.qpos.numpy().copy()
+
+    old = rollout(lambda: mjw.step(m, d))
+    change(m)
+    replay = rollout(lambda: wp.capture_launch(graph))
+    before = loaded_modules()
+    new = rollout(lambda: mjw.step(m, d))
+    return replay, new, old, loaded_modules() - before
+
+
+rows = []
+print(f"device: {wp.get_device()}, nworld {NWORLD}, {NSTEP} steps per comparison")
+print(f"{'knob':&lt;14} {'change':&lt;17} {'|g-new|':&gt;9} {'|g-old|':&gt;9} {'|new-old|':&gt;9} "
+      f"{'+mod':&gt;4}  verdict")
+for field, what, change in KNOBS:
+    g, new, old, nmod = measure(change)
+    e_gn, e_go, e_no = (float(np.abs(a - b).max()) for a, b in ((g, new), (g, old), (new, old)))
+    if e_no &gt; 0 and e_gn &lt;= 0.1 * e_no:
+        verdict = "live"
+    elif nmod &gt; 0:
+        verdict = "recompile + recapture"
+    elif e_no &gt; 0 and e_go &lt;= 0.1 * e_no:
+        verdict = "recapture"
+    else:
+        verdict = "no visible effect"
+    rows.append({"field": field, "change": what, "graph_vs_new": e_gn, "graph_vs_old": e_go,
+                 "new_vs_old": e_no, "new_modules": nmod, "verdict": verdict})
+    print(f"{field:&lt;14} {what:&lt;17} {e_gn:&gt;9.2e} {e_go:&gt;9.2e} {e_no:&gt;9.2e} {nmod:&gt;4}  {verdict}")
+
+if args.dump_json:
+    with open(args.dump_json, "w") as f:
+        json.dump({"device": str(wp.get_device()), "nworld": NWORLD, "nstep": NSTEP,
+                   "rows": [{k: (float(f"{v:.3g}") if isinstance(v, float) else v)
+                             for k, v in r.items()} for r in rows]}, f, separators=(",", ":"))
+    print("wrote", args.dump_json)</code></pre>
+        <div class="run-note"><span>Colab: notebook cells "ex6_knob_board.py" (writefile) and <code>!python ex6_knob_board.py</code></span><span>CPU: <code>python -I ex6_knob_board.py --dump-json data/ex6_knobs.json</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=2; on GPU nworld=1024, the verdicts should match</span></summary>
+<pre class="output">device: cpu, nworld 2, 10 steps per comparison
+knob           change              |g-new|   |g-old| |new-old| +mod  verdict
+timestep       fill_(0.002)       0.00e+00  8.68e-03  8.68e-03    0  live
+gravity        fill_((0, 0, -3))  0.00e+00  6.71e-03  6.71e-03    0  live
+tolerance      fill_(0.1)         0.00e+00  1.83e-03  1.83e-03    0  live
+iterations     = 2                5.91e-02  0.00e+00  5.91e-02    0  recapture
+ls_iterations  = 1                3.37e-04  0.00e+00  3.37e-04    1  recompile + recapture
+integrator     = RK4              2.89e-03  0.00e+00  2.89e-03    0  recapture
+warn_overflow  = ALL              0.00e+00  0.00e+00  0.00e+00    4  recompile + recapture
+wrote data/ex6_knobs.json</pre>
+        </details>
+      </figure>
+
+      <p>How to read the columns: <code>|g-new|</code> is the largest difference between the replay and eager stepping
+        with the new value, <code>|g-old|</code> the same against the old value, and <code>|new-old|</code> tells you the
+        change matters at all. <strong>timestep, gravity and tolerance</strong> are live: the replay equals eager stepping
+        with the new value exactly. <strong>iterations</strong> and <strong>integrator</strong> are baked but need no new
+        code: the replay equals the <em>old</em> run, and the eager step loaded no new module. <strong>ls_iterations</strong>
+        loaded one new module (the linesearch kernel built for <code>LS_ITERATIONS = 1</code>), and
+        <strong>warn_overflow</strong> loaded four (it is a <code>wp.static</code> constant in several kernel
+        factories). <code>warn_overflow</code> only changes printed warnings, so there is no physics to compare
+        (<code>|new-old| = 0</code>), but the compile count proves the graph cannot contain the new kernels.</p>
+
+      <div class="callout note"><p class="callout-title">Note: the "+mod" column depends on history</p><p>A module is
+        compiled (or loaded from the disk cache) once per Python process. If an earlier cell already stepped with
+        <code>warn_overflow = ALL</code> (the default that <code>put_model</code> sets), those modules are loaded and the
+        count is 0. That is why Example 24.6 starts every knob from <code>warn_overflow = 0</code> and why the notebook
+        runs it with <code>!python</code> in a fresh process. The verdict "recapture" is always right for a baked knob;
+        "recompile" tells you the first eager step after the change will also pay a compile.</p></div>
+
+      <div class="callout pitfall"><p class="callout-title">Pitfall: <code>m.opt.timestep = 0.005</code></p><p>Do not
+        assign a Python float to an array option. <code>m.opt.timestep = 0.005</code> replaces the array with a float.
+        The next eager <code>mjw.step</code> fails (verified: <code>RuntimeError: Error launching kernel ...,
+        argument 'opt_timestep' expects an array ... but passed value has type float</code>), and an existing graph
+        silently keeps reading the old array. Write <code>m.opt.timestep.fill_(0.005)</code> (or <code>.assign([0.005])</code>) instead.</p></div>
+
+      <details class="callout deeper">
+        <summary class="callout-title">Going deeper: why does <code>cache_kernel</code> exist?</summary>
+        <p><code>_src/warp_util.py::cache_kernel</code> wraps kernel factories and memoizes them on their arguments; its
+          only comment is "caching kernels to avoid crashes in graph_conditional code". A factory that builds a new
+          <code>wp.kernel</code> object on every call would create a new module during recording, including inside the
+          body of a <code>capture_while</code> (§5). Caching returns the same kernel object for the same arguments, so a
+          recorded launch always refers to a kernel that already exists. Note its key: arrays are hashed by
+          <code>.size</code> alone, so two different arrays of the same size share one kernel, and the wrapper
+          accepts positional arguments only: a keyword argument raises <code>TypeError</code> (warp-perf research,
+          pitfall 13). Pass scalars positionally if you use it for your own factories (Ch 26).</p>
+      </details>
+    </section>
+
+    <!-- ================================================================ 5 -->
+    <section class="sec" id="conditional">
+      <h2><span class="sec-num">5</span>Conditional nodes: loops and branches that run on the device</h2>
+      <p>A plain graph is a fixed list. But the solver's work is not fixed: how many iterations it needs depends on the
+        state, and it changes every step. Eagerly, the loop lives in Python and asks the GPU "is anyone still solving?"
+        after each iteration, which costs a device-to-host copy and a wait. CUDA 12.4 added <strong>conditional
+        nodes</strong>: graph nodes that read an integer in device memory and decide, on the device, whether to run a
+        sub-graph (an <em>if</em> node) or to keep running it (a <em>while</em> node). Warp exposes them as two
+        functions:</p>
+      <ul>
+        <li><code>wp.capture_while(condition, while_body, **kwargs)</code>: run <code>while_body(**kwargs)</code> as long as
+          <code>condition[0]</code> is non-zero. "The <code>while_body</code> callback is responsible for updating the
+          condition value so the loop can terminate" (Warp docstring).</li>
+        <li><code>wp.capture_if(condition, on_true=None, on_false=None, **kwargs)</code>: run one of two callbacks
+          depending on <code>condition[0]</code>.</li>
+      </ul>
+      <p>Both also work without a capture (they then evaluate the condition on the host, with a sync), and inside a
+        capture they record a conditional node. MJWarp uses them only when <code>m.opt.graph_conditional</code> is true,
+        which <code>io.py::put_model</code> sets by default. The main use is the constraint solver, in
+        <code>solver.py::_solve</code>:</p>
+      <div class="code-block"><pre><code class="language-python">nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)   # worlds not converged yet
+...
+if m.opt.iterations != 0 and m.opt.graph_conditional:
+    # the iteration kernel (while_body) is repeatedly launched as long as nsolving is not zero;
+    # when solver_niter reaches m.opt.iterations all worlds are marked converged
+    wp.capture_while(nsolving, while_body=_solver_iteration, m=m, d=d, ctx=ctx, nsolving=nsolving,
+                     compact=compact)
+else:
+    # "mostly for when JAX is used as it is currently not compatible with CUDA graph conditional"
+    for _ in range(m.opt.iterations):
+        _solver_iteration(m, d, ctx, nsolving, compact=compact)</code></pre></div>
+      <p>(Abridged from the 4.0.1 wheel; the comments paraphrase the source comments.) The done kernel of each
+        <code>_solver_iteration</code> (<code>_solve_done</code> for Newton, the last launch;
+        <code>_solve_beta_finalize_tiled</code> for CG, followed by the CG search-direction update) marks converged worlds as done and decrements <code>nsolving</code>; a world that reaches
+        <code>m.opt.iterations</code> is marked done too, which guarantees the loop ends. Step through it:</p>
+
+      <div class="stepper" aria-label="Stepper: the solver loop as a capture_while node">
+        <div class="stepper-head"><h4>The solver as a device-side loop</h4><span class="stepper-fn">solver.py::_solve · wp.capture_while</span><span class="badge illustrative">Illustrative convergence order</span></div>
+        <div class="stepper-body">
+          <div class="stepper-fig">
+            <svg viewBox="0 0 360 230" role="img" aria-label="Eight worlds as dots that get a green ring and a check mark when converged, and the nsolving counter">
+              <text x="8" y="18" class="s-small">worlds (green ring + ✓ = converged, done[world] = 1)</text>
+              <g class="s-mono s-text" font-size="11">
+                <g class="w-dot" data-active="4-"><circle cx="30" cy="50" r="15" style="stroke: var(--world-0)"/><text class="w-lbl" x="30" y="54" text-anchor="middle">w0</text><text class="w-chk" x="30" y="84" text-anchor="middle" font-size="15">✓</text></g>
+                <g class="w-dot" data-active="2-"><circle cx="72" cy="50" r="15" style="stroke: var(--world-1)"/><text class="w-lbl" x="72" y="54" text-anchor="middle">w1</text><text class="w-chk" x="72" y="84" text-anchor="middle" font-size="15">✓</text></g>
+                <g class="w-dot" data-active="5-"><circle cx="114" cy="50" r="15" style="stroke: var(--world-2)"/><text class="w-lbl" x="114" y="54" text-anchor="middle">w2</text><text class="w-chk" x="114" y="84" text-anchor="middle" font-size="15">✓</text></g>
+                <g class="w-dot" data-active="4-"><circle cx="156" cy="50" r="15" style="stroke: var(--world-3)"/><text class="w-lbl" x="156" y="54" text-anchor="middle">w3</text><text class="w-chk" x="156" y="84" text-anchor="middle" font-size="15">✓</text></g>
+                <g class="w-dot" data-active="2-"><circle cx="198" cy="50" r="15" style="stroke: var(--world-4)"/><text class="w-lbl" x="198" y="54" text-anchor="middle">w4</text><text class="w-chk" x="198" y="84" text-anchor="middle" font-size="15">✓</text></g>
+                <g class="w-dot" data-active="5-"><circle cx="240" cy="50" r="15" style="stroke: var(--world-5)"/><text class="w-lbl" x="240" y="54" text-anchor="middle">w5</text><text class="w-chk" x="240" y="84" text-anchor="middle" font-size="15">✓</text></g>
+                <g class="w-dot" data-active="2-"><circle cx="282" cy="50" r="15" style="stroke: var(--world-6)"/><text class="w-lbl" x="282" y="54" text-anchor="middle">w6</text><text class="w-chk" x="282" y="84" text-anchor="middle" font-size="15">✓</text></g>
+                <g class="w-dot" data-active="4-"><circle cx="324" cy="50" r="15" style="stroke: var(--world-7)"/><text class="w-lbl" x="324" y="54" text-anchor="middle">w7</text><text class="w-chk" x="324" y="84" text-anchor="middle" font-size="15">✓</text></g>
+              </g>
+              <text x="8" y="100" class="s-small">nsolving[0] (device memory)</text>
+              <rect x="8" y="108" width="120" height="48" rx="10" class="s-box-2"/>
+              <g class="s-mono s-text" font-size="24">
+                <text x="68" y="141" text-anchor="middle" data-steps="0-1">8</text>
+                <text x="68" y="141" text-anchor="middle" data-steps="2-3">5</text>
+                <text x="68" y="141" text-anchor="middle" data-steps="4">2</text>
+                <text x="68" y="141" text-anchor="middle" data-steps="5-">0</text>
+              </g>
+              <rect x="150" y="108" width="200" height="48" rx="10" class="s-box"/>
+              <text x="250" y="128" text-anchor="middle" class="s-small">while node</text>
+              <text x="250" y="146" text-anchor="middle" class="s-label" data-steps="0">not started</text>
+              <text x="250" y="146" text-anchor="middle" class="s-label" data-steps="1,3" fill="var(--accent-2)">condition ≠ 0: run body</text>
+              <text x="250" y="146" text-anchor="middle" class="s-label" data-steps="2,4,5" fill="var(--accent)">body: one iteration</text>
+              <text x="250" y="146" text-anchor="middle" class="s-label" data-steps="6" fill="var(--ok)">condition = 0: exit</text>
+              <text x="250" y="146" text-anchor="middle" class="s-label" data-steps="7" fill="var(--warn)">unrolled: 100 copies</text>
+              <text x="8" y="186" class="s-small">iterations run on the device</text>
+              <g class="s-mono s-text" font-size="16">
+                <text x="8" y="210" data-steps="0-1">0</text>
+                <text x="8" y="210" data-steps="2-3">1</text>
+                <text x="8" y="210" data-steps="4">2</text>
+                <text x="8" y="210" data-steps="5-6">3 (no host round trip)</text>
+                <text x="8" y="210" data-steps="7">100 launched, 97 skip work</text>
+              </g>
+            </svg>
+          </div>
+          <div class="stepper-side">
+            <pre class="stepper-code">nsolving = wp.full((1,), d.nworld, int)
+if m.opt.graph_conditional:
+  capture_while(nsolving,
+    while_body=_solver_iteration, ...)
+    # _linesearch, _update_constraint,
+    # _update_gradient, _solve_done:
+    #   done[w] = converged or niter == iters
+    #   nsolving -= newly done worlds
+else:
+  for _ in range(m.opt.iterations):
+    _solver_iteration(...)  # skips done worlds</pre>
+            <table class="stepper-vars"></table>
+          </div>
+        </div>
+        <div class="stepper-caption" aria-live="polite"></div>
+        <div class="stepper-controls">
+          <button class="btn btn-sm" data-act="prev">Prev</button>
+          <button class="btn btn-sm btn-primary" data-act="next">Step</button>
+          <button class="btn btn-sm" data-act="play">Play</button>
+          <button class="btn btn-sm btn-ghost" data-act="reset">Reset</button>
+          <input type="range">
+          <span class="stepper-count"></span>
+        </div>
+        <script type="application/json" class="stepper-data">
+        [
+          {"line": 1, "vars": {"nsolving[0]": 8, "iteration": 0, "host syncs": 0}, "caption": "Before the loop, <code>nsolving</code> holds <code>d.nworld</code>: nobody has converged. It is a one-element <em>device</em> array."},
+          {"line": 3, "vars": {"nsolving[0]": 8, "iteration": 0, "host syncs": 0}, "caption": "The while node reads <code>nsolving[0]</code> on the device: 8 is non-zero, so it runs the recorded body."},
+          {"line": 7, "vars": {"nsolving[0]": 5, "iteration": 1, "host syncs": 0}, "caption": "One <code>_solver_iteration</code>: linesearch, constraint update, gradient, then the done kernel. Worlds 1, 4 and 6 converge and are subtracted: <code>nsolving = 5</code>."},
+          {"line": 3, "vars": {"nsolving[0]": 5, "iteration": 1, "host syncs": 0}, "caption": "Condition re-checked on the device. No copy to the host, no Python."},
+          {"line": 7, "vars": {"nsolving[0]": 2, "iteration": 2, "host syncs": 0}, "caption": "Iteration 2: worlds 0, 3 and 7 converge. Converged worlds return early in every kernel of the body (their <code>done</code> flag is set)."},
+          {"line": 6, "vars": {"nsolving[0]": 0, "iteration": 3, "host syncs": 0}, "caption": "Iteration 3: the last two converge (or hit <code>m.opt.iterations</code>, which also marks them done). <code>nsolving = 0</code>."},
+          {"line": 3, "vars": {"nsolving[0]": 0, "iteration": 3, "host syncs": 0}, "caption": "The condition is 0: the loop exits and the graph moves on to the integrator. The GPU decided the iteration count by itself."},
+          {"line": 10, "vars": {"nsolving[0]": 0, "iteration": 100, "host syncs": 0}, "caption": "With <code>graph_conditional=False</code> the Python <code>for</code> loop ran while recording, so the graph holds <code>m.opt.iterations</code> (100) copies of the body. Done worlds skip the work, but all 100 copies are launched every step. Same physics, more launches (Example 24.5)."}
+        ]
+        </script>
+      </div>
+
+      <figure class="fig">
+        <div class="fig-frame scroll-x">
+          <svg class="cond" id="cond" data-gc="true" viewBox="0 0 720 290" role="img" aria-labelledby="f5t f5d">
+            <title id="f5t">A step graph with conditional nodes</title>
+            <desc id="f5d">The recorded step as a chain of nodes: forward up to the solver, solver init, a while node around the solver iteration, and the integrator. A bracket labelled mjw.forward spans the first three; the integrator lies outside it. Above the chain, an if node gates the incremental broadphase pass when sleep is enabled. With graph_conditional false the while node is replaced by a stack of 100 unrolled iteration copies.</desc>
+            <defs><marker id="f5-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <g class="hot" data-info="<strong>forward, before the solver</strong>: kinematics, collision, constraints, velocity, actuation, acceleration: most of the ~100 launches, a straight list of kernel nodes. The solver itself also runs inside <code>mjw.forward</code> (<code>forward.py::_forward</code> calls <code>solver.solve(m, d)</code>), as the bracket shows.">
+              <rect x="10" y="150" width="120" height="56" rx="10" class="s-box"/>
+              <text x="70" y="174" text-anchor="middle" class="s-label">forward</text>
+              <text x="70" y="192" text-anchor="middle" class="s-small">(before solve)</text>
+            </g>
+            <path d="M130 178 H 160" class="s-line" marker-end="url(#f5-arrow)"/>
+            <g class="hot" data-info="<strong>solver init</strong>: <code>init_context</code>, the first gradient and search direction, and <code>nsolving = wp.full((1,), d.nworld)</code>.">
+              <rect x="162" y="150" width="100" height="56" rx="10" class="s-box"/>
+              <text x="212" y="174" text-anchor="middle" class="s-label">solve init</text>
+              <text x="212" y="192" text-anchor="middle" class="s-small s-mono">nsolving = W</text>
+            </g>
+            <path d="M262 178 H 292" class="s-line" marker-end="url(#f5-arrow)"/>
+            <g class="loopnode hot" data-info="<strong>while node</strong> (<code>wp.capture_while(nsolving, while_body=_solver_iteration, ...)</code> in <code>solver.py::_solve</code>): the body sub-graph repeats on the device until <code>nsolving[0] == 0</code>. Example 24.5: 96 launches recorded for the whole step.">
+              <rect x="294" y="128" width="250" height="100" rx="14" class="s-accent2-soft"/>
+              <text x="306" y="148" class="s-label">while nsolving[0] ≠ 0</text>
+              <rect x="306" y="160" width="54" height="40" rx="8" class="s-box-2"/><text x="333" y="184" text-anchor="middle" class="s-small">lnsrch</text>
+              <rect x="366" y="160" width="54" height="40" rx="8" class="s-box-2"/><text x="393" y="184" text-anchor="middle" class="s-small">constr</text>
+              <rect x="426" y="160" width="54" height="40" rx="8" class="s-box-2"/><text x="453" y="184" text-anchor="middle" class="s-small">grad</text>
+              <rect x="486" y="160" width="48" height="40" rx="8" class="s-box-2"/><text x="510" y="184" text-anchor="middle" class="s-small">done</text>
+              <path d="M520 206 C 520 222, 330 222, 330 204" class="s-accent2-stroke anim-flow" fill="none" stroke-width="2.5" marker-end="url(#f5-arrow)"/>
+              <text x="425" y="246" text-anchor="middle" class="s-small">loop on device</text>
+            </g>
+            <g class="unrolled hot" data-info="<strong>Unrolled</strong> (<code>graph_conditional=False</code>): the Python loop <code>for _ in range(m.opt.iterations)</code> ran during capture, so the graph holds 100 copies of the body. Example 24.5: 1086 launches recorded instead of 96, same results (CPU run).">
+              <rect x="318" y="120" width="226" height="80" rx="10" class="s-box-2" opacity=".5"/>
+              <rect x="310" y="128" width="226" height="80" rx="10" class="s-box-2" opacity=".7"/>
+              <rect x="302" y="136" width="226" height="80" rx="10" class="s-box-2"/>
+              <text x="415" y="164" text-anchor="middle" class="s-label">iteration body × 100</text>
+              <text x="415" y="184" text-anchor="middle" class="s-small">m.opt.iterations copies, all launched</text>
+              <text x="415" y="202" text-anchor="middle" class="s-small">done worlds return early</text>
+            </g>
+            <path d="M544 178 H 574" class="s-line" marker-end="url(#f5-arrow)"/>
+            <g class="fwd-bracket" aria-hidden="true">
+              <path d="M10 256 V 264 H 544 V 256" fill="none" class="s-line" stroke-width="1.5"/>
+              <text x="277" y="282" text-anchor="middle" class="s-small s-mono">mjw.forward (the solver runs inside it)</text>
+              <text x="641" y="232" text-anchor="middle" class="s-small">outside forward</text>
+            </g>
+            <g class="hot" data-info="<strong>integrate</strong>: <code>euler</code>/<code>implicit</code>/<code>rungekutta4</code>/<code>discrete</code>, whichever <code>forward.py::step</code> chose in Python while recording.">
+              <rect x="576" y="150" width="130" height="56" rx="10" class="s-box"/>
+              <text x="641" y="174" text-anchor="middle" class="s-label">integrate</text>
+              <text x="641" y="192" text-anchor="middle" class="s-small">branch baked</text>
+            </g>
+            <g class="hot" data-info="<strong>if node</strong> (<code>wp.capture_if(cond, on_true=_launch)</code> in <code>collision_driver.py::nxn_broadphase</code>): with sleep enabled, the incremental broadphase pass runs only if some body woke since pass 1. Without <code>graph_conditional</code> it always runs and a per-pair filter does the work.">
+              <polygon points="70,22 130,56 70,90 10,56" class="s-warn" opacity=".25"/>
+              <polygon points="70,22 130,56 70,90 10,56" fill="none" class="s-warn-stroke" stroke-width="2"/>
+              <text x="70" y="52" text-anchor="middle" class="s-small s-mono">woke?</text>
+              <text x="70" y="68" text-anchor="middle" class="s-small">capture_if</text>
+              <path d="M130 56 H 210" class="s-line" marker-end="url(#f5-arrow)"/>
+              <rect x="212" y="34" width="190" height="44" rx="10" class="s-box-2"/>
+              <text x="307" y="54" text-anchor="middle" class="s-small">incremental NXN broadphase</text>
+              <text x="307" y="70" text-anchor="middle" class="s-small">(sleep only, inside forward)</text>
+              <path d="M70 90 V 148" class="s-dashed" marker-end="url(#f5-arrow)"/>
+            </g>
+            <g class="hot" data-info="<strong>More conditional nodes in the 4.0.1 wheel</strong>: <code>derivative.py::eff_solve</code> loops its PCG with <code>capture_while(efm_nsolving, while_body=_pcg_iteration)</code> (discrete integrator, CUDA only) and <code>collision_flex.py::_run_filter_flex_fps</code> loops a farthest-point-sampling filter.">
+              <rect x="440" y="24" width="270" height="66" rx="10" class="s-box"/>
+              <text x="452" y="46" class="s-small">also: eff_solve (PCG, discrete integrator)</text>
+              <text x="452" y="64" class="s-small">flex contact filter (FPS loop)</text>
+              <text x="452" y="82" class="s-small">both: capture_while</text>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-toolbar">
+          <div class="seg" id="cond-mode" role="group" aria-label="graph_conditional"><button aria-pressed="true" data-gc="true">graph_conditional = True</button><button aria-pressed="false" data-gc="false">False</button></div>
+          <span class="badge illustrative">Illustrative layout</span>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a node. Toggle to unroll the loop."></div>
+        <figcaption><span class="fig-num">Figure 24.5.</span>Conditional nodes in a captured step. The launch counts quoted in the
+          readouts come from Example 24.5 (CPU run).</figcaption>
+      </figure>
+
+      <p>Example 24.5 records <code>box_stack(5)</code> both ways and compares. It runs on CPU too: Warp 1.19's CPU
+        recorder replays <code>capture_while</code> callbacks (its docstring: during APIC recording, "the loop body must
+        be a callback").</p>
+
+      <figure class="code-example" data-file="ex5_graph_conditional.py">
+        <div class="code-head">
+          <span class="code-title">Example 24.5</span>
+          <span class="code-file">examples/24-cuda-graphs/ex5_graph_conditional.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 24.5 - m.opt.graph_conditional True vs False on box_stack(5).
+
+True (the default): solver.py records wp.capture_while(nsolving, while_body=_solver_iteration):
+the device repeats the iteration until every world has converged. False: the graph holds
+m.opt.iterations (100) unrolled copies of the iteration; converged worlds skip the work, but every
+copy is still launched. We count the launches recorded, replay NSTEP steps, and compare the mean
+d.solver_niter (in a second, untimed pass), the time per step / world-steps per second and the
+final qpos.
+CPU: Warp 1.19 records CPU graphs (APIC) and replays capture_while there too; timings printed on
+CPU are CPU-dev-box numbers, not GPU performance. On CUDA &lt; 12.4 only False can run (Rule G).
+Run: python ex5_graph_conditional.py
+"""
+import time
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+
+def box_stack(n=5, size=0.1):
+    bodies = "".join(
+        f'&lt;body name="box{i}" pos="0 0 {size + 2*size*i + 0.001*i:.4f}"&gt;&lt;freejoint/&gt;'
+        f'&lt;geom type="box" size="{size} {size} {size}"/&gt;&lt;/body&gt;' for i in range(n))
+    return (f'&lt;mujoco model="box_stack"&gt;&lt;option timestep="0.005"/&gt;&lt;worldbody&gt;'
+            f'&lt;light pos="0 0 3" dir="0 0 -1"/&gt;&lt;geom name="floor" type="plane" size="5 5 .1"/&gt;'
+            f'{bodies}&lt;/worldbody&gt;&lt;/mujoco&gt;')
+
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 4
+NSTEP = 1000 if ON_GPU else 100
+REPEAT = 3
+COND_OK = (not ON_GPU) or wp.is_conditional_graph_supported()
+
+print("device:", wp.get_device())
+print("wp.is_conditional_graph_supported():", wp.is_conditional_graph_supported())
+if not ON_GPU:
+    print("CPU: conditional nodes replay through Warp's CPU graph recorder (no CUDA needed)")
+
+mjm = mujoco.MjModel.from_xml_string(box_stack(5))
+orig_launch, orig_tiled = wp.launch, wp.launch_tiled
+
+
+def capture_counting(m, d):
+    """Capture one step and count the wp.launch / wp.launch_tiled calls recorded."""
+    n = [0]
+
+    def launch(*a, **k):
+        n[0] += 1
+        return orig_launch(*a, **k)
+
+    def tiled(*a, **k):
+        n[0] += 1
+        return orig_tiled(*a, **k)
+
+    wp.launch, wp.launch_tiled = launch, tiled
+    try:
+        with wp.ScopedCapture() as capture:
+            mjw.step(m, d)
+    finally:
+        wp.launch, wp.launch_tiled = orig_launch, orig_tiled
+    return capture.graph, n[0]
+
+
+results = {}
+for gc in (True, False):
+    if gc and not COND_OK:
+        print("graph_conditional=True: skipped (CUDA &lt; 12.4 has no conditional graph nodes)")
+        continue
+    m = mjw.put_model(mjm)
+    m.opt.graph_conditional = gc
+    d = mjw.make_data(mjm, nworld=NWORLD, nconmax=32, njmax=128)
+    mjw.step(m, d)                                   # warm-up
+    d = mjw.make_data(mjm, nworld=NWORLD, nconmax=32, njmax=128)   # fresh state, same start
+    graph, nlaunch = capture_counting(m, d)
+    # timed passes: NSTEP replays between two synchronize calls, no host reads inside;
+    # best of REPEAT runs, each from the same start (reset in place keeps the recorded addresses)
+    sec = float("inf")
+    for _ in range(REPEAT):
+        mjw.reset_data(m, d)
+        wp.synchronize()
+        t = time.perf_counter()
+        for _ in range(NSTEP):
+            wp.capture_launch(graph)
+        wp.synchronize()
+        sec = min(sec, time.perf_counter() - t)
+    ms, wsps = sec / NSTEP * 1e3, NWORLD * NSTEP / sec
+    q_timed = d.qpos.numpy().copy()
+    # untimed pass from the same start: reset in place (same addresses), replay, sample niter
+    mjw.reset_data(m, d)
+    niter = []
+    for i in range(NSTEP):
+        wp.capture_launch(graph)
+        if i % 10 == 0:                              # a host read: fine here, this pass is not timed
+            niter.append(d.solver_niter.numpy().mean())
+    results[gc] = d.qpos.numpy().copy()
+    rerun = np.abs(q_timed - results[gc]).max()
+    if ON_GPU:   # contact scenes are not bitwise reproducible on a GPU (Ch 22): float noise only
+        assert np.allclose(q_timed, results[gc], atol=1e-4), f"untimed pass drifted: {rerun:.2e}"
+    else:        # on CPU the replay is exact
+        assert rerun == 0.0, f"untimed pass should repeat the timed one: {rerun:.2e}"
+    print(f"graph_conditional={gc!s:5}: {nlaunch:5d} launches recorded, "
+          f"mean solver_niter {np.mean(niter):.2f}, {ms:.3f} ms/step, {wsps:,.0f} world-steps/s"
+          f"{'' if ON_GPU else ' (CPU dev box)'}, nefc w0 {d.nefc.numpy()[0]}, "
+          f"overflow {'none' if not d.overflow.numpy().any() else d.overflow.numpy()}")
+
+if len(results) == 2:
+    diff = np.abs(results[True] - results[False]).max()
+    print(f"max |qpos(True) - qpos(False)| after {NSTEP} steps: {diff:.2e}")
+    print("exact on this run" if diff == 0 else "agrees to float noise (on a GPU, contacts reorder; Ch 22)"
+          if diff &lt; 1e-4 else "LARGER than float noise: check the run")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 24.5"</span><span>CPU: <code>python -I ex5_graph_conditional.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=4, 100 steps; GPU (nworld=4096, 1000 steps) prints its own times</span></summary>
+<pre class="output">device: cpu
+wp.is_conditional_graph_supported(): False
+CPU: conditional nodes replay through Warp's CPU graph recorder (no CUDA needed)
+graph_conditional=True :    96 launches recorded, mean solver_niter 1.20, 0.320 ms/step, 12,504 world-steps/s (CPU dev box), nefc w0 80, overflow none
+graph_conditional=False:  1086 launches recorded, mean solver_niter 1.20, 1.389 ms/step, 2,880 world-steps/s (CPU dev box), nefc w0 80, overflow none
+max |qpos(True) - qpos(False)| after 100 steps: 0.00e+00
+exact on this run</pre>
+        </details>
+      </figure>
+
+      <p>The physics is identical on this CPU run (difference 0): the loop exits early, and skipping converged worlds
+        inside unrolled copies changes nothing. On a GPU, contact scenes agree to float noise (Ch 22: contact slot order
+        and float atomics), so the example compares with a tolerance there and prints the max difference.
+        The cost is in the launches: 1086 recorded launches instead of 96, because this settled stack needs about 1.2
+        iterations per step on average while the unrolled graph always launches 100 iteration bodies. On this CPU dev box
+        the replay is about 4 to 5x slower (best of 3 timed runs, no host reads inside the timed loop); on a GPU the ratio is different and the notebook prints yours. That is the price of
+        the fallback on an old CUDA: lower <code>m.opt.iterations</code> to what your scene really needs (look at
+        <code>d.solver_niter</code>, Ch 20) when you must run without conditional nodes.</p>
+
+      <div class="table-wrap">
+        <table class="mini-tbl">
+          <thead><tr><th>Where (4.0.1 wheel)</th><th>Node</th><th>Condition</th><th>Without <code>graph_conditional</code></th></tr></thead>
+          <tbody>
+            <tr><td><code>solver.py::_solve</code></td><td><code>capture_while</code></td><td><code>nsolving</code>: worlds still solving</td><td><code>m.opt.iterations</code> copies of <code>_solver_iteration</code></td></tr>
+            <tr><td><code>solver.py::solve_compact</code></td><td>same loop, via <code>_solve</code></td><td>same</td><td>forced off on CPU: <code>gc = m.opt.graph_conditional and wp.get_device().is_cuda</code></td></tr>
+            <tr><td><code>derivative.py::eff_solve</code></td><td><code>capture_while</code></td><td><code>efm_nsolving</code> (PCG for the discrete integrator, Ch 23)</td><td><code>max_it</code> copies of <code>_pcg_iteration</code>; the wheel also unrolls on CPU</td></tr>
+            <tr><td><code>collision_flex.py::_run_filter_flex_fps</code></td><td><code>capture_while</code></td><td><code>ws.fps_condition</code></td><td><code>MJ_MAXCONPAIR - 1</code> copies of <code>_fps_iteration</code></td></tr>
+            <tr><td><code>collision_driver.py::nxn_broadphase</code></td><td><code>capture_if</code></td><td>some body woke (incremental sleep pass, Ch 21)</td><td>the broadphase always runs; the per-pair filter restricts output</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout version"><p class="callout-title">Version note: dev tree vs 4.0.1 wheel</p><p>In the dev tree
+        (commit 8f5b9f1) <code>forward.py</code> has more <code>capture_if</code> nodes for sleeping and waking
+        (for example <code>wp.capture_if(woke, on_true=sleep.update_sleep, m=m, d=d)</code> and
+        <code>wp.capture_if(nslept, on_true=_on_slept)</code>), and <code>derivative.py</code> calls
+        <code>capture_while(efm_nsolving, ...)</code> whenever <code>graph_conditional</code> is set, without the
+        wheel's <code>and wp.get_device().is_cuda</code>. In the 4.0.1 wheel the sleep-related <code>capture_if</code>
+        is the one in <code>collision_driver.py::nxn_broadphase</code>. Dev tree only, not in 4.0.1: the code above is
+        described, not called.</p></div>
+
+      <details class="callout deeper">
+        <summary class="callout-title">Going deeper: three rules for code inside a conditional body</summary>
+        <ol>
+          <li><strong>No allocation.</strong> The body is recorded once and replayed any number of times; a
+            <code>wp.zeros</code> inside it cannot give you fresh memory per iteration. MJWarp preallocates: the
+            <code>SolverContext</code> scratch, "effective-metric scratch for the solver iterations, which may run inside
+            wp.capture_while" (<code>solver.py</code>), and <code>passive.py</code>/<code>derivative.py</code> take
+            scratch arguments "when calling inside wp.capture_while, where memory cannot be allocated".</li>
+          <li><strong>No profiling scopes.</strong> <code>warp_util.event_scope</code> walks the Python stack and, if it is
+            called from <code>capture_while</code> or <code>capture_if</code>, runs the function without recording
+            events. That is why an <code>EventTracer</code> tree (Ch 7, Ch 25) shows the solver loop as one block.</li>
+          <li><strong>The body must end the loop.</strong> The condition is just an integer in device memory; a body
+            that never writes it loops forever on the GPU. The solver guarantees termination by marking worlds done at
+            <code>m.opt.iterations</code>; your own loops (Ch 26) need the same kind of cap.</li>
+        </ol>
+      </details>
+    </section>
+
+    <!-- ================================================================ 6 -->
+    <section class="sec" id="toolkit">
+      <h2><span class="sec-num">6</span>CUDA 12.4 and the fallback</h2>
+      <p>Conditional nodes need CUDA 12.4 or newer, twice: Warp must be <em>built</em> with a 12.4+ toolkit and the
+        <em>driver</em> must support 12.4+. <code>wp.is_conditional_graph_supported()</code> checks both
+        (<code>runtime.toolkit_version &gt;= (12, 4)</code> and <code>runtime.driver_version &gt;= (12, 4)</code>). On a
+        machine with no CUDA driver it returns <code>False</code> (it checks the process-wide toolkit and driver, not the
+        current device); CPU graphs do not need conditional-node support.</p>
+      <p>MJWarp checks once, in <code>io.py::put_model</code>, which calls <code>warp_util.check_toolkit_driver()</code>:</p>
+      <div class="code-block"><pre><code class="language-python">def check_toolkit_driver():
+  wp.init()
+  if wp.get_device().is_cuda:
+    if not wp.is_conditional_graph_supported():
+      warnings.warn("""
+        CUDA version &lt; 12.4 detected
+        - graph capture may be unreliable for &lt; 12.3
+        - conditional graph nodes are not available for &lt; 12.4
+          Model.opt.graph_conditional should be set to False
+        """, stacklevel=2)</code></pre></div>
+      <p>It only <strong>warns</strong>. Further down, the same <code>put_model</code> sets
+        <code>opt.graph_conditional = True</code> regardless. So on an old toolkit the default model still asks for
+        conditional nodes, and the capture fails. The course's fallback idiom (plan rule G), used in every capture example
+        and inside <code>my_env.capture_step</code>:</p>
+      <div class="code-block"><pre><code class="language-python">if wp.get_device().is_cuda and not wp.is_conditional_graph_supported():
+    m.opt.graph_conditional = False     # fixed iteration counts instead of device-side loops</code></pre></div>
+      <p>Set it <em>before</em> capturing: <code>graph_conditional</code> is a Python flag read while recording, so it is
+        itself a baked knob. (You can also pass it on the command line of the CLI tools, since
+        <code>io.py::override_model</code> accepts <code>"opt.graph_conditional=False"</code>.) Which case are you in?
+        Colab's GPUs normally have recent drivers, so the check is silent there. Pick a scenario:</p>
+
+      <figure class="fig">
+        <div class="fig-frame scroll-x">
+          <svg id="fc" viewBox="0 0 720 300" role="img" aria-labelledby="f6t f6d">
+            <title id="f6t">Which Warp build, and are conditional nodes available?</title>
+            <desc id="f6d">A decision flowchart. No GPU leads to CPU graphs. With a GPU, a driver of R580 or newer leads to the PyPI warp-lang build and conditional nodes. An older driver leads to the cu12 wheel; if the driver supports CUDA 12.4 or newer conditional nodes work, otherwise put_model warns and graph_conditional must be set to False.</desc>
+            <defs><marker id="f6-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <path id="fe-a-cpu" class="fc-edge" d="M110 76 V 210" marker-end="url(#f6-arrow)"/>
+            <path id="fe-a-b" class="fc-edge" d="M190 50 H 250" marker-end="url(#f6-arrow)"/>
+            <path id="fe-b-c" class="fc-edge" d="M410 50 H 470" marker-end="url(#f6-arrow)"/>
+            <path id="fe-b-d" class="fc-edge" d="M330 76 V 120" marker-end="url(#f6-arrow)"/>
+            <path id="fe-c-e" class="fc-edge" d="M580 76 V 210" marker-end="url(#f6-arrow)"/>
+            <path id="fe-d-f" class="fc-edge" d="M330 160 V 190" marker-end="url(#f6-arrow)"/>
+            <path id="fe-f-e" class="fc-edge" d="M410 230 H 500" marker-end="url(#f6-arrow)"/>
+            <path id="fe-f-g" class="fc-edge" d="M330 270 V 286 H 250" marker-end="url(#f6-arrow)"/>
+            <g class="fc-node hot" id="fn-a" data-info="<strong>Does Warp see a GPU?</strong> <code>wp.get_cuda_device_count() &gt; 0</code>, checked by the setup cell. If not, everything runs on Warp's CPU device, silently.">
+              <rect x="30" y="24" width="160" height="52" rx="10"/><text x="110" y="47" text-anchor="middle" class="s-label">Warp sees a GPU?</text><text x="110" y="65" text-anchor="middle" class="s-small">no ↓   yes →</text>
+            </g>
+            <g class="fc-node hot" id="fn-b" data-info="<strong>Driver R580 or newer?</strong> <code>nvidia-smi</code> reports the driver. pip's <code>warp-lang==1.19.0</code> is built with CUDA 13 and needs an R580+ driver (setup cell, rule S).">
+              <rect x="250" y="24" width="160" height="52" rx="10"/><text x="330" y="47" text-anchor="middle" class="s-label">driver ≥ R580?</text><text x="330" y="65" text-anchor="middle" class="s-small">no ↓   yes →</text>
+            </g>
+            <g class="fc-node hot" id="fn-c" data-info="<strong>PyPI warp-lang 1.19.0</strong>, CUDA 13 toolkit. Toolkit and driver are both far above 12.4.">
+              <rect x="470" y="24" width="220" height="52" rx="10"/><text x="580" y="47" text-anchor="middle" class="s-label">pip warp-lang==1.19.0</text><text x="580" y="65" text-anchor="middle" class="s-small">CUDA 13 build</text>
+            </g>
+            <g class="fc-node hot" id="fn-d" data-info="<strong>The +cu12 release wheel</strong> (setup cell, rule S): built with a CUDA 12 toolkit, runs on older drivers.">
+              <rect x="250" y="120" width="160" height="40" rx="10"/><text x="330" y="145" text-anchor="middle" class="s-label">warp +cu12 wheel</text>
+            </g>
+            <g class="fc-node hot" id="fn-f" data-info="<strong>Driver supports CUDA 12.4+?</strong> <code>wp.get_cuda_driver_version()</code>; Example 24.8 prints it.">
+              <polygon points="330,190 410,230 330,270 250,230"/><text x="330" y="226" text-anchor="middle" class="s-small">driver CUDA</text><text x="330" y="242" text-anchor="middle" class="s-small">≥ 12.4?</text>
+            </g>
+            <g class="fc-node hot" id="fn-e" data-info="<strong>Conditional nodes.</strong> <code>wp.is_conditional_graph_supported()</code> is True; keep the default <code>m.opt.graph_conditional = True</code>: the solver loop runs on the device.">
+              <rect x="500" y="210" width="200" height="52" rx="10"/><text x="600" y="233" text-anchor="middle" class="s-label">conditional nodes</text><text x="600" y="251" text-anchor="middle" class="s-small">graph_conditional = True</text>
+            </g>
+            <g class="fc-node hot" id="fn-g" data-info="<strong>Fallback.</strong> <code>put_model</code> warned and left <code>graph_conditional = True</code>. Set <code>m.opt.graph_conditional = False</code> before capturing (<code>my_env.capture_step</code> does it), and consider lowering <code>m.opt.iterations</code>.">
+              <rect x="20" y="262" width="230" height="34" rx="10"/><text x="135" y="284" text-anchor="middle" class="s-small">fallback: graph_conditional = False</text>
+            </g>
+            <g class="fc-node hot" id="fn-cpu" data-info="<strong>CPU graphs.</strong> Warp records an APIC stream and replays it in C++; <code>capture_while</code> callbacks replay too. <code>is_conditional_graph_supported()</code> is False but no fallback is needed. Timings are CPU numbers.">
+              <rect x="20" y="210" width="180" height="40" rx="10"/><text x="110" y="235" text-anchor="middle" class="s-label">CPU graph (APIC)</text>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-toolbar">
+          <div class="seg" id="fc-scn" role="group" aria-label="Scenario"><button aria-pressed="true" data-s="new">Colab, R580+</button><button aria-pressed="false" data-s="cu12ok">older driver, CUDA ≥ 12.4</button><button aria-pressed="false" data-s="old">CUDA &lt; 12.4</button><button aria-pressed="false" data-s="cpu">no GPU</button></div>
+        </div>
+        <div class="fig-caption-line" id="fc-read" data-placeholder="Pick a scenario, or hover, tap or tab to a box."></div>
+        <figcaption><span class="fig-num">Figure 24.6.</span>Toolkit decision flowchart: which Warp build the setup cell installs,
+          and whether conditional nodes are available.</figcaption>
+      </figure>
+
+      <p>This is the helper the running project gains in this chapter (<code>examples/24-cuda-graphs/my_env_step24.py</code>,
+        embedded in the notebook with <code>%%writefile</code>). It applies the graph-conditional fallback, records
+        <code>nsub</code> steps and an optional <code>post(m, d)</code> hook, and does not advance the simulation:</p>
+      <div class="code-block"><pre><code class="language-python">def needs_conditional_fallback(device=None):
+    """True when `device` is a CUDA device whose toolkit or driver is older than CUDA 12.4."""
+    device = wp.get_device(device)
+    return device.is_cuda and not wp.is_conditional_graph_supported()
+
+
+def capture_step(m, d, nsub=1, post=None, verbose=True):
+    """Record `nsub` calls of mjw.step(m, d), then `post(m, d)` if given, into one graph."""
+    assert nsub &gt;= 1, "nsub must be &gt;= 1"
+    device = d.qpos.device
+    if needs_conditional_fallback(device) and m.opt.graph_conditional:
+        m.opt.graph_conditional = False     # fixed iteration counts instead of device-side loops
+        if verbose:
+            print("capture_step: CUDA &lt; 12.4, set m.opt.graph_conditional = False")
+    with wp.ScopedCapture(device=device) as capture:
+        for _ in range(nsub):
+            mjw.step(m, d)
+        if post is not None:
+            post(m, d)
+    return capture.graph</code></pre></div>
+      <p>(Docstrings shortened here; the file has the full text.) Example 24.8 calls it with <code>nsub=1</code>;
+        §7 times graphs built with it, and §8 uses <code>nsub</code> and <code>post</code>.</p>
+
+      <figure class="code-example" data-file="ex8_toolkit_check.py">
+        <div class="code-head">
+          <span class="code-title">Example 24.8</span>
+          <span class="code-file">examples/24-cuda-graphs/ex8_toolkit_check.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 24.8 - which graph features does this machine have, and what does capture_step do?
+
+Prints the Warp device, the CUDA toolkit Warp was built with and the CUDA driver it found,
+wp.is_conditional_graph_supported() (needs both &gt;= 12.4), whether put_model warned
+(warp_util.check_toolkit_driver only *warns*; m.opt.graph_conditional stays True), and what
+my_env.capture_step decided.
+Run: python ex8_toolkit_check.py
+"""
+import pathlib
+import sys
+import warnings
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+HERE = pathlib.Path(__file__).parent if "__file__" in globals() else pathlib.Path.cwd()
+sys.path.insert(0, str(HERE))
+try:
+    import my_env                           # notebook: written by the %%writefile cell
+except ImportError:
+    import my_env_step24 as my_env          # examples/24-cuda-graphs/
+
+BALL_DROP = """
+&lt;mujoco model="ball_drop"&gt;
+  &lt;option timestep="0.002"/&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 0 3" dir="0 0 -1"/&gt;
+    &lt;geom name="floor" type="plane" size="5 5 .1" rgba=".8 .8 .8 1"/&gt;
+    &lt;body name="ball" pos="0 0 1"&gt;
+      &lt;freejoint/&gt;
+      &lt;geom name="ball" type="sphere" size=".1" mass="1" rgba="1 .3 .3 1"/&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+&lt;/mujoco&gt;
+"""
+
+
+def version(v):
+    return "none" if v is None else f"{v[0]}.{v[1]}"
+
+
+wp.init()
+device = wp.get_device()
+print("warp", wp.__version__, "| device:", device, "| is_cuda:", device.is_cuda)
+print("CUDA toolkit (Warp build):", version(wp.get_cuda_toolkit_version()))
+print("CUDA driver:              ", version(wp.get_cuda_driver_version()))
+print("wp.is_conditional_graph_supported():", wp.is_conditional_graph_supported())
+
+mjm = mujoco.MjModel.from_xml_string(BALL_DROP)
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    m = mjw.put_model(mjm)                  # calls warp_util.check_toolkit_driver()
+toolkit_warnings = [w for w in caught if "CUDA version &lt; 12.4" in str(w.message)]
+print("put_model warned about CUDA &lt; 12.4:", bool(toolkit_warnings))
+print("m.opt.graph_conditional after put_model:", m.opt.graph_conditional)
+
+d = mjw.make_data(mjm, nworld=2, nconmax=4, njmax=16)
+print("needs_conditional_fallback:", my_env.needs_conditional_fallback(device))
+graph = my_env.capture_step(m, d, nsub=1)
+print("m.opt.graph_conditional after capture_step:", m.opt.graph_conditional)
+for _ in range(3):
+    wp.capture_launch(graph)
+print(f"3 replays OK: d.time = {d.time.numpy()[0]:.3f}")
+
+if device.is_cuda:
+    decision = ("conditional nodes (capture_while / capture_if on the device)"
+                if m.opt.graph_conditional else "fallback: fixed iteration counts in the graph")
+else:
+    decision = "CPU graph (Warp APIC recording; capture_while callbacks replay on the CPU)"
+print("decision:", decision)</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 24.8"</span><span>CPU: <code>python -I ex8_toolkit_check.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run (no driver); on Colab you see your device, toolkit 13.x, a driver version and True</span></summary>
+<pre class="output">warp 1.19.0 | device: cpu | is_cuda: False
+CUDA toolkit (Warp build): 13.4
+CUDA driver:               none
+wp.is_conditional_graph_supported(): False
+put_model warned about CUDA &lt; 12.4: False
+m.opt.graph_conditional after put_model: True
+needs_conditional_fallback: False
+m.opt.graph_conditional after capture_step: True
+3 replays OK: d.time = 0.006
+decision: CPU graph (Warp APIC recording; capture_while callbacks replay on the CPU)</pre>
+        </details>
+      </figure>
+      <p>The CPU run shows an interesting detail: Warp reports the toolkit it was built with (13.4) even when there is no
+        driver, and <code>is_conditional_graph_supported()</code> is False because the driver version is missing. The
+        fallback correctly does nothing on CPU (<code>needs_conditional_fallback</code> is False), and the CPU graph
+        still replays the solver's <code>capture_while</code>.</p>
+    </section>
+
+    <!-- ================================================================ 7 -->
+    <section class="sec" id="measure">
+      <h2><span class="sec-num">7</span>Measuring eager vs graph throughput</h2>
+      <p>Timing GPU code has three traps, and graphs add none: (1) the first call compiles, so <strong>warm up</strong>;
+        (2) launches return before the work is done, so <strong>call <code>wp.synchronize()</code> before reading the
+        clock</strong>; (3) report <strong>world-steps per second</strong> (<code>nworld × steps / seconds</code>), the
+        number that matters for batched simulation. Example 24.4 does this for <code>BALL_DROP</code> over a sweep of
+        <code>nworld</code>, with the ball resting on the floor so that every timed step has a live contact, eagerly and with a graph built by <code>my_env.capture_step</code> (§6). It takes the
+        best of three runs to reduce noise from other processes.</p>
+
+      <figure class="code-example" data-file="ex4_eager_vs_graph.py">
+        <div class="code-head">
+          <span class="code-title">Example 24.4</span>
+          <span class="code-file">examples/24-cuda-graphs/ex4_eager_vs_graph.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 24.4 - world-steps per second vs nworld: eager mjw.step vs a replayed graph.
+
+Uses my_env.capture_step(m, d, nsub) (new in this chapter: it applies the graph-conditional
+fallback and records nsub steps into one graph). Warm up first, call wp.synchronize() before
+reading the clock, and report world-steps/s = nworld * steps / seconds. The ball starts resting
+on the floor, so every timed step has an active contact (collision + constraint solve).
+On CPU the numbers are from Warp's CPU device ("on a CPU dev box"), NOT GPU performance;
+on a GPU the notebook prints your own numbers.
+The log-log plot goes to --plot PNG (default ex4_throughput.png in the current folder; shown
+inline in a notebook). On a GPU it also draws the course's CPU numbers (data/ex4_throughput.json)
+as dashed reference lines when that file is present.
+Run: python ex4_eager_vs_graph.py [--dump-json PATH] [--plot PNG]
+"""
+import argparse
+import json
+import pathlib
+import sys
+import time
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+HERE = pathlib.Path(__file__).parent if "__file__" in globals() else pathlib.Path.cwd()
+sys.path.insert(0, str(HERE))
+try:
+    import my_env                           # notebook: written by the %%writefile cell
+except ImportError:
+    import my_env_step24 as my_env          # examples/24-cuda-graphs/
+
+BALL_DROP = """
+&lt;mujoco model="ball_drop"&gt;
+  &lt;option timestep="0.002"/&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 0 3" dir="0 0 -1"/&gt;
+    &lt;geom name="floor" type="plane" size="5 5 .1" rgba=".8 .8 .8 1"/&gt;
+    &lt;body name="ball" pos="0 0 .1"&gt;
+      &lt;freejoint/&gt;
+      &lt;geom name="ball" type="sphere" size=".1" mass="1" rgba="1 .3 .3 1"/&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+&lt;/mujoco&gt;
+"""
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dump-json", default=None)
+parser.add_argument("--plot", default=None, help="save the log-log plot to this PNG")
+args, _ = parser.parse_known_args()
+
+ON_GPU = wp.get_device().is_cuda
+NWORLDS = [1, 16, 256, 4096, 16384, 65536] if ON_GPU else [1, 4, 16, 64, 256]
+NSTEP = 200 if ON_GPU else 30
+
+mjm = mujoco.MjModel.from_xml_string(BALL_DROP)
+m = mjw.put_model(mjm)
+
+
+def timed(fn, n, repeats=3):
+    """Seconds per call: best of `repeats` runs of n calls (less noise from other processes)."""
+    best = float("inf")
+    for _ in range(repeats):
+        wp.synchronize()
+        t = time.perf_counter()
+        for _ in range(n):
+            fn()
+        wp.synchronize()                    # launches are asynchronous on a GPU
+        best = min(best, (time.perf_counter() - t) / n)
+    return best
+
+
+rows = []
+print(f"device: {wp.get_device()}  ({'GPU' if ON_GPU else 'CPU dev box, not GPU performance'})")
+print(f"{'nworld':&gt;7} {'eager ms':&gt;9} {'graph ms':&gt;9} {'eager w-steps/s':&gt;16} "
+      f"{'graph w-steps/s':&gt;16} {'speedup':&gt;8}")
+for nw in NWORLDS:
+    d = mjw.make_data(mjm, nworld=nw, nconmax=4, njmax=16)
+    for _ in range(3):
+        mjw.step(m, d)                      # warm-up: compile / load kernels for this size
+    eager = timed(lambda: mjw.step(m, d), NSTEP)
+    graph = my_env.capture_step(m, d, nsub=1)
+    replay = timed(lambda: wp.capture_launch(graph), NSTEP)
+    assert not d.overflow.numpy().any(), my_env.describe_overflow(d)
+    rows.append({"nworld": nw, "eager_ms": eager * 1e3, "graph_ms": replay * 1e3,
+                 "eager_wsps": nw / eager, "graph_wsps": nw / replay})
+    print(f"{nw:&gt;7} {eager * 1e3:&gt;9.3f} {replay * 1e3:&gt;9.3f} {nw / eager:&gt;16,.0f} "
+          f"{nw / replay:&gt;16,.0f} {eager / replay:&gt;7.1f}x")
+
+if args.dump_json:
+    with open(args.dump_json, "w") as f:
+        json.dump({"device": str(wp.get_device()), "nstep": NSTEP, "model": "BALL_DROP",
+                   "rows": [{k: round(v, 4) if isinstance(v, float) else v for k, v in r.items()}
+                            for r in rows]}, f, separators=(",", ":"))
+    print("wrote", args.dump_json)
+
+try:
+    import matplotlib
+    if args.plot or "ipykernel" not in sys.modules:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    nws = [r["nworld"] for r in rows]
+    fig, ax = plt.subplots(figsize=(6, 3.5))
+    ax.loglog(nws, [r["eager_wsps"] for r in rows], "o-", label="eager mjw.step")
+    ax.loglog(nws, [r["graph_wsps"] for r in rows], "s-", label="graph replay")
+    ref = HERE / "data" / "ex4_throughput.json"
+    if ON_GPU and ref.exists():             # overlay the course's CPU run for comparison
+        cpu = json.loads(ref.read_text())["rows"]
+        cnw = [r["nworld"] for r in cpu]
+        ax.loglog(cnw, [r["eager_wsps"] for r in cpu], "o--", color="C0", alpha=.5, label="eager, course CPU")
+        ax.loglog(cnw, [r["graph_wsps"] for r in cpu], "s--", color="C1", alpha=.5, label="graph, course CPU")
+    ax.set_xlabel("nworld")
+    ax.set_ylabel("world-steps / s")
+    ax.set_title(f"BALL_DROP on {wp.get_device()}")
+    ax.legend()
+    fig.tight_layout()
+    if "ipykernel" in sys.modules and not args.plot:
+        plt.show()
+    else:
+        out = args.plot or "ex4_throughput.png"
+        fig.savefig(out, dpi=100)
+        print("saved", out)
+except ImportError:
+    print("skipped: matplotlib not installed")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 24.4"</span><span>CPU: <code>python -I ex4_eager_vs_graph.py --dump-json data/ex4_throughput.json</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU dev box, nworld 1..256, 30 steps; NOT GPU performance. GPU sweeps 1..65536</span></summary>
+<pre class="output">device: cpu  (CPU dev box, not GPU performance)
+ nworld  eager ms  graph ms  eager w-steps/s  graph w-steps/s  speedup
+      1     2.642     0.017              379           57,630   152.2x
+      4     2.707     0.031            1,478          127,598    86.3x
+     16     2.822     0.086            5,671          187,027    33.0x
+     64     2.993     0.302           21,380          211,782     9.9x
+    256     5.654     1.157           45,275          221,181     4.9x
+wrote data/ex4_throughput.json
+saved ex4_throughput.png</pre>
+        </details>
+      </figure>
+
+      <figure class="fig tp-chart" id="tp-fig">
+        <div class="fig-frame"><svg id="tp-svg" viewBox="0 0 640 300" role="img" aria-labelledby="f7t f7d"><title id="f7t">World-steps per second vs nworld, eager vs graph</title><desc id="f7d">Log-log chart of the Example 24.4 CPU run: the graph line lies far above the eager line at small nworld and the gap narrows as nworld grows.</desc></svg></div>
+        <div class="fig-toolbar">
+          <div class="seg" id="tp-mode" role="group" aria-label="Y axis"><button aria-pressed="true" data-y="wsps">world-steps/s</button><button aria-pressed="false" data-y="ms">ms per step</button></div>
+          <span class="badge data-driven">Real data · CPU</span>
+        </div>
+        <div class="tp-legend"><span style="--c:var(--world-1)">eager mjw.step</span><span style="--c:var(--accent)">graph replay</span></div>
+        <div class="fig-caption-line" id="tp-read" data-placeholder="Hover, tap or tab to a point."></div>
+        <figcaption><span class="fig-num">Figure 24.7.</span>From <code>ex4_eager_vs_graph.py --dump-json</code>, mujoco-warp 4.0.1,
+          CPU run, BALL_DROP, nworld 1 to 256, 30 steps (best of 3). These are CPU numbers. The notebook prints the same
+          table for your GPU, up to 65536 worlds.</figcaption>
+        <script type="application/json" id="data-ch24-ex4" data-json-file="examples/24-cuda-graphs/data/ex4_throughput.json">{"device":"cpu","nstep":30,"model":"BALL_DROP","rows":[{"nworld":1,"eager_ms":2.6416,"graph_ms":0.0174,"eager_wsps":378.5652,"graph_wsps":57630.1336},{"nworld":4,"eager_ms":2.7068,"graph_ms":0.0313,"eager_wsps":1477.7628,"graph_wsps":127597.9474},{"nworld":16,"eager_ms":2.8215,"graph_ms":0.0855,"eager_wsps":5670.6993,"graph_wsps":187027.1719},{"nworld":64,"eager_ms":2.9934,"graph_ms":0.3022,"eager_wsps":21380.348,"graph_wsps":211781.6796},{"nworld":256,"eager_ms":5.6544,"graph_ms":1.1574,"eager_wsps":45274.5977,"graph_wsps":221181.1859}]}</script>
+      </figure>
+
+      <p>Read the two curves. <strong>Eager</strong> time per step is nearly flat (about 2.6 to 3.0 ms) from 1 to 64
+        worlds: it is Python launching about 100 kernels, and the kernels themselves are a small part. Only at 256
+        worlds does the kernel work show (4 to 6 ms across our runs). So eager
+        world-steps/s grows almost linearly with <code>nworld</code>, the launch-overhead regime from Ch 6.
+        <strong>Graph</strong> replay removes the Python part: at 1 world it is about 150x faster on this CPU. As
+        <code>nworld</code> grows, the graph time grows too, because the CPU device runs kernel threads one after
+        another, and the speedup shrinks to about 3 to 5x at 256 worlds (it varies from run to run on this shared CPU). On a GPU the graph curve behaves differently: the
+        step time stays nearly flat while the GPU has idle lanes, then grows once the GPU is full. Where that happens
+        depends on your GPU and model, which is exactly what the stretch exercise asks you to find.</p>
+
+      <div class="callout tip"><p class="callout-title">Tip: eager and graph can mix</p><p>A graph replay goes into the
+        same stream as ordinary launches, in order. When a control trajectory (<code>--replay</code>) or a
+        keyframe is given, <code>_src/cli.py::unroll</code> launches its control-noise kernel <code>_ctrl_noise</code>
+        eagerly before each <code>wp.capture_launch(graph)</code>; that eager launch is synchronized and kept outside
+        the timed region. Anything you do not want to
+        record (a rare reset, a logging read) can stay outside the graph, as long as it does not replace arrays the
+        graph uses.</p></div>
+    </section>
+
+    <!-- ================================================================ 8 -->
+    <section class="sec" id="own-kernels">
+      <h2><span class="sec-num">8</span>One graph per control step: substeps and your own kernels</h2>
+      <p>A graph can hold anything you launch while recording, not just <code>mjw.step</code>. In reinforcement learning
+        a control step is usually several physics steps (the "frame skip") followed by your kernels: observation, reward,
+        done flags, maybe an auto-reset (Ch 8) and a re-randomization (Ch 10). Recording all of it makes a whole control
+        step one host call:</p>
+
+      <figure class="fig" data-anim>
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 720 150" role="img" aria-labelledby="f8t f8d">
+            <title id="f8t">One captured control step</title>
+            <desc id="f8d">A single graph holding four mjw.step blocks, a reward kernel, and optional reset and randomize kernels, replayed by one capture_launch call.</desc>
+            <defs><marker id="f8-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <rect x="8" y="30" width="704" height="80" rx="14" class="s-box"/>
+            <text x="20" y="22" class="s-small">graph = my_env.capture_step(m, d, nsub=4, post=add_reward)</text>
+            <g class="hot" data-info="<strong>4 × mjw.step</strong>: each about 100 recorded launches. Example 24.7 replays this 10 times: <code>d.time</code> goes from 0 to 0.40 s (4 × 10 × 0.01).">
+              <rect x="20" y="46" width="96" height="48" rx="8" class="s-accent2-soft"/><text x="68" y="75" text-anchor="middle" class="s-small s-mono">step 1</text>
+              <rect x="124" y="46" width="96" height="48" rx="8" class="s-accent2-soft"/><text x="172" y="75" text-anchor="middle" class="s-small s-mono">step 2</text>
+              <rect x="228" y="46" width="96" height="48" rx="8" class="s-accent2-soft"/><text x="276" y="75" text-anchor="middle" class="s-small s-mono">step 3</text>
+              <rect x="332" y="46" width="96" height="48" rx="8" class="s-accent2-soft"/><text x="380" y="75" text-anchor="middle" class="s-small s-mono">step 4</text>
+            </g>
+            <g class="hot" data-info="<strong>reward_kernel</strong>: one thread per world, reads <code>d.qpos</code>/<code>d.qvel</code> and accumulates into a preallocated <code>reward</code> array. Recorded once, replayed every control step.">
+              <rect x="440" y="46" width="100" height="48" rx="8" class="s-accent"/><text x="490" y="75" text-anchor="middle" class="s-mono s-text" font-size="11" style="fill:#10200a">reward</text>
+            </g>
+            <g class="hot" data-info="<strong>Optional</strong>: <code>my_env.reset_done</code> (Ch 8, resets in place and calls <code>mjw.forward</code>) and <code>my_env.randomize</code> (Ch 10, seed in a device array). Both were written to be graph-safe.">
+              <rect x="552" y="46" width="70" height="48" rx="8" class="s-box-2" stroke-dasharray="5 4"/><text x="587" y="75" text-anchor="middle" class="s-small s-mono">reset</text>
+              <rect x="630" y="46" width="70" height="48" rx="8" class="s-box-2" stroke-dasharray="5 4"/><text x="665" y="75" text-anchor="middle" class="s-small s-mono">rand</text>
+            </g>
+            <path d="M20 128 H 700" class="s-accent-stroke anim-flow" stroke-width="3" marker-end="url(#f8-arrow)"/>
+            <text x="360" y="146" text-anchor="middle" class="s-small">one wp.capture_launch(graph) = one control step</text>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="badge illustrative">Illustrative</span></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a block."></div>
+        <figcaption><span class="fig-num">Figure 24.8.</span>A control step as one graph. Dashed blocks are optional helpers
+          from earlier chapters.</figcaption>
+      </figure>
+
+      <p>This is <code>my_env.capture_step</code>, the helper from §6: it applies the graph-conditional fallback,
+        records <code>nsub</code> steps and an optional <code>post(m, d)</code> hook, and does not advance the simulation.
+        Example 24.7 uses it for 4 substeps of
+        <code>CARTPOLE</code> plus a reward kernel, and checks the result against the same work done eagerly.</p>
+
+      <figure class="code-example" data-file="ex7_substeps_and_kernels.py">
+        <div class="code-head">
+          <span class="code-title">Example 24.7</span>
+          <span class="code-file">examples/24-cuda-graphs/ex7_substeps_and_kernels.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 24.7 - one graph = 4 physics substeps + your own reward kernel.
+
+An RL control step usually holds several physics steps (the "frame skip") plus kernels you
+write (observation, reward, done; Ch 26 and Ch 30). capture_step(m, d, nsub, post) records all of
+them into one graph, so a control step is a single wp.capture_launch. We replay it 10 times and
+compare with the same work done eagerly: on CPU the difference is exactly 0.
+Run: python ex7_substeps_and_kernels.py
+"""
+import pathlib
+import sys
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+HERE = pathlib.Path(__file__).parent if "__file__" in globals() else pathlib.Path.cwd()
+sys.path.insert(0, str(HERE))
+try:
+    import my_env                           # notebook: written by the %%writefile cell
+except ImportError:
+    import my_env_step24 as my_env          # examples/24-cuda-graphs/
+
+np.set_printoptions(precision=4, suppress=True)
+
+CARTPOLE = """
+&lt;mujoco model="cartpole"&gt;
+  &lt;option timestep="0.01" integrator="implicitfast"/&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 -2 3" dir="0 1 -1"/&gt;
+    &lt;camera name="front" pos="0 -4 1" xyaxes="1 0 0 0 0 1"/&gt;
+    &lt;geom name="rail" type="capsule" fromto="-2 0 1 2 0 1" size=".02" contype="0" conaffinity="0"/&gt;
+    &lt;body name="cart" pos="0 0 1"&gt;
+      &lt;joint name="slider" type="slide" axis="1 0 0" range="-1.8 1.8" limited="true" damping="0.1"/&gt;
+      &lt;geom name="cart" type="box" size=".2 .1 .05" mass="1" contype="0" conaffinity="0"/&gt;
+      &lt;body name="pole"&gt;
+        &lt;joint name="hinge" type="hinge" axis="0 1 0" damping="0.01"/&gt;
+        &lt;geom name="pole" type="capsule" fromto="0 0 0 0 0 .6" size=".03" mass="0.1"
+              contype="0" conaffinity="0"/&gt;
+      &lt;/body&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+  &lt;actuator&gt;&lt;motor name="push" joint="slider" gear="10" ctrlrange="-1 1" ctrllimited="true"/&gt;&lt;/actuator&gt;
+  &lt;sensor&gt;
+    &lt;jointpos joint="slider"/&gt;&lt;jointpos joint="hinge"/&gt;
+    &lt;jointvel joint="slider"/&gt;&lt;jointvel joint="hinge"/&gt;
+  &lt;/sensor&gt;
+&lt;/mujoco&gt;
+"""
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 4
+NSUB = 4                                    # physics steps per control step
+NCONTROL = 10                               # control steps (graph replays)
+
+
+@wp.kernel
+def reward_kernel(qpos: wp.array2d(dtype=float), qvel: wp.array2d(dtype=float),
+                  reward: wp.array(dtype=float)):
+    worldid = wp.tid()                      # one thread per world
+    x = qpos[worldid, 0]
+    theta = qpos[worldid, 1]                # 0 = pole upright
+    reward[worldid] += 1.0 - theta * theta - 0.01 * x * x - 0.001 * qvel[worldid, 1] ** 2.0
+
+
+mjm = mujoco.MjModel.from_xml_string(CARTPOLE)
+m = mjw.put_model(mjm)
+d = mjw.make_data(mjm, nworld=NWORLD)
+reward = wp.zeros(NWORLD, dtype=float)
+
+qpos0 = np.zeros((NWORLD, mjm.nq), dtype=np.float32)
+qpos0[:, 1] = np.linspace(-0.2, 0.2, NWORLD)            # a different pole tilt per world
+ctrl0 = np.linspace(0.0, 0.6, NWORLD, dtype=np.float32).reshape(NWORLD, 1)
+
+
+def restart():
+    d.qpos.assign(qpos0)
+    d.qvel.zero_()
+    d.time.zero_()
+    d.ctrl.assign(ctrl0)
+    reward.zero_()
+
+
+def add_reward(m, d):                       # the `post` hook: runs after the NSUB steps
+    wp.launch(reward_kernel, dim=d.nworld, inputs=[d.qpos, d.qvel], outputs=[reward])
+
+
+# eager reference: NCONTROL x (NSUB steps + reward kernel)
+restart()
+for _ in range(NCONTROL):
+    for _ in range(NSUB):
+        mjw.step(m, d)
+    add_reward(m, d)
+wp.synchronize()
+eager_r, eager_q = reward.numpy().copy(), d.qpos.numpy().copy()
+
+# graph: the same work recorded once, replayed NCONTROL times
+restart()
+graph = my_env.capture_step(m, d, nsub=NSUB, post=add_reward)
+print(f"after capture: d.time = {d.time.numpy()[0]:.2f}, reward w0 = {reward.numpy()[0]:.1f}"
+      "  (nothing ran yet)")
+for _ in range(NCONTROL):
+    wp.capture_launch(graph)                # 4 physics steps + 1 reward launch per call
+wp.synchronize()
+graph_r, graph_q = reward.numpy(), d.qpos.numpy()
+
+print(f"{NCONTROL} replays x {NSUB} substeps: d.time = {d.time.numpy()[0]:.2f} s")
+print("reward per world (graph):", graph_r)
+print("reward per world (eager):", eager_r)
+print(f"max |reward diff| = {np.abs(graph_r - eager_r).max():.1e}, "
+      f"max |qpos diff| = {np.abs(graph_q - eager_q).max():.1e}")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 24.7"</span><span>CPU: <code>python -I ex7_substeps_and_kernels.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=4; on GPU nworld=4096</span></summary>
+<pre class="output">after capture: d.time = 0.00, reward w0 = 0.0  (nothing ran yet)
+10 replays x 4 substeps: d.time = 0.40 s
+reward per world (graph): [8.2863 8.7074 8.9344 9.0116]
+reward per world (eager): [8.2863 8.7074 8.9344 9.0116]
+max |reward diff| = 0.0e+00, max |qpos diff| = 0.0e+00</pre>
+        </details>
+      </figure>
+      <p>The difference is exactly zero on CPU: a graph runs the same kernels with the same inputs in the same order. On
+        a GPU, a contact-free model like this one also replays identically; with contacts, the slot order of atomics can
+        differ between any two runs, graph or not (Ch 22). Notice how the reward array is preallocated once and zeroed
+        in place by <code>restart()</code>, and that <code>reward</code> reaches the kernel through the
+        <code>post</code> closure: the graph holds its address.</p>
+
+      <div class="callout pitfall"><p class="callout-title">Pitfall: capturing a function that allocates its output</p><p>A
+        hook like <code>def post(m, d): r = wp.zeros(n); wp.launch(k, ..., outputs=[r]); return r</code> records a launch
+        into memory allocated during capture, which your Python code never sees again. Allocate outputs before
+        capturing and pass them in, as Example 24.7 does with <code>reward</code>.</p></div>
+    </section>
+
+    <!-- ================================================================ quiz -->
+    <section class="sec" id="quiz">
+      <h2><span class="sec-num">9</span>Check yourself</h2>
+      <div class="quiz">
+        <div class="quiz-head"><h3>Quiz</h3><span class="quiz-score" aria-live="polite"></span></div>
+        <div class="quiz-q" data-answer="b">
+          <p class="q">After one warm-up step of the pendulum (dt = 0.01), you wrap one <code>mjw.step</code> in <code>with wp.ScopedCapture()</code>. What is <code>d.time</code> right after the block?</p>
+          <ul class="choices">
+            <li><button data-explain="That would mean capture also executed the step. It only records.">0.02</button></li>
+            <li><button>0.01</button></li>
+            <li><button data-explain="Capture does not reset anything; the warm-up step already advanced time.">0.00</button></li>
+          </ul>
+          <div class="quiz-feedback">Capturing records the launches without running them. Example 24.1 prints 0.01 before and after the block, then 0.02 ... 0.06 for five replays.</div>
+        </div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q">After capturing, you set <code>m.opt.ls_iterations = 1</code> and keep replaying the old graph. What happens?</p>
+          <ul class="choices">
+            <li><button data-explain="ls_iterations is a Python int, not an array; the graph cannot read it at replay.">The replay uses 1 linesearch iteration from now on</button></li>
+            <li><button data-explain="Nothing checks; the graph just keeps running what it recorded.">The replay raises an error</button></li>
+            <li><button>The replay still uses the old value; eager stepping would compile a new linesearch kernel; recapture to apply it</button></li>
+          </ul>
+          <div class="quiz-feedback"><code>_linesearch_iterative_kernel(ls_iterations, ...)</code> turns it into the compile-time constant <code>LS_ITERATIONS</code>. Example 24.6: graph equals the old run, +1 module on the eager step: "recompile + recapture".</div>
+        </div>
+        <div class="quiz-q" data-answer="a">
+          <p class="q">Why does <code>d.qpos = wp.array(new)</code> after capture leave the new array untouched by replays?</p>
+          <ul class="choices">
+            <li><button>The graph stores the device address of the array it was recorded with, and keeps reading and writing that memory</button></li>
+            <li><button data-explain="Graphs do not copy data; they reference memory by address.">The graph made a private copy of qpos when it was captured</button></li>
+            <li><button data-explain="Warp does not track Python attribute assignments at all.">Warp marks the new array read-only</button></li>
+          </ul>
+          <div class="quiz-feedback">Example 24.3: the new array stays at z = 2.0, the old one keeps falling. Use <code>.assign()</code> or recapture.</div>
+        </div>
+        <div class="quiz-q" data-answer="d">
+          <p class="q">Which change does an existing graph pick up on its next replay?</p>
+          <ul class="choices">
+            <li><button data-explain="A Python int read in forward.py::step while recording: baked.">m.opt.integrator = RK4</button></li>
+            <li><button data-explain="Passed as a scalar launch argument (opt_iterations): baked.">m.opt.iterations = 10</button></li>
+            <li><button data-explain="A replaced array: the graph keeps the old one.">m.opt.gravity = wp.array([[0, 0, -3]], dtype=wp.vec3)</button></li>
+            <li><button>m.opt.gravity.fill_(wp.vec3(0, 0, -3))</button></li>
+          </ul>
+          <div class="quiz-feedback">In-place change of an array option: live (Example 24.6 measures gravity as live).</div>
+        </div>
+        <div class="quiz-q" data-answer="b">
+          <p class="q">With <code>m.opt.graph_conditional = False</code>, what does the captured solver look like?</p>
+          <ul class="choices">
+            <li><button data-explain="The solver still iterates; the count is just fixed at capture time.">A single solver iteration</button></li>
+            <li><button><code>m.opt.iterations</code> copies of the iteration body; converged worlds skip the work but every copy is launched</button></li>
+            <li><button data-explain="Without conditional nodes nothing can loop on the device.">A while node that loops on the device</button></li>
+          </ul>
+          <div class="quiz-feedback">The Python <code>for _ in range(m.opt.iterations)</code> in <code>solver.py::_solve</code> ran while recording. Example 24.5: 1086 launches recorded vs 96, identical results on CPU.</div>
+        </div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q">On a GPU machine whose driver only supports CUDA 12.2, what does <code>mjw.put_model</code> do?</p>
+          <ul class="choices">
+            <li><button data-explain="It never changes the option; that is your job.">It sets m.opt.graph_conditional = False for you</button></li>
+            <li><button data-explain="It does not raise.">It raises an error</button></li>
+            <li><button>It warns ("CUDA version &lt; 12.4 detected") and leaves graph_conditional = True</button></li>
+          </ul>
+          <div class="quiz-feedback"><code>warp_util.check_toolkit_driver</code> only warns. Apply the fallback before capturing; <code>my_env.capture_step</code> does.</div>
+        </div>
+        <div class="quiz-q" data-answer="a">
+          <p class="q">You time 1000 graph replays on a GPU with <code>time.perf_counter()</code> around the loop and get an amazing number. What did you most likely forget?</p>
+          <ul class="choices">
+            <li><button><code>wp.synchronize()</code> before stopping the clock: the launches were only queued</button></li>
+            <li><button data-explain="A missing warm-up would make the first replay slower (on CUDA the first capture_launch also instantiates the graph), not amazingly fast. A missing synchronize does that.">A warm-up replay</button></li>
+            <li><button data-explain="That would make the number worse, not better.">Reading d.qpos with .numpy() inside the loop</button></li>
+          </ul>
+          <div class="quiz-feedback">Launches are asynchronous. Example 24.4 synchronizes before and after each timed loop.</div>
+        </div>
+        <div class="quiz-q" data-answer="b">
+          <p class="q">Which of these is fine inside the function you capture?</p>
+          <ul class="choices">
+            <li><button data-explain="A device-to-host copy needs a sync, which a capture cannot do on CUDA.">print(d.qpos.numpy())</button></li>
+            <li><button>Launching your own reward kernel into a preallocated array</button></li>
+            <li><button data-explain="Inside a conditional body memory cannot be allocated; MJWarp preallocates its scratch for this reason.">Allocating scratch with wp.zeros inside a capture_while body</button></li>
+          </ul>
+          <div class="quiz-feedback">Your own launches are recorded like MJWarp's (Example 24.7). Keep host reads outside, and allocate before capturing.</div>
+        </div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q">What does Warp 1.19 do when you capture on the CPU device?</p>
+          <ul class="choices">
+            <li><button data-explain="ScopedCapture's docstring: works on both CPU and CUDA devices.">It raises "Device cpu is not a CUDA device"</button></li>
+            <li><button data-explain="It does record: Example 24.1 shows d.time frozen during capture and advancing on replay.">It runs the launches immediately and returns an empty graph</button></li>
+            <li><button>It records the launches (APIC) and replays them in C++, including capture_while callbacks; the timings are CPU numbers</button></li>
+          </ul>
+          <div class="quiz-feedback">That is why this chapter's examples run on CPU. (EventTracer, by contrast, is GPU only.)</div>
+        </div>
+        <button class="btn btn-sm quiz-reset" type="button">Reset quiz</button>
+      </div>
+    </section>
+
+    <!-- ================================================================ exercises -->
+    <section class="sec" id="exercises">
+      <h2><span class="sec-num">10</span>Exercises</h2>
+      <div class="exercise">
+        <div class="exercise-head"><h3>Exercise 24.1: a graph replays the eager trajectory</h3><span class="ex-level auto">Auto-checked</span></div>
+        <p>Using the double pendulum with four worlds started at different angles, run 50 eager steps from a start state,
+          then restart, capture <em>one</em> step and replay it 50 times. Assert that the final <code>d.qpos</code> is
+          exactly equal. Restart with <code>.assign()</code>/<code>.zero_()</code> only.</p>
+        <div class="code-block"><pre><code class="language-python"># (model, m, d, q0 and restart() are given in the notebook cell)
+restart()
+# ... 50 eager steps, keep a copy in `eager`
+restart()
+# ... capture one step, replay it 50 times, read d.qpos into `graph`
+assert np.array_equal(graph, eager), np.abs(graph - eager).max()</code></pre></div>
+        <details class="solution">
+          <summary>Show solution</summary>
+          <div class="solution-body">
+            <div class="code-block"><pre><code class="language-python">restart()
+for _ in range(NSTEP):
+    mjw.step(m, d)
+eager = d.qpos.numpy().copy()
+
+restart()
+with wp.ScopedCapture() as capture:       # recording does not advance d
+    mjw.step(m, d)
+for _ in range(NSTEP):
+    wp.capture_launch(capture.graph)
+graph = d.qpos.numpy()
+
+assert np.array_equal(graph, eager), np.abs(graph - eager).max()</code></pre></div>
+            <p>Verified on CPU: the difference is exactly 0. Two details matter. The capture comes <em>after</em>
+              <code>restart()</code> but does not move the state, so the 50 replays start from the same point as the
+              eager run. And <code>restart()</code> works in place, so the graph's addresses stay valid. (No explicit
+              warm-up is needed: the eager run already compiled the kernels.)</p>
+          </div>
+        </details>
+      </div>
+
+      <div class="exercise">
+        <div class="exercise-head"><h3>Exercise 24.2: <code>needs_recapture(field)</code></h3><span class="ex-level auto">Auto-checked</span></div>
+        <p>Turn the knob-board rule into one line of code. Write <code>needs_recapture(field)</code> that returns
+          <code>True</code> when a graph captured before changing <code>m.opt.&lt;field&gt;</code> must be captured
+          again, and pass the asserts.</p>
+        <div class="code-block"><pre><code class="language-python">def needs_recapture(field):
+    ...  # hint: what kind of Python object is getattr(m.opt, field)?
+
+assert needs_recapture("timestep") is False
+assert needs_recapture("tolerance") is False
+assert needs_recapture("iterations") is True
+assert needs_recapture("ls_iterations") is True
+assert needs_recapture("integrator") is True</code></pre></div>
+        <details class="solution">
+          <summary>Show solution</summary>
+          <div class="solution-body">
+            <div class="code-block"><pre><code class="language-python">def needs_recapture(field):
+    """Array fields are read from device memory at replay; everything else was read while recording."""
+    return not isinstance(getattr(m.opt, field), wp.array)</code></pre></div>
+            <p>Verified on CPU; it also gives <code>gravity: False</code> and <code>warn_overflow: True</code>. The rule
+              assumes you change array fields <em>in place</em>: replacing <code>m.opt.timestep</code> with a new array
+              would need a recapture too. Telling "recapture" from "recompile + recapture" cannot be done from the type;
+              it needs the source (factories, <code>wp.static</code>) or a measurement like Example 24.6.</p>
+          </div>
+        </details>
+      </div>
+
+      <div class="exercise">
+        <div class="exercise-head"><h3>Stretch: where does your GPU saturate?</h3><span class="ex-level stretch">Stretch</span></div>
+        <p>On Colab, rerun Example 24.4 with <code>NWORLDS = [2**k for k in range(18)]</code>. Plot graph world-steps/s
+          against <code>nworld</code> and find the knee where the step time starts to grow. Repeat with
+          <code>box_stack(5)</code> (<code>nconmax=32, njmax=128</code>): does a heavier model saturate the GPU at fewer
+          worlds? Then compare <code>graph_conditional</code> True and False at the knee (Example 24.5). Write down your
+          numbers; Ch 25 turns this into a full benchmarking workflow.</p>
+      </div>
+    </section>
+
+    <!-- ================================================================ summary -->
+    <section class="sec" id="summary">
+      <h2><span class="sec-num">11</span>Summary</h2>
+      <div class="takeaways">
+        <h3>Key takeaways</h3>
+        <ul>
+          <li><code>with wp.ScopedCapture() as c: mjw.step(m, d)</code> records about 100 launches without running them;
+            <code>wp.capture_launch(c.graph)</code> replays them with one call. Warm up first or let the capture compile.</li>
+          <li>Baked: kernels and their order, Python branches on <code>m.opt.*</code>, launch sizes, scalar arguments,
+            compile-time constants and <strong>array addresses</strong>. Live: array <strong>contents</strong>.</li>
+          <li>After capture, change inputs in place (<code>.assign</code>, <code>.fill_</code>, <code>wp.copy</code>,
+            kernels). Replacing an array or changing a Python-valued option means recapture.</li>
+          <li>Knob board (measured): <code>timestep</code>, <code>gravity</code>, <code>tolerance</code> live;
+            <code>iterations</code>, <code>integrator</code> recapture; <code>ls_iterations</code>,
+            <code>warn_overflow</code> recompile + recapture.</li>
+          <li><code>graph_conditional=True</code> makes the solver a <code>capture_while</code> loop on the device;
+            False unrolls <code>m.opt.iterations</code> copies (same physics, many more launches).</li>
+          <li>Conditional nodes need CUDA ≥ 12.4 (toolkit and driver). <code>put_model</code> only warns; apply
+            <code>if wp.get_device().is_cuda and not wp.is_conditional_graph_supported(): m.opt.graph_conditional = False</code>.</li>
+          <li>One graph can hold a whole control step: <code>my_env.capture_step(m, d, nsub, post)</code>.</li>
+          <li>Warp 1.19 records graphs on CPU too; CPU timings are CPU numbers, never GPU performance.</li>
+        </ul>
+      </div>
+      <p class="stuck">Stuck? See <a href="../reference/troubleshooting.html">Troubleshooting</a> (graph recapture,
+        CUDA &lt; 12.4 and <code>graph_conditional</code>, recompiles when changing static options) or the
+        <a href="../reference/course-map.html">course map</a>.</p>
+    </section>
+
+    <!-- ================================================================ source map -->
+    <section class="sec" id="source-map">
+      <h2><span class="sec-num">12</span>Source map</h2>
+      <p class="small muted">Paths are in the mujoco-warp 4.0.1 wheel (<code>mujoco_warp/_src/</code>); every name was
+        grepped there. Warp functions (<code>wp.ScopedCapture</code>, <code>wp.capture_launch</code>,
+        <code>wp.capture_while</code>, <code>wp.capture_if</code>, <code>wp.is_conditional_graph_supported</code>) are
+        documented in warp-lang 1.19.0.</p>
+      <div class="table-wrap">
+        <table class="source-map">
+          <thead><tr><th>Concept</th><th>File</th><th>Function</th></tr></thead>
+          <tbody>
+            <tr><td>Python branch on the integrator (baked)</td><td>_src/forward.py</td><td>step</td></tr>
+            <tr><td><code>warn_overflow</code> through <code>wp.static</code> (recompile)</td><td>_src/forward.py</td><td>_next_time_builder</td></tr>
+            <tr><td>Allocations inside a step</td><td>_src/forward.py</td><td>euler, rungekutta4</td></tr>
+            <tr><td>Solver loop: <code>capture_while(nsolving, ...)</code> or unrolled</td><td>_src/solver.py</td><td>_solve</td></tr>
+            <tr><td>One solver iteration (the while body)</td><td>_src/solver.py</td><td>_solver_iteration</td></tr>
+            <tr><td><code>iterations</code> as a scalar launch argument</td><td>_src/solver.py</td><td>_solve_done, _solve_beta_finalize_tiled (4.0.1 wheel; _solve_search_update_cg_tiled at the dev commit)</td></tr>
+            <tr><td><code>LS_ITERATIONS</code> compile-time constant</td><td>_src/solver.py</td><td>_linesearch_iterative_kernel</td></tr>
+            <tr><td>Graph-conditional forced off on CPU (compact solve)</td><td>_src/solver.py</td><td>solve_compact</td></tr>
+            <tr><td>PCG loop of the discrete integrator</td><td>_src/derivative.py</td><td>eff_solve</td></tr>
+            <tr><td>FPS filter loop for flex contacts</td><td>_src/collision_flex.py</td><td>_run_filter_flex_fps</td></tr>
+            <tr><td><code>capture_if</code> for the incremental sleep broadphase</td><td>_src/collision_driver.py</td><td>nxn_broadphase</td></tr>
+            <tr><td><code>broadphase_filter</code> as a factory argument</td><td>_src/collision_driver.py</td><td>_nxn_broadphase</td></tr>
+            <tr><td><code>ccd_iterations</code> as a factory argument</td><td>_src/collision_convex.py</td><td>ccd_kernel_builder</td></tr>
+            <tr><td>CUDA &lt; 12.4 warning</td><td>_src/warp_util.py</td><td>check_toolkit_driver</td></tr>
+            <tr><td>Kernel-factory cache ("avoid crashes in graph_conditional code")</td><td>_src/warp_util.py</td><td>cache_kernel</td></tr>
+            <tr><td>Profiling scopes skipped inside conditional bodies</td><td>_src/warp_util.py</td><td>event_scope</td></tr>
+            <tr><td><code>graph_conditional = True</code> default, toolkit check</td><td>_src/io.py</td><td>put_model</td></tr>
+            <tr><td><code>"opt.graph_conditional=..."</code> overrides</td><td>_src/io.py</td><td>override_model</td></tr>
+            <tr><td>Option field types (arrays vs ints)</td><td>_src/types.py</td><td>Option</td></tr>
+            <tr><td>Capture once, replay per step (testspeed)</td><td>_src/cli.py</td><td>unroll</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="chapter-footer">
+      <div class="complete-row"><button class="btn complete-btn" data-slug="24-cuda-graphs">Mark chapter as complete</button></div>
+      <nav class="pager" aria-label="Chapter pager">
+        <a class="prev" href="23-soft-bodies-flex-discrete-integrator.html"><span class="dir">Previous</span><span class="ttl">Ch 23 · Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator</span></a>
+        <a class="index" href="../index.html"><span class="dir">All chapters</span><span class="ttl">Index</span></a>
+        <a class="next" href="25-profiling-benchmarking-tuning.html"><span class="dir">Next</span><span class="ttl">Ch 25 · Profiling, Benchmarking and Tuning for Throughput</span></a>
+      </nav>
+      <p class="site-footer">MuJoCo Warp course · mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1</p>
+    </footer>
+  </main>
+</div>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script defer src="../assets/course.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  MW.onReady(function () {
+    var $ = MW.$, $$ = MW.$$;
+    function seg(el, attr, fn) {               // segmented toggle helper
+      var btns = $$("button", el);
+      btns.forEach(function (b) {
+        b.type = "button";
+        b.addEventListener("click", function () {
+          btns.forEach(function (o) { o.setAttribute("aria-pressed", o === b ? "true" : "false"); });
+          fn(b.getAttribute(attr));
+        });
+      });
+    }
+
+    /* ---------- Figure 24.1: eager vs graph timeline (illustrative) ---------- */
+    var tl = { mode: "eager", nw: 64 };
+    var nwIn = $("#tl-nw"), nwOut = $("#tl-nw-out"), tlRead = $("#tl-read");
+    var NL = 24;                                // launches drawn
+    function schedule() {
+      // made-up costs in microseconds: host issue per launch, graph launch, kernel time
+      var issue = 5, glaunch = 8, node = 0.6;
+      var cpu = [], gpu = [], tHost = 0, tDev = 0;
+      for (var k = 0; k < NL; k++) {
+        var work = 1.2 + (k % 5) * 0.5 + tl.nw * (0.0006 + (k % 3) * 0.0003);
+        if (tl.mode === "eager") {
+          cpu.push([tHost, tHost + issue]); tHost += issue;
+          var s = Math.max(tHost, tDev); gpu.push([s, s + work]); tDev = s + work;
+        } else {
+          if (k === 0) { cpu.push([0, glaunch]); tHost = glaunch; tDev = glaunch; }
+          var s2 = tDev + node; gpu.push([s2, s2 + work]); tDev = s2 + work;
+        }
+      }
+      var busy = gpu.reduce(function (a, g) { return a + g[1] - g[0]; }, 0);
+      return { cpu: cpu, gpu: gpu, end: Math.max(tHost, tDev), busy: busy };
+    }
+    var tlAnim = MW.canvasAnim($("#tl-canvas"), function (ctx, st) {
+      var sc = schedule(), w = st.w, h = st.h, left = w < 420 ? 40 : 56, right = 10;
+      var span = Math.max(sc.end, 1), x = function (t) { return left + (w - left - right) * t / span; };
+      var laneH = Math.min(46, (h - 60) / 2), y1 = 18, y2 = y1 + laneH + 24;
+      ctx.font = "12px " + MW.css("--font-sans"); ctx.fillStyle = MW.css("--muted"); ctx.textAlign = "left";
+      ctx.fillText("CPU", 6, y1 + laneH / 2 + 4); ctx.fillText("GPU", 6, y2 + laneH / 2 + 4);
+      ctx.fillStyle = MW.css("--surface-2"); ctx.fillRect(left, y1, w - left - right, laneH); ctx.fillRect(left, y2, w - left - right, laneH);
+      var head = (st.t * 0.35 % 1.15) * span;   // playhead sweeps the step
+      sc.cpu.forEach(function (c) {
+        ctx.fillStyle = head >= c[0] ? MW.css("--world-1") : MW.css("--border-strong");
+        ctx.fillRect(x(c[0]), y1 + 4, Math.max(1.5, x(c[1]) - x(c[0]) - 1), laneH - 8);
+      });
+      sc.gpu.forEach(function (g) {
+        ctx.fillStyle = head >= g[0] ? MW.css("--accent") : MW.css("--accent-soft");
+        ctx.fillRect(x(g[0]), y2 + 4, Math.max(1.5, x(g[1]) - x(g[0]) - 0.5), laneH - 8);
+      });
+      if (head <= span) { ctx.fillStyle = MW.css("--danger"); ctx.fillRect(x(head), y1 - 4, 2, y2 + laneH - y1 + 8); }
+      ctx.fillStyle = MW.css("--muted"); ctx.textAlign = "right";
+      ctx.fillText(tl.mode === "eager" ? NL + " Python launches" : "1 capture_launch", w - right, y1 + laneH + 15);
+      ctx.fillText("time →", w - right, y2 + laneH + 16);
+    }, { height: 170, staticT: 3.0 });
+    function tlUpdate() {
+      tl.nw = Math.pow(2, +nwIn.value); nwOut.textContent = tl.nw;
+      var sc = schedule();
+      tlRead.innerHTML = "<strong>" + (tl.mode === "eager" ? "Eager" : "Graph") + "</strong>, nworld " + tl.nw +
+        ": step ≈ " + sc.end.toFixed(0) + " (made-up µs), GPU busy " + Math.round(100 * sc.busy / sc.end) + "% of the step" +
+        (tl.mode === "eager" && sc.busy / sc.end < 0.5 ? ": the GPU waits for Python." : ".");
+      tlAnim.redraw();
+    }
+    nwIn.addEventListener("input", tlUpdate);
+    seg($("#tl-mode"), "data-mode", function (v) { tl.mode = v; tlUpdate(); });
+    tlUpdate();
+
+    /* ---------- Figure 24.3: circuit toggle ---------- */
+    seg($("#cir-mode"), "data-mode", function (v) { $("#cir").setAttribute("data-mode", v); });
+
+    /* ---------- Figure 24.4: knob board (Rule D: ex6 JSON) ---------- */
+    var board = MW.readJSON("data-ch24-ex6") || { rows: [] };
+    var WHY = {
+      timestep: "array(\"*\", float) in types.Option; kernels read opt_timestep[worldid % shape[0]].",
+      gravity: "array(\"*\", wp.vec3): read from device memory at replay.",
+      tolerance: "array(\"*\", float) passed to the done kernels; a looser tolerance ends the capture_while loop earlier.",
+      iterations: "a Python int passed as the scalar opt_iterations to _solve_done / _solve_beta_finalize_tiled (4.0.1 wheel; _solve_search_update_cg_tiled at the dev commit) (and the unroll count when graph_conditional is False).",
+      ls_iterations: "solver.py::_linesearch_iterative_kernel(ls_iterations, ...) sets LS_ITERATIONS and unrolls the bracket loop: a new kernel per value.",
+      integrator: "forward.py::step branches on it in Python; RK4 kernels live in already-loaded modules, so no new code.",
+      warn_overflow: "wp.static(bool(warn_overflow & ...)) in several factories, e.g. forward.py::_next_time_builder: new kernels."
+    };
+    var EXTRA = [
+      { field: "ls_tolerance", verdict: "live", src: "types.py::Option: array(\"*\", float)." },
+      { field: "wind", verdict: "live", src: "types.py::Option: array(\"*\", wp.vec3)." },
+      { field: "density", verdict: "live", src: "types.py::Option: array(\"*\", float)." },
+      { field: "impratio_invsqrt", verdict: "live", src: "types.py::Option: array(\"*\", float) (warp-only field)." },
+      { field: "solver", verdict: "recompile + recapture", src: "Python branches such as if m.opt.solver == SolverType.CG in solver.py, but the other solver's kernels are compiled on first use (a probe switching CG to Newton loaded 11 new modules)." },
+      { field: "cone", verdict: "recompile + recapture", src: "factory argument of solver.py::_linesearch_iterative_kernel and constraint.py::_efc_contact_init." },
+      { field: "ccd_iterations", verdict: "recompile + recapture", src: "factory argument of collision_convex.py::ccd_kernel_builder." },
+      { field: "broadphase_filter", verdict: "recompile + recapture", src: "factory argument of collision_driver.py::_nxn_broadphase (@cache_kernel)." },
+      { field: "broadphase", verdict: "recompile + recapture", src: "Python branches in collision_driver.py (NXN vs SAP), but the other broadphase's kernels are compiled on first use (a probe loaded 4 new modules)." },
+      { field: "disableflags", verdict: "depends on the flag", src: "Python branches (if not (m.opt.disableflags & DisableBit....)) decide which kernels are launched. Always a recapture; some flags only skip or add already-loaded kernels, others reach a kernel that is not compiled yet (setting WARMSTART in a probe loaded 1 new module), so treat it as recompile + recapture until measured." },
+      { field: "graph_conditional", verdict: "recapture", src: "decides the structure of the graph itself (while node vs unrolled copies)." }
+    ];
+    var kbGrid = $("#kb-grid"), kbStage = $("#kb-stage"), kbRead = $("#kb-read"), kbFilter = "measured";
+    var tape = $("#kb-tape");
+    for (var i = 0; i < 13; i++) MW.svgEl("rect", { x: 20 + i * 28, y: 40, width: 22, height: 24, rx: 4, "class": "s-accent2-soft" }, tape);
+    function cls(v) { return v === "live" ? "kb-live" : v === "recapture" ? "kb-recapture" : "kb-recompile"; }
+    function stageKey(v) { return v === "live" ? "live" : v === "recapture" ? "recapture" : "recompile"; }
+    function fmt(x) { return x === 0 ? "0" : x.toExponential(1); }
+    function select(card, item) {
+      $$(".kb-card", kbGrid).forEach(function (c) { c.setAttribute("aria-pressed", c === card ? "true" : "false"); c.classList.remove("turned"); });
+      void card.offsetWidth; card.classList.add("turned");
+      var k = stageKey(item.verdict);
+      kbStage.setAttribute("data-v", k);
+      var sp = $(".kb-spin-text", kbStage); sp.setAttribute("display", k === "recompile" ? "inline" : "none");
+      var html = "<strong>m.opt." + item.field + "</strong> " + (item.change ? "<code>" + item.change + "</code>" : "") + " → <strong>" + item.verdict + "</strong>. ";
+      if (item.measured) {
+        html += "Measured: |graph − new| = " + fmt(item.graph_vs_new) + ", |graph − old| = " + fmt(item.graph_vs_old) +
+          ", |new − old| = " + fmt(item.new_vs_old) + ", new modules = " + item.new_modules + ". " + (WHY[item.field] || "");
+      } else {
+        html += "From source, not measured: " + item.src;
+      }
+      kbRead.innerHTML = html;
+    }
+    function buildBoard() {
+      kbGrid.innerHTML = "";
+      var items = board.rows.map(function (r) { var o = Object.assign({ measured: true }, r); return o; });
+      if (kbFilter === "all") items = items.concat(EXTRA.map(function (e) { return Object.assign({ measured: false }, e); }));
+      items.forEach(function (item, idx) {
+        var b = document.createElement("button");
+        b.className = "kb-card"; b.type = "button"; b.setAttribute("aria-pressed", "false");
+        b.innerHTML = '<svg viewBox="0 0 38 38" aria-hidden="true"><circle cx="19" cy="19" r="16" fill="var(--surface-2)" stroke="var(--border-strong)" stroke-width="2"/>' +
+          '<g class="kb-dial-hand"><path d="M19 19 L19 6" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/></g><circle cx="19" cy="19" r="3" fill="var(--text)"/></svg>' +
+          '<span class="kb-name">' + item.field + '</span>' +
+          '<span class="kb-kind">' + (item.verdict === "live" ? "array: change in place" : "Python value") + '</span>' +
+          '<span class="kb-tag ' + cls(item.verdict) + '">' + item.verdict + '</span>' +
+          '<span class="kb-src">' + (item.measured ? "measured, Example 24.6" : "from source") + '</span>';
+        b.addEventListener("click", function () {
+          select(b, item);
+          // On a phone the stage and readout sit below the whole grid: bring them into view after a tap.
+          if (window.matchMedia("(max-width: 600px)").matches) {
+            var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            kbRead.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
+          }
+        });
+        kbGrid.appendChild(b);
+        if (idx === 0) select(b, item);
+      });
+    }
+    seg($("#kb-filter"), "data-f", function (v) { kbFilter = v; buildBoard(); });
+    buildBoard();
+
+    /* ---------- Figure 24.5: conditional toggle ---------- */
+    seg($("#cond-mode"), "data-gc", function (v) { $("#cond").setAttribute("data-gc", v); });
+
+    /* ---------- Figure 24.6: toolkit flowchart scenarios ---------- */
+    var PATHS = {
+      "new": { n: ["fn-a", "fn-b", "fn-c", "fn-e"], e: ["fe-a-b", "fe-b-c", "fe-c-e"], t: "R580+ driver (Colab today): pip warp-lang 1.19.0 (CUDA 13). <code>is_conditional_graph_supported()</code> is True; keep <code>graph_conditional = True</code>." },
+      "cu12ok": { n: ["fn-a", "fn-b", "fn-d", "fn-f", "fn-e"], e: ["fe-a-b", "fe-b-d", "fe-d-f", "fe-f-e"], t: "Older driver that still supports CUDA 12.4+: the setup cell installs the +cu12 wheel; conditional nodes work." },
+      "old": { n: ["fn-a", "fn-b", "fn-d", "fn-f", "fn-g"], e: ["fe-a-b", "fe-b-d", "fe-d-f", "fe-f-g"], t: "Driver below CUDA 12.4: <code>put_model</code> warns, the default stays True, so set <code>m.opt.graph_conditional = False</code> before capturing (<code>capture_step</code> does)." },
+      "cpu": { n: ["fn-a", "fn-cpu"], e: ["fe-a-cpu"], t: "No GPU: Warp runs on CPU. Graphs still record and replay (APIC), including <code>capture_while</code>; no fallback needed. Timings are CPU numbers." }
+    };
+    function showPath(s) {
+      var p = PATHS[s];
+      $$("#fc .fc-node").forEach(function (n) { n.classList.toggle("on", p.n.indexOf(n.id) >= 0); });
+      $$("#fc .fc-edge").forEach(function (e) { e.classList.toggle("on", p.e.indexOf(e.id) >= 0); });
+      $("#fc-read").innerHTML = p.t;
+    }
+    seg($("#fc-scn"), "data-s", showPath);
+    showPath("new");
+
+    /* ---------- Figure 24.7: throughput chart (Rule D: ex4 JSON) ---------- */
+    var tp = MW.readJSON("data-ch24-ex4") || { rows: [] }, tpMode = "wsps";
+    var svg = $("#tp-svg"), tpRead = $("#tp-read");
+    function drawTp() {
+      $$(".tp-dyn", svg).forEach(function (e) { e.remove(); });
+      var g = MW.svgEl("g", { "class": "tp-dyn" }, svg);
+      var narrow = (svg.getBoundingClientRect().width || 640) < 500, W = narrow ? 380 : 640;
+      svg.setAttribute("viewBox", "0 0 " + W + " 300");
+      var L = narrow ? 52 : 70, R = W - 16, T = 20, B = 250, rows = tp.rows;
+      if (!rows.length) return;
+      var ys = tpMode === "wsps" ? ["eager_wsps", "graph_wsps"] : ["eager_ms", "graph_ms"];
+      var lx = function (v) { return Math.log10(v); };
+      var xmin = lx(rows[0].nworld), xmax = lx(rows[rows.length - 1].nworld);
+      var all = []; rows.forEach(function (r) { all.push(r[ys[0]], r[ys[1]]); });
+      var ymin = Math.floor(lx(Math.min.apply(null, all))), ymax = Math.ceil(lx(Math.max.apply(null, all)));
+      var X = function (v) { return L + (R - L) * (lx(v) - xmin) / Math.max(1e-9, xmax - xmin); };
+      var Y = function (v) { return B - (B - T) * (lx(v) - ymin) / Math.max(1e-9, ymax - ymin); };
+      for (var e = ymin; e <= ymax; e++) {
+        MW.svgEl("line", { x1: L, x2: R, y1: Y(Math.pow(10, e)), y2: Y(Math.pow(10, e)), "class": "s-line", opacity: 0.35 }, g);
+        var t = MW.svgEl("text", { x: L - 8, y: Y(Math.pow(10, e)) + 4, "text-anchor": "end", "class": "s-small s-mono" }, g);
+        t.textContent = e >= 6 ? Math.pow(10, e - 6) + "M" : e >= 3 ? Math.pow(10, e - 3) + "k" : String(+Math.pow(10, e).toPrecision(1));
+      }
+      rows.forEach(function (r) {
+        var t = MW.svgEl("text", { x: X(r.nworld), y: B + 18, "text-anchor": "middle", "class": "s-small s-mono" }, g); t.textContent = r.nworld;
+      });
+      var xl = MW.svgEl("text", { x: (L + R) / 2, y: B + 40, "text-anchor": "middle", "class": "s-small" }, g); xl.textContent = "nworld (log scale)";
+      var yl = MW.svgEl("text", { x: 14, y: (T + B) / 2, "text-anchor": "middle", "class": "s-small", transform: "rotate(-90 14 " + (T + B) / 2 + ")" }, g);
+      yl.textContent = tpMode === "wsps" ? "world-steps / s (log)" : "ms per step (log)";
+      [["eager", ys[0], "var(--world-1)"], ["graph", ys[1], "var(--accent)"]].forEach(function (s) {
+        var d = rows.map(function (r, k) { return (k ? "L" : "M") + X(r.nworld).toFixed(1) + " " + Y(r[s[1]]).toFixed(1); }).join(" ");
+        MW.svgEl("path", { d: d, fill: "none", stroke: s[2], "stroke-width": 3 }, g);
+        rows.forEach(function (r) {
+          var info = "<strong>" + s[0] + "</strong>, nworld " + r.nworld + ": " + (r[s[0] + "_ms"]).toFixed(3) + " ms per step, " +
+            Math.round(r[s[0] + "_wsps"]).toLocaleString("en-US") + " world-steps/s (CPU dev box). Speedup graph/eager: " + (r.eager_ms / r.graph_ms).toFixed(1) + "x.";
+          var hg = MW.svgEl("g", { "class": "hot", "data-info": info, tabindex: "0" }, g);
+          MW.svgEl("circle", { cx: X(r.nworld), cy: Y(r[s[1]]), r: 7, fill: s[2], stroke: "var(--surface)", "stroke-width": 2 }, hg);
+          var show = function () { tpRead.innerHTML = info; };
+          hg.addEventListener("mouseenter", show); hg.addEventListener("focus", show); hg.addEventListener("click", show);
+        });
+      });
+    }
+    seg($("#tp-mode"), "data-y", function (v) { tpMode = v; drawTp(); });
+    var tpW = 0;
+    window.addEventListener("resize", function () { var w = svg.getBoundingClientRect().width; if (Math.abs(w - tpW) > 40) { tpW = w; drawTp(); } });
+    drawTp();
+  });
+});
+</script>
+</body>
+</html>

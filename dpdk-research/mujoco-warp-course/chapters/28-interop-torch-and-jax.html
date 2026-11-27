@@ -1,0 +1,2487 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 28 · Interop with PyTorch and JAX</title>
+<meta name="description" content="Share MJWarp memory with PyTorch zero-copy, feed actions in place, wrap mjw.step as a JAX op with wp.jax_callable, fix the stale contrib/jax_unroll.py, batch per-env calls with custom_vmap, and find your way to MJX, Playground, mjlab and Isaac Lab.">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../assets/course.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+  /* Chapter 28 local styles */
+  .vc-wrap.scroll-x { overflow-x: auto; }
+  .vc-wrap svg, .sx-wrap svg, .lane-wrap svg, .rw-wrap svg { width: 100%; display: block; }
+  .vc-cell rect { transition: fill .25s, stroke .25s; }
+  .vc-stale rect { fill: var(--danger-soft); stroke: var(--danger); }
+  .vc-fresh rect { fill: var(--ok-soft); stroke: var(--ok); }
+  .btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+  .verdict { font: 600 13px var(--font-mono); margin: 8px 0 0; min-height: 1.4em; }
+  .verdict.ok { color: var(--ok); }
+  .verdict.bad { color: var(--danger-ink); }
+  .verdict.warn { color: var(--warn-ink); }
+  .sx-cell { stroke: var(--border-strong); stroke-width: 1.2; fill: var(--surface-2); transition: fill .2s; }
+  .sx-cell.pick { fill: var(--accent-2-soft); stroke: var(--accent-2); stroke-width: 2; }
+  .sx-cell.bad { fill: var(--danger-soft); stroke: var(--danger); stroke-width: 2; }
+  .gm-panel { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-top: 10px; background: var(--surface-2); font-size: 14px; }
+  .gm-panel dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+  .gm-panel dt { font-weight: 700; color: var(--muted); }
+  .gm-panel dd { margin: 0; }
+  .diff-line { font: 12.5px/1.5 var(--font-mono); padding: 4px 10px; border-radius: 6px; margin: 2px 0; white-space: pre-wrap; word-break: break-word; }
+  .diff-del { background: var(--danger-soft); border-left: 3px solid var(--danger); }
+  .diff-add { background: var(--ok-soft); border-left: 3px solid var(--ok); }
+  .diff-why { font-size: 13px; color: var(--muted); margin: 2px 0 12px 13px; }
+  .calc-out { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 10px; margin-top: 10px; }
+  .calc-out .stat .v { font-size: 1.25rem; }
+  .logbar { height: 16px; border-radius: 5px; margin: 4px 0 2px; transition: width .25s; min-width: 2px; }
+  .logbar.bad { background: var(--danger); }
+  .logbar.ok { background: var(--ok); }
+  .anim-collapse { animation: ch28-collapse 4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+  @keyframes ch28-collapse {
+    0%, 15% { transform: translateX(0); opacity: 1; }
+    55%, 75% { transform: translateX(var(--dx, 0px)); opacity: .15; }
+    100% { transform: translateX(0); opacity: 1; }
+  }
+  .anim-merge { animation: ch28-merge 4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+  @keyframes ch28-merge {
+    0%, 35% { opacity: .2; transform: scale(.92); }
+    55%, 80% { opacity: 1; transform: scale(1); }
+    100% { opacity: .2; transform: scale(.92); }
+  }
+  .anim-run { animation: ch28-run 3.2s linear infinite; }
+  @keyframes ch28-run { from { transform: translateX(0); } to { transform: translateX(var(--run, 300px)); } }
+  .lane-k { transition: opacity .25s; }
+  .stepper-fig rect.step-active { stroke: var(--accent); stroke-width: 3; fill: var(--accent-soft); }
+  .contract-ok { color: var(--ok); font-weight: 700; }
+  .contract-no { color: var(--danger-ink); font-weight: 700; }
+  .rw-legend { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 6px; }
+  .rw-legend button { font: 600 12px var(--font-mono); border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 2px 10px 2px 6px; cursor: pointer; }
+  .rw-legend button::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--c); margin-right: 5px; vertical-align: -1px; }
+  .rw-legend button[aria-pressed="false"] { opacity: .4; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="icon-btn toc-toggle" type="button" aria-label="Table of contents">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">Ch 28 of 30</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Chapter navigation">
+    <a href="27-rays-lidar-and-batch-rendering.html" class="prev" aria-label="Previous chapter"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">Prev</span></a>
+    <a href="29-gradients-and-system-identification.html" class="next" aria-label="Next chapter"><span class="lbl">Next</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol data-auto></ol>
+    <p class="toc-progress" aria-live="off"></p>
+  </aside>
+
+  <main id="main" class="content">
+    <header class="chapter-hero">
+      <p class="eyebrow">Part VI · Chapter 28</p>
+      <h1>Interop with PyTorch and JAX</h1>
+      <p class="lede">MJWarp keeps every world's state in Warp arrays on the GPU. A learning framework wants that state
+        as torch tensors or JAX arrays, and wants to send actions back. This chapter shows how to do that without
+        copying a single byte through the CPU: zero-copy torch views, writing actions <em>into</em>
+        <code>d.ctrl</code>, wrapping <code>mjw.step</code> as a JAX operation with <code>wp.jax_callable</code>, and
+        the traps on each road (dtypes, strides, streams, XLA memory, stale example scripts).</p>
+      <div class="hero-meta">
+        <span class="badge level-expert">Expert</span>
+        <span>About 80 min</span><span class="sep">·</span>
+        <span class="prereqs">Prerequisites: <a href="24-cuda-graphs.html">Ch 24</a>, <a href="26-custom-kernels-and-extending.html">Ch 26</a> (for the RL capstone, Ch 30, §1-§3 are enough)</span>
+      </div>
+      <div class="hero-grid">
+        <div>
+          <h2 class="sr-only">You will learn</h2>
+          <ul class="learn-list">
+            <li>How <code>wp.to_torch</code> and <code>wp.from_torch</code> share one buffer between Warp and PyTorch, and how to prove it with data pointers.</li>
+            <li>The caveats: float32 everywhere, vec3/quat arrays as trailing dims, strided slices, float64 tensors, uint32 buffers, and CUDA streams.</li>
+            <li>How to feed a torch policy's actions into <code>d.ctrl</code> without replacing the array.</li>
+            <li>How to wrap an MJWarp step as a JAX op (<code>wp.jax_callable</code>, <code>graph_mode</code>, <code>output_dims</code>), unroll it with <code>lax.scan</code>, and set the XLA variables before <code>import jax</code>.</li>
+            <li>What is stale in <code>contrib/jax_unroll.py</code>, the <code>custom_vmap</code> batching pattern, the MJX field contract, and where the ecosystem frameworks fit.</li>
+          </ul>
+        </div>
+        <div>
+          <div class="hero-actions">
+            <a class="btn btn-colab" href="https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/main/dpdk-research/mujoco-warp-course/notebooks/28-interop-torch-and-jax.ipynb" target="_blank" rel="noopener">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M9 7.5a5 5 0 1 0 0 9"/><path d="M15 7.5a5 5 0 1 1 0 9"/></svg>
+              Open in Colab
+            </a>
+            <a class="btn" href="../notebooks/28-interop-torch-and-jax.ipynb" download>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 21h16"/></svg>
+              Download notebook
+            </a>
+          </div>
+          <p class="small muted" style="margin-top:10px">In Colab: Runtime &gt; Change runtime type &gt; GPU, then run the first cell. The notebook uses Colab's preinstalled torch and JAX. It has a torch part and a JAX part, so a JAX problem does not block the torch examples.</p>
+        </div>
+      </div>
+    </header>
+
+    <section class="recap" aria-labelledby="recap-h">
+      <h2 id="recap-h" data-toc="Recap">Before you start: recap</h2>
+      <ul>
+        <li>A <code>wp.array</code> lives on one device and has a raw address, <code>arr.ptr</code>; <code>arr.numpy()</code> copies it to the host (<a href="04-warp-and-the-gpu.html#arrays">Ch 4 §2</a>).</li>
+        <li>Every Data field is world-first, <code>(nworld, ...)</code>; <code>xpos</code> is a <code>vec3</code> array, <code>xquat</code> a <code>quat</code> array (<a href="06-batched-data-layout.html#vector-dtypes">Ch 6 §2</a>).</li>
+        <li>Write into existing arrays (<code>assign</code>, <code>wp.copy</code>, kernels); never rebind a Data field to a new array (<a href="06-batched-data-layout.html#replace-vs-assign">Ch 6 §5</a>).</li>
+        <li>A CUDA graph records launches once and replays them; conditional nodes loop on device (first met in <a href="07-pipeline-tour.html#cuda-graphs">Ch 7 §10</a>; owner <a href="24-cuda-graphs.html">Ch 24</a>).</li>
+        <li>Custom kernels read and write MJWarp's arrays directly, one thread per world (<a href="26-custom-kernels-and-extending.html">Ch 26</a>).</li>
+        <li>pip <code>warp-lang</code> 1.19.0 is a CUDA 13 build and needs an R580+ driver (<a href="01-what-is-mujoco-warp.html#colab-setup">Ch 1 §5</a>).</li>
+      </ul>
+    </section>
+
+    <!-- ===================== 1. ZERO COPY ===================== -->
+    <section class="sec" id="zero-copy">
+      <h2><span class="sec-num">1</span>Zero-copy: one buffer, several views</h2>
+      <p>A GPU array is a block of device memory plus a little description: where it starts (a pointer), the element
+        type, the shape and the strides (how many bytes to skip to reach the next element along each axis). Two
+        libraries can look at the <em>same</em> block as long as they agree on that description. Nothing is copied;
+        each library just builds its own object around the same pointer. This is called
+        <abbr class="gl" data-term="zero-copy" title="Two libraries describe the same memory block with their own array objects; no bytes are moved.">zero-copy</abbr> sharing.</p>
+      <p>There are standard ways to pass that description between libraries. <abbr class="gl" data-term="dlpack" title="A cross-library C struct that describes a tensor: pointer, device, dtype, shape, strides.">DLPack</abbr>
+        is a small C struct (pointer, device, dtype, shape, strides) that PyTorch, JAX, NumPy and Warp all
+        understand. NumPy's <code>__array_interface__</code> and the GPU twin <code>__cuda_array_interface__</code> are
+        Python dictionaries with the same information. Warp implements all of them; which one a given call uses is a
+        detail, the result is the same: a second view of one buffer.</p>
+
+      <figure class="fig" data-anim>
+        <div class="fig-frame grid-bg scroll-x">
+          <svg viewBox="0 0 640 300" role="img" aria-labelledby="f1t f1d">
+            <title id="f1t">One GPU buffer, three views</title>
+            <desc id="f1d">A single device buffer holding d.qpos in the middle. A Warp array, a torch tensor and a JAX array all point at it. A copy path through host memory is crossed out.</desc>
+            <defs>
+              <marker id="f1-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker>
+            </defs>
+            <g class="hot" data-info="<strong>The buffer</strong>: <code>nworld x nq</code> float32 values in GPU memory, row-major (world-first). Its start address is <code>d.qpos.ptr</code>. Every view below points here.">
+              <rect x="210" y="118" width="220" height="64" rx="10" class="s-accent-soft"/>
+              <rect x="210" y="118" width="220" height="64" rx="10" fill="none" class="s-accent-stroke"/>
+              <g class="s-mono" font-size="11">
+                <rect x="222" y="148" width="30" height="22" rx="3" class="s-w0"/><rect x="254" y="148" width="30" height="22" rx="3" class="s-w0"/>
+                <rect x="290" y="148" width="30" height="22" rx="3" class="s-w1"/><rect x="322" y="148" width="30" height="22" rx="3" class="s-w1"/>
+                <rect x="358" y="148" width="30" height="22" rx="3" class="s-w2"/><rect x="390" y="148" width="30" height="22" rx="3" class="s-w2"/>
+              </g>
+              <text x="320" y="138" text-anchor="middle" class="s-label">GPU memory: d.qpos</text>
+            </g>
+            <g class="hot" data-info="<strong>Warp</strong>: <code>d.qpos</code> is a <code>wp.array2d(dtype=float)</code>. MJWarp's kernels read and write it.">
+              <rect x="20" y="20" width="170" height="58" rx="10" class="s-box"/>
+              <text x="105" y="44" text-anchor="middle" class="s-label">Warp</text>
+              <text x="105" y="64" text-anchor="middle" class="s-small s-mono">d.qpos</text>
+            </g>
+            <g class="hot" data-info="<strong>PyTorch</strong>: <code>q = wp.to_torch(d.qpos)</code>. On CUDA it is built from <code>__cuda_array_interface__</code>, on CPU through NumPy's <code>__array_interface__</code>; <code>q.data_ptr() == d.qpos.ptr</code>.">
+              <rect x="235" y="20" width="170" height="58" rx="10" class="s-box"/>
+              <text x="320" y="44" text-anchor="middle" class="s-label">PyTorch</text>
+              <text x="320" y="64" text-anchor="middle" class="s-small s-mono">wp.to_torch(d.qpos)</text>
+            </g>
+            <g class="hot" data-info="<strong>JAX</strong>: <code>wp.to_jax(d.qpos)</code> goes through DLPack. JAX assumes its arrays never change, so a live view of MJWarp state is risky (Example 28.4); the JAX bridge in §4 copies in and out instead.">
+              <rect x="450" y="20" width="170" height="58" rx="10" class="s-box"/>
+              <text x="535" y="44" text-anchor="middle" class="s-label">JAX</text>
+              <text x="535" y="64" text-anchor="middle" class="s-small s-mono">wp.to_jax(d.qpos)</text>
+            </g>
+            <path d="M105 80 C 105 110, 220 110, 245 120" class="s-accent-stroke anim-flow" marker-end="url(#f1-arrow)"/>
+            <path d="M320 80 V 116" class="s-accent-stroke anim-flow" marker-end="url(#f1-arrow)"/>
+            <path d="M535 80 C 535 110, 420 110, 395 120" class="s-accent-stroke anim-flow s-dashed" marker-end="url(#f1-arrow)"/>
+            <text x="330" y="102" class="s-small">same pointer</text>
+            <g class="hot" data-info="<strong>The path you avoid</strong>: <code>torch.tensor(d.qpos.numpy()).cuda()</code> copies GPU to host and back every step. It is slow and the copy is stale after the next <code>mjw.step</code>.">
+              <rect x="210" y="232" width="220" height="48" rx="10" class="s-box-2"/>
+              <text x="320" y="254" text-anchor="middle" class="s-label">host RAM copy</text>
+              <text x="320" y="271" text-anchor="middle" class="s-small s-mono">d.qpos.numpy()</text>
+              <path d="M300 184 V 230" class="s-line s-dashed"/>
+              <path d="M340 230 V 184" class="s-line s-dashed"/>
+              <path d="M200 224 L440 288 M440 224 L200 288" class="s-danger-stroke"/>
+            </g>
+            <text x="20" y="258" class="s-small">copy path: GPU to host</text>
+            <text x="20" y="274" class="s-small">and back, every step</text>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="badge illustrative">Illustrative</span></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a box to read about it."></div>
+        <figcaption><span class="fig-num">Figure 1.</span>Zero-copy sharing. Three libraries, three array objects, one buffer. The copy through host memory (crossed out) is what zero-copy avoids.</figcaption>
+      </figure>
+
+      <p>Warp provides the conversions as plain functions:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Call</th><th>Gives</th><th>Copies?</th><th>Notes (warp 1.19 source)</th></tr></thead>
+          <tbody>
+            <tr><td><code>wp.to_torch(a)</code></td><td><code>torch.Tensor</code></td><td>no</td><td>CUDA: <code>torch.as_tensor(a, device=...)</code> via <code>__cuda_array_interface__</code>; CPU: <code>torch.as_tensor(numpy.asarray(a))</code>; bfloat16: DLPack</td></tr>
+            <tr><td><code>wp.from_torch(t, dtype=None)</code></td><td><code>wp.array</code></td><td>no</td><td>builds <code>wp.array(ptr=t.data_ptr(), strides=..., copy=False)</code> and keeps a reference to <code>t</code> so it is not freed</td></tr>
+            <tr><td><code>wp.to_jax(a)</code> / <code>wp.from_jax(x)</code></td><td><code>jax.Array</code> / <code>wp.array</code></td><td>no</td><td><code>jax.dlpack.from_dlpack(a)</code> / <code>wp.from_dlpack(x)</code></td></tr>
+            <tr><td><code>wp.device_to_torch(dev)</code></td><td>torch device</td><td>-</td><td><code>"cuda:0"</code> for Warp's <code>cuda:0</code>, <code>"cpu"</code> for <code>cpu</code>: put your tensors where Warp is</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>Example 28.1 makes this concrete. It prints the version block first: on Colab, torch is a CUDA 12 build and
+        pip <code>warp-lang</code> 1.19.0 is a CUDA 13 build. That is fine, because both libraries talk to the same
+        driver; what must be new enough is the driver (R580+, the reason the setup cell checks <code>nvidia-smi</code>
+        before it installs anything). Then it makes a torch view of <code>d.qpos</code>, compares data pointers, writes
+        from torch, steps with MJWarp, and reads the result through the same view.</p>
+
+      <figure class="code-example" data-file="ex1_torch_zero_copy.py">
+        <div class="code-head">
+          <span class="code-title">Example 28.1</span>
+          <span class="code-file">examples/28-interop-torch-and-jax/ex1_torch_zero_copy.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 28.1 - one buffer, two views: wp.to_torch(d.qpos) aliases MJWarp memory.
+
+Prints the torch / Warp versions and devices, then shows that a torch view of d.qpos shares
+the same memory (same data pointer), that a write from torch is seen by Warp and that a
+Warp step is seen by torch, all without a copy. A d.qpos.numpy() snapshot, by contrast, is
+a copy: it goes stale after the next step (on a GPU it is also a device-to-host transfer).
+Runs on CPU torch; skips if torch is not installed.
+Run: python ex1_torch_zero_copy.py
+"""
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+try:
+    import torch
+except ImportError:
+    torch = None
+    print("skipped: torch not installed")
+
+BALL_DROP = """
+&lt;mujoco model="ball_drop"&gt;
+  &lt;option timestep="0.002"/&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 0 3" dir="0 0 -1"/&gt;
+    &lt;geom name="floor" type="plane" size="5 5 .1" rgba=".8 .8 .8 1"/&gt;
+    &lt;body name="ball" pos="0 0 1"&gt;
+      &lt;freejoint/&gt;
+      &lt;geom name="ball" type="sphere" size=".1" mass="1" rgba="1 .3 .3 1"/&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+&lt;/mujoco&gt;
+"""
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 4
+NSTEP = 100
+
+if torch is not None:
+    # 1. Version block: Colab's torch is a CUDA 12 build; pip warp-lang 1.19.0 is a CUDA 13
+    #    build. Both use the same driver, so the driver (R580+) is what must be new enough.
+    print("torch", torch.__version__, "| torch CUDA build:", torch.version.cuda,
+          "| torch.cuda.is_available():", torch.cuda.is_available())
+    print("warp", wp.__version__, "| warp device:", wp.get_device(),
+          "| as torch device:", wp.device_to_torch(wp.get_device()))
+
+    mjm = mujoco.MjModel.from_xml_string(BALL_DROP)
+    m = mjw.put_model(mjm)
+    d = mjw.make_data(mjm, nworld=NWORLD, nconmax=4, njmax=16)
+
+    # 2. A zero-copy view: no data moves, the tensor points at the Warp allocation.
+    q = wp.to_torch(d.qpos)
+    print("view:", tuple(q.shape), q.dtype, q.device, "| same memory:", q.data_ptr() == d.qpos.ptr)
+
+    # 3. torch writes, Warp reads: put the ball at a different height in every world.
+    q[:, 2] = torch.linspace(0.5, 2.0, NWORLD, device=q.device)
+    print("z seen by Warp after the torch write:", d.qpos.numpy()[:4, 2])
+
+    # 4. A host snapshot is a copy, the view is not.
+    snapshot = d.qpos.numpy().copy()
+    for _ in range(NSTEP):
+        mjw.step(m, d)
+    wp.synchronize()  # Warp work must finish before torch reads the memory (Example 28.2)
+    print(f"after {NSTEP} steps, torch view z:", q[:4, 2].cpu().numpy())
+    print("old numpy snapshot z (stale):    ", snapshot[:4, 2])
+    print("view still aliases d.qpos:", q.data_ptr() == d.qpos.ptr)
+    print("overflow:", "none" if not d.overflow.numpy().any() else d.overflow.numpy())</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 28.1"</span><span>CPU: <code>python -I ex1_torch_zero_copy.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run with CPU torch 2.15, nworld=4; on Colab: a CUDA build of torch, device cuda:0, nworld=4096</span></summary>
+<pre class="output">torch 2.15.0+cpu | torch CUDA build: None | torch.cuda.is_available(): False
+warp 1.19.0 | warp device: cpu | as torch device: cpu
+view: (4, 7) torch.float32 cpu | same memory: True
+z seen by Warp after the torch write: [0.5 1.  1.5 2. ]
+after 100 steps, torch view z: [0.3018 0.8018 1.3018 1.8018]
+old numpy snapshot z (stale):     [0.5 1.  1.5 2. ]
+view still aliases d.qpos: True
+overflow: none</pre>
+        </details>
+      </figure>
+
+      <p>Read the output line by line. <code>same memory: True</code> is the proof: the tensor's
+        <code>data_ptr()</code> is Warp's <code>ptr</code>. The torch write (<code>q[:, 2] = ...</code>) is visible to
+        Warp at once. After 100 steps the torch view shows the new heights (each ball fell about 0.2 m in 0.2 s), while
+        the NumPy snapshot still shows the old ones. The view never needs refreshing, because it is not a copy.</p>
+
+      <div class="widget" id="vc-widget">
+        <p class="widget-title">View or copy? Press the buttons in order <span class="badge data-driven">Values from Example 28.1</span></p>
+        <div class="vc-wrap scroll-x"><svg id="vc-svg" style="min-width:560px" viewBox="0 0 640 210" role="img" aria-labelledby="vct vcd"><title id="vct">Three rows of ball heights: the Warp buffer, the torch view and a NumPy snapshot</title><desc id="vcd">Pressing the buttons updates the cells; stale copies turn red.</desc></svg></div>
+        <div class="btn-row">
+          <button class="btn btn-sm" type="button" data-vc="write">1. torch: q[:, 2] = linspace(0.5, 2, 4)</button>
+          <button class="btn btn-sm" type="button" data-vc="snap">2. snapshot = d.qpos.numpy()</button>
+          <button class="btn btn-sm" type="button" data-vc="step">3. 100 x mjw.step(m, d)</button>
+          <button class="btn btn-sm btn-ghost" type="button" data-vc="reset">Reset</button>
+        </div>
+        <p class="verdict" id="vc-verdict" aria-live="polite"></p>
+      </div>
+
+      <div class="callout pitfall"><p class="callout-title">Pitfall: a view aliases live memory; clone what you keep</p><p>Lifetime is not the
+        problem: both directions keep a reference. <code>wp.from_torch</code> stores the tensor inside the Warp array
+        (<code>a._tensor = t</code>), and <code>wp.to_torch</code> builds the tensor with <code>torch.as_tensor</code> on the
+        array itself on CUDA (the source comment: "we must be sure to maintain a reference to the owning object to
+        prevent memory allocs going out of scope") or on <code>numpy.asarray(a)</code> on CPU, so the tensor keeps the
+        Warp array alive even after <code>del d</code>. The two real dangers are different:</p>
+        <ul>
+          <li><strong>Aliasing.</strong> The view always shows the <em>current</em> buffer. The <code>wp.to_torch</code>
+            docstring: "Clone the tensor if PyTorch must retain those values after Warp may modify or zero the
+            underlying array." A replay buffer that stores <code>q</code> itself, not <code>q.clone()</code>, stores the
+            same memory N times.</li>
+          <li><strong>Rebinding.</strong> If <code>d.qpos</code> is ever replaced by a new array (<code>d.qpos = ...</code>,
+            or a fresh <code>make_data</code>), the old view does not follow: it keeps reading the old buffer, which is
+            still allocated because the view holds it, and silently goes stale. Make the views again after you rebind a
+            field (Figure 4).</li>
+        </ul></div>
+    </section>
+
+    <!-- ===================== 2. CAVEATS ===================== -->
+    <section class="sec" id="caveats">
+      <h2><span class="sec-num">2</span>Caveats: dtypes, shapes, contiguity and streams</h2>
+      <p>Zero-copy only works when both sides describe the memory the same way. Four things go wrong in practice.</p>
+
+      <h3>Dtypes and shapes</h3>
+      <p>MJWarp stores every float as <strong>float32</strong>. Composite Warp types become extra trailing tensor
+        dimensions: a <code>vec3</code> array of shape <code>(nworld, nbody)</code> is a torch tensor of shape
+        <code>(nworld, nbody, 3)</code>. Quaternions keep MuJoCo's <code>(w, x, y, z)</code> order (Warp's
+        <code>wp.quat</code> type is <code>(x, y, z, w)</code> in its own math functions, but MJWarp only uses the storage;
+        <a href="04-warp-and-the-gpu.html#quat-storage">Ch 4 §6</a>).</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Data field</th><th>Warp dtype, shape</th><th>torch view</th></tr></thead>
+          <tbody>
+            <tr><td><code>d.qpos</code></td><td class="mono">float32, (nworld, nq)</td><td class="mono">(nworld, nq) float32</td></tr>
+            <tr><td><code>d.xpos</code></td><td class="mono">vec3f, (nworld, nbody)</td><td class="mono">(nworld, nbody, 3)</td></tr>
+            <tr><td><code>d.xquat</code></td><td class="mono">quatf, (nworld, nbody)</td><td class="mono">(nworld, nbody, 4), (w, x, y, z)</td></tr>
+            <tr><td><code>d.xmat</code></td><td class="mono">mat33f, (nworld, nbody)</td><td class="mono">(nworld, nbody, 3, 3)</td></tr>
+            <tr><td><code>d.cvel</code></td><td class="mono">spatial_vectorf, (nworld, nbody)</td><td class="mono">(nworld, nbody, 6), (rot, trans)</td></tr>
+            <tr><td>packed RGB of the renderer</td><td class="mono">uint32</td><td class="mono">torch.uint32 (few ops; unpack first, <a href="27-rays-lidar-and-batch-rendering.html">Ch 27</a>)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Going the other way, <code>wp.from_torch</code> maps the tensor's dtype: <code>torch.float64</code> becomes
+        <code>wp.float64</code>, <code>torch.int64</code> becomes <code>wp.int64</code>. That is not an error yet, and
+        <code>wp.copy</code> into a float32 MJWarp field does not check the dtype either: it only compares the
+        <em>element size in bytes</em> (<code>type_size_in_bytes(src.dtype) != type_size_in_bytes(dest.dtype)</code> in
+        <code>warp/_src/context.py::copy</code>). So 8-byte float64 and int64 sources raise
+        <code>RuntimeError: Incompatible array data types</code>, but a 4-byte <strong>int32</strong> or
+        <strong>uint32</strong> source is copied bit for bit with no error. A policy that emits discrete
+        <code>torch.int32</code> actions writes <code>[1, 2, 3, 4]</code> into <code>d.ctrl</code> as the denormal floats
+        <code>1e-45 3e-45 4e-45 6e-45</code> (Example 28.2, part 3). The rule: convert in torch first
+        (<code>.float()</code> or <code>.to(torch.float32)</code>) before <code>wp.from_torch</code>. Many torch defaults
+        are float32 already, but anything that went through NumPy (<code>torch.from_numpy</code> of a float64 array) is
+        float64.</p>
+
+      <h3>Contiguity and strides</h3>
+      <p>A tensor is <em>contiguous</em> when its elements sit in memory in plain row-major order with no gaps. Slicing
+        a column (<code>acts[:, 1]</code>) or transposing makes a strided view: same buffer, bigger jumps. For a
+        <strong>scalar</strong> dtype, <code>wp.from_torch</code> keeps the strides and returns a strided Warp array; it
+        is still zero-copy, and <code>wp.copy</code> handles it. For a <strong>vector or matrix</strong> dtype the
+        trailing component dimensions must be contiguous, or <code>wp.from_torch</code> raises. The widget shows the four
+        cases Example 28.2 tries.</p>
+
+      <figure class="fig widget" id="sx-fig">
+        <p class="widget-title">Strides explorer <span class="badge data-driven">Outcomes from Example 28.2</span></p>
+        <div class="seg" role="group" aria-label="Choose a tensor view" id="sx-seg">
+          <button type="button" aria-pressed="true" data-k="0">acts</button>
+          <button type="button" aria-pressed="false" data-k="1">acts[:, 1]</button>
+          <button type="button" aria-pressed="false" data-k="2">acts.reshape(3, 4).t() as vec3</button>
+          <button type="button" aria-pressed="false" data-k="3">.contiguous()</button>
+        </div>
+        <div class="sx-wrap fig-frame scroll-x" style="margin-top:10px"><svg id="sx-svg" viewBox="0 0 640 170" role="img" aria-labelledby="sxt sxd"><title id="sxt">Twelve float32 cells of one torch buffer and the cells a view selects</title><desc id="sxd">The memory of acts = arange(12).reshape(4, 3); highlighted cells are those the chosen view reads, in order.</desc></svg></div>
+        <p class="verdict" id="sx-verdict" aria-live="polite"></p>
+        <figcaption><span class="fig-num">Figure 2.</span><code>acts = torch.arange(12.).reshape(4, 3)</code>: one row per world, three numbers each. Numbers in the cells are the read order of the selected view.</figcaption>
+      </figure>
+
+      <h3>Streams</h3>
+      <p>A <abbr class="gl" data-term="cuda-stream" title="A queue of GPU work; work in one stream runs in order, different streams may overlap.">CUDA stream</abbr>
+        is a queue: kernels in one stream run in order, kernels in different streams may run at the same time. When
+        torch reads <code>wp.to_torch(d.qpos)</code>, its kernel must not start before MJWarp's last kernel that
+        writes <code>qpos</code> has finished. The two docstrings in <code>warp/_src/torch.py</code> spell out the rules:
+        streams made by <code>warp.Stream()</code>, including Warp's default stream, are <em>blocking</em> streams, which
+        implicitly synchronize with the CUDA legacy default stream that torch uses by default; streams made with
+        <code>torch.cuda.Stream()</code> are <em>non-blocking</em>. So:</p>
+      <ul>
+        <li>Default torch stream + default Warp stream: ordered, nothing to do.</li>
+        <li>torch on its own <code>torch.cuda.Stream()</code>: run MJWarp on that same stream with
+          <code>wp.ScopedStream(wp.stream_from_torch(side))</code>, or make one stream wait for the other
+          (<code>wp.wait_stream</code>, <code>torch.cuda.current_stream().wait_stream(...)</code>). Keep a Python
+          reference to every Warp array you use on that side stream (temporaries included) until after the
+          <code>wait_stream</code> or a synchronize: the <code>stream_from_torch</code> docstring warns "ensure that
+          Warp-owned resources are not garbage-collected while work on the non-blocking stream is still pending".</li>
+        <li>Host reads: <code>.numpy()</code> waits for the work; reading a torch CUDA tensor on the host
+          (<code>.item()</code>, <code>.cpu()</code>) waits for torch's stream. On CPU there are no streams;
+          <code>wp.synchronize()</code> is still a good habit before torch touches Warp memory.</li>
+      </ul>
+
+      <figure class="fig" data-anim id="lane-fig">
+        <div class="seg" role="group" aria-label="Choose a stream setup" id="lane-seg">
+          <button type="button" aria-pressed="true" data-k="0">default streams</button>
+          <button type="button" aria-pressed="false" data-k="1">torch side stream, no sync</button>
+          <button type="button" aria-pressed="false" data-k="2">ScopedStream(stream_from_torch(side))</button>
+        </div>
+        <div class="fig-frame lane-wrap scroll-x" style="margin-top:10px">
+          <svg viewBox="0 0 640 200" role="img" aria-labelledby="f3t f3d">
+            <title id="f3t">Two stream lanes: Warp kernels and torch kernels</title>
+            <desc id="f3d">Top lane: Warp's mjw.step kernels. Bottom lane: torch's policy kernel. A sync marker orders them, or, without it, torch reads early.</desc>
+            <text x="12" y="52" class="s-label">Warp</text>
+            <text x="12" y="134" class="s-label">torch</text>
+            <line x1="70" y1="46" x2="628" y2="46" class="s-line"/>
+            <line x1="70" y1="128" x2="628" y2="128" class="s-line"/>
+            <g class="lane-k" data-lane="0 1">
+              <rect x="80" y="30" width="60" height="32" rx="6" class="s-w0"/><rect x="146" y="30" width="60" height="32" rx="6" class="s-w0"/><rect x="212" y="30" width="80" height="32" rx="6" class="s-w0"/>
+              <text x="186" y="22" text-anchor="middle" class="s-small s-mono">mjw.step kernels (write qpos)</text>
+            </g>
+            <g class="lane-k" data-lane="0 1">
+              <line x1="298" y1="24" x2="298" y2="152" class="s-accent-stroke" stroke-width="2.5" data-lane="0"/>
+            </g>
+            <g class="lane-k" data-lane="0"><rect x="306" y="112" width="110" height="32" rx="6" class="s-w1"/><text x="361" y="133" text-anchor="middle" font-size="12" fill="#fff" class="s-mono">policy(q)</text>
+              <text x="298" y="172" text-anchor="middle" class="s-small">implicit order: blocking stream + legacy default stream</text></g>
+            <g class="lane-k" data-lane="1"><rect x="150" y="112" width="110" height="32" rx="6" class="s-danger"/><text x="205" y="133" text-anchor="middle" font-size="12" fill="#fff" class="s-mono">policy(q)</text>
+              <text x="205" y="172" text-anchor="middle" class="s-small">reads qpos while it is being written: race</text></g>
+            <g class="lane-k" data-lane="2">
+              <rect x="80" y="112" width="60" height="32" rx="6" class="s-w0"/><rect x="146" y="112" width="60" height="32" rx="6" class="s-w0"/><rect x="212" y="112" width="80" height="32" rx="6" class="s-w0"/>
+              <rect x="298" y="112" width="110" height="32" rx="6" class="s-w1"/><text x="353" y="133" text-anchor="middle" font-size="12" fill="#fff" class="s-mono">policy(q)</text>
+              <text x="186" y="104" text-anchor="middle" class="s-small s-mono">mjw.step on torch's stream</text>
+              <text x="250" y="172" text-anchor="middle" class="s-small">one queue: in order by construction</text>
+              <text x="350" y="56" text-anchor="middle" class="s-small">(Warp lane idle)</text></g>
+            <line x1="70" y1="190" x2="620" y2="190" class="s-line s-dashed"/>
+            <text x="628" y="194" text-anchor="end" class="s-small">time</text>
+            <circle cx="80" cy="190" r="5" class="s-accent anim-run" style="--run:520px"/>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="badge illustrative">Illustrative timeline</span><span class="badge gpu-only">GPU only</span></div>
+        <figcaption><span class="fig-num">Figure 3.</span>Streams. The race (middle) only appears when torch works on a <code>torch.cuda.Stream()</code> of its own and nobody orders the two queues.</figcaption>
+      </figure>
+
+      <figure class="code-example" data-file="ex2_torch_dtypes.py">
+        <div class="code-head">
+          <span class="code-title">Example 28.2</span>
+          <span class="code-file">examples/28-interop-torch-and-jax/ex2_torch_dtypes.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 28.2 - dtypes, shapes, contiguity and streams at the Warp/torch boundary.
+
+1. vec3 / quat / mat33 arrays become float32 tensors with trailing (3,) / (4,) / (3, 3) dims.
+2. A non-contiguous torch slice: wp.from_torch keeps the strides for scalar dtypes (still a
+   zero-copy view, is_contiguous False), but refuses vector dtypes whose inner dims are strided.
+3. dtype mismatches: wp.from_torch maps float64 to wp.float64, and wp.copy into a float32
+   MJWarp array then raises. wp.copy only compares element byte sizes, though: an int32 tensor
+   (4 bytes, like float32) is copied bit for bit with no error. Convert in torch first.
+4. uint32 buffers (the packed RGB of the batch renderer, Ch 27) come out as torch.uint32.
+5. Streams (GPU only): Warp's default stream is a blocking stream, so it is ordered with torch's
+   default stream; on a torch.cuda.Stream() (non-blocking) run Warp on that same stream.
+Run: python ex2_torch_dtypes.py
+"""
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+try:
+    import torch
+except ImportError:
+    torch = None
+    print("skipped: torch not installed")
+
+PENDULUM = """
+&lt;mujoco model="double_pendulum"&gt;
+  &lt;option timestep="0.01"&gt;&lt;flag energy="enable"/&gt;&lt;/option&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 -2 3" dir="0 1 -1"/&gt;
+    &lt;camera name="side" pos="0 -3 1" xyaxes="1 0 0 0 0 1"/&gt;
+    &lt;body name="link1" pos="0 0 1.5"&gt;
+      &lt;joint name="hinge1" type="hinge" axis="0 1 0"/&gt;
+      &lt;geom type="capsule" fromto="0 0 0 0 0 -.5" size=".04" mass="1"/&gt;
+      &lt;body name="link2" pos="0 0 -.5"&gt;
+        &lt;joint name="hinge2" type="hinge" axis="0 1 0"/&gt;
+        &lt;geom type="capsule" fromto="0 0 0 0 0 -.5" size=".04" mass="1"/&gt;
+        &lt;site name="tip" pos="0 0 -.5"/&gt;
+      &lt;/body&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+  &lt;actuator&gt;&lt;motor name="shoulder" joint="hinge1" gear="1" ctrlrange="-5 5"/&gt;&lt;/actuator&gt;
+  &lt;sensor&gt;
+    &lt;jointpos name="q1" joint="hinge1"/&gt;
+    &lt;jointvel name="v1" joint="hinge1"/&gt;
+    &lt;framepos name="tip_pos" objtype="site" objname="tip"/&gt;
+  &lt;/sensor&gt;
+  &lt;keyframe&gt;&lt;key name="horizontal" qpos="1.5708 0"/&gt;&lt;/keyframe&gt;
+&lt;/mujoco&gt;
+"""
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 4
+
+
+def show(name, t):
+    print(f"  {name:&lt;11} torch {str(tuple(t.shape)):&lt;14} {t.dtype}  contiguous={t.is_contiguous()}")
+
+
+if torch is not None:
+    dev = wp.device_to_torch(wp.get_device())
+    mjm = mujoco.MjModel.from_xml_string(PENDULUM)
+    m = mjw.put_model(mjm)
+    d = mjw.make_data(mjm, nworld=NWORLD)
+    d.qpos.assign(np.tile(mjm.key_qpos[0], (NWORLD, 1)).astype(np.float32))  # "horizontal"
+    mjw.forward(m, d)
+
+    # 1. composite dtypes gain trailing dims; worlds stay the leading dim
+    print("1. Warp array -&gt; torch view")
+    for name in ("qpos", "xpos", "xquat", "xmat", "cvel"):
+        arr = getattr(d, name)
+        print(f"  d.{name:&lt;9} warp {arr.dtype.__name__:&lt;20} {arr.shape}")
+    for name in ("xpos", "xquat", "xmat", "cvel"):
+        show(name, wp.to_torch(getattr(d, name)))
+    print("  link1 xquat (w, x, y, z), 90 deg about y:", wp.to_torch(d.xquat)[0, 1].cpu().numpy())
+
+    # 2. contiguity: a column slice of a (nworld, 3) tensor is strided
+    acts = torch.arange(NWORLD * 3, dtype=torch.float32, device=dev).reshape(NWORLD, 3)
+    col = acts[:, 1]
+    print("2. non-contiguous slice: stride", col.stride(), "contiguous", col.is_contiguous())
+    w = wp.from_torch(col)
+    print("  wp.from_torch(slice): shape", w.shape, "strides (bytes)", w.strides,
+          "is_contiguous", w.is_contiguous)
+    ctrl = wp.zeros((NWORLD,), dtype=float)
+    wp.copy(ctrl, w)  # wp.copy handles the strided source
+    print("  wp.copy(strided -&gt; contiguous) ok:", ctrl.numpy()[:4])
+    pairs = acts.reshape(3, NWORLD).t()  # (nworld, 3) view whose last dim is strided
+    try:
+        wp.from_torch(pairs, dtype=wp.vec3)
+    except RuntimeError as e:
+        print("  vec3 from strided inner dim -&gt; RuntimeError:", str(e).split(", because ")[-1])
+    print("  fix: wp.from_torch(pairs.contiguous(), dtype=wp.vec3).shape =",
+          wp.from_torch(pairs.contiguous(), dtype=wp.vec3).shape)
+
+    # 3. dtype: torch float64 maps to wp.float64; MJWarp arrays are float32
+    a64 = torch.ones((NWORLD, mjm.nu), dtype=torch.float64, device=dev)
+    print("3. torch.float64 -&gt; warp", wp.from_torch(a64).dtype.__name__)
+    try:
+        wp.copy(d.ctrl, wp.from_torch(a64))
+    except RuntimeError as e:
+        print("  wp.copy(d.ctrl, float64) -&gt; RuntimeError:", e)
+    a32i = torch.arange(1, NWORLD + 1, dtype=torch.int32, device=dev).reshape(NWORLD, mjm.nu)
+    wp.copy(d.ctrl, wp.from_torch(a32i))   # same element size: no error, bits reinterpreted
+    print("  wp.copy(d.ctrl, int32 [1 2 3 4]) -&gt; no error, d.ctrl =",
+          " ".join(f"{x:.0e}" for x in d.ctrl.numpy()[:4, 0]), "(denormals)")
+    wp.copy(d.ctrl, wp.from_torch(a64.float()))
+    print("  after .float():", d.ctrl.numpy()[:, 0])
+
+    # 4. uint32 buffers (packed RGB from the batch renderer) keep their dtype
+    rgb_packed = wp.zeros((NWORLD, 8), dtype=wp.uint32)
+    print("4. uint32 array -&gt; torch", wp.to_torch(rgb_packed).dtype,
+          "(few torch ops support it: unpack with mjw.get_rgb first, Ch 27)")
+
+    # 5. streams: if torch works on its own non-blocking stream, put Warp on the same stream
+    if ON_GPU:
+        # stream_from_torch docstring: keep Warp-owned arrays used on a non-blocking stream
+        # alive until that work is done (here d lives on; nothing temporary is launched).
+        side = torch.cuda.Stream()
+        torch_stream = wp.stream_from_torch(side)
+        with torch.cuda.stream(side), wp.ScopedStream(torch_stream):
+            mjw.step(m, d)                         # Warp launches go to torch's stream...
+            tip_z = wp.to_torch(d.site_xpos)[:, 0, 2].mean()   # ...so torch reads after it
+        torch.cuda.current_stream().wait_stream(side)
+        print(f"5. stepped on torch's stream, mean tip z = {tip_z.item():.4f}")
+    else:
+        print("5. skipped on CPU: streams are CUDA only (wp.stream_from_torch)")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 28.2"</span><span>CPU: <code>python -I ex2_torch_dtypes.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=4; on a GPU part 5 runs (<span class="badge gpu-only">GPU only</span>, not CPU-verified) and nworld=4096</span></summary>
+<pre class="output">1. Warp array -&gt; torch view
+  d.qpos      warp float32              (4, 2)
+  d.xpos      warp vec3f                (4, 3)
+  d.xquat     warp quatf                (4, 3)
+  d.xmat      warp mat33f               (4, 3)
+  d.cvel      warp spatial_vectorf      (4, 3)
+  xpos        torch (4, 3, 3)      torch.float32  contiguous=True
+  xquat       torch (4, 3, 4)      torch.float32  contiguous=True
+  xmat        torch (4, 3, 3, 3)   torch.float32  contiguous=True
+  cvel        torch (4, 3, 6)      torch.float32  contiguous=True
+  link1 xquat (w, x, y, z), 90 deg about y: [0.7071 0.     0.7071 0.    ]
+2. non-contiguous slice: stride (3,) contiguous False
+  wp.from_torch(slice): shape (4,) strides (bytes) (12,) is_contiguous False
+  wp.copy(strided -&gt; contiguous) ok: [ 1.  4.  7. 10.]
+  vec3 from strided inner dim -&gt; RuntimeError: the source inner strides are not contiguous
+  fix: wp.from_torch(pairs.contiguous(), dtype=wp.vec3).shape = (4,)
+3. torch.float64 -&gt; warp float64
+  wp.copy(d.ctrl, float64) -&gt; RuntimeError: Incompatible array data types: destination dtype=float32, source dtype=float64
+  wp.copy(d.ctrl, int32 [1 2 3 4]) -&gt; no error, d.ctrl = 1e-45 3e-45 4e-45 6e-45 (denormals)
+  after .float(): [1. 1. 1. 1.]
+4. uint32 array -&gt; torch torch.uint32 (few torch ops support it: unpack with mjw.get_rgb first, Ch 27)
+5. skipped on CPU: streams are CUDA only (wp.stream_from_torch)</pre>
+        </details>
+      </figure>
+
+      <details class="callout deeper">
+        <summary class="callout-title">Going deeper: what <code>from_torch</code> checks</summary>
+        <p>From <code>warp/_src/torch.py::from_torch</code>: it converts torch strides (elements) into byte strides
+          (<code>s * ctypes.sizeof(dtype._type_)</code>). For a dtype with a <code>_shape_</code> (vectors, matrices) it
+          requires the tensor's last dims to equal that shape and the innermost strides to be exactly one element and
+          one row, then trims those dims from shape and strides. It computes a <code>capacity</code> from the tensor's
+          untyped storage, so a view that starts in the middle of a storage still knows where the allocation ends. With
+          <code>requires_grad</code> it also wraps (or allocates) a gradient buffer; that is what Ch 29's tape uses for
+          plain Warp kernels.</p>
+      </details>
+    </section>
+
+    <!-- ===================== 3. ACTIONS IN ===================== -->
+    <section class="sec" id="actions-in">
+      <h2><span class="sec-num">3</span>Feeding actions in: copy into <code>d.ctrl</code>, never replace it</h2>
+      <p>A policy produces a tensor of actions, one row per world. There are two ways to hand it to MJWarp. One is
+        right.</p>
+      <div class="callout recall"><p class="callout-title">Recall from Ch 6 and Ch 24</p><p>Write into existing arrays;
+        rebinding a field to a new array leaves every holder of the old address behind (<a href="06-batched-data-layout.html#replace-vs-assign">Ch 6 §5</a>).
+        A CUDA graph records launches once and replays them; conditional nodes loop on device (<a href="07-pipeline-tour.html#cuda-graphs">Ch 7 §10</a>). The recorded
+        launches hold raw addresses, so a captured step keeps reading the old <code>d.ctrl</code> buffer
+        (<a href="24-cuda-graphs.html">Ch 24</a>).</p></div>
+
+      <figure class="fig">
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 640 250" role="img" aria-labelledby="f4t f4d">
+            <title id="f4t">Copy into d.ctrl versus rebinding d.ctrl</title>
+            <desc id="f4d">Left: wp.copy moves the action values into the existing d.ctrl buffer, which the graph and the torch view also point at. Right: assigning a new array to d.ctrl leaves the graph and the view pointing at the old buffer.</desc>
+            <defs><marker id="f4-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <text x="160" y="22" text-anchor="middle" class="s-label">wp.copy(d.ctrl, wp.from_torch(act))</text>
+            <text x="480" y="22" text-anchor="middle" class="s-label">d.ctrl = wp.from_torch(act)</text>
+            <line x1="320" y1="34" x2="320" y2="240" class="s-line s-dashed"/>
+            <g class="hot" data-info="<strong>Right</strong>: the values flow into the buffer that already exists. Its address does not change, so the captured graph, <code>wp.to_torch(d.ctrl)</code> views and your own kernels all see the new actions.">
+              <rect x="30" y="44" width="120" height="40" rx="8" class="s-w1"/><text x="90" y="69" text-anchor="middle" font-size="12" fill="#fff" class="s-mono">act (torch)</text>
+              <rect x="110" y="140" width="140" height="44" rx="8" class="s-accent-soft"/><rect x="110" y="140" width="140" height="44" rx="8" fill="none" class="s-accent-stroke"/>
+              <text x="180" y="160" text-anchor="middle" class="s-label">d.ctrl buffer</text><text x="180" y="176" text-anchor="middle" class="s-small s-mono">ptr 0x...a0</text>
+              <path d="M90 86 C 90 120, 150 120, 160 138" class="s-accent-stroke anim-flow" marker-end="url(#f4-arrow)"/>
+              <text x="40" y="122" class="s-small">values copied</text>
+              <rect x="200" y="54" width="104" height="30" rx="6" class="s-box"/><text x="252" y="74" text-anchor="middle" class="s-small s-mono">CUDA graph</text>
+              <path d="M252 86 V 136" class="s-line" marker-end="url(#f4-arrow)"/>
+              <rect x="30" y="206" width="130" height="30" rx="6" class="s-box"/><text x="95" y="226" text-anchor="middle" class="s-small s-mono">to_torch(d.ctrl)</text>
+              <path d="M140 204 L 160 188" class="s-line" marker-end="url(#f4-arrow)"/>
+              <text x="250" y="226" text-anchor="middle" class="s-small s-ok" style="font-weight:700">all see new actions</text>
+            </g>
+            <g class="hot" data-info="<strong>Wrong</strong>: the Python attribute now points at the tensor's memory, but the graph still replays launches with the old address, and old views still look at the old buffer. In eager mode it happens to work, which is why the bug survives until you capture a graph.">
+              <rect x="350" y="44" width="120" height="40" rx="8" class="s-w1"/><text x="410" y="69" text-anchor="middle" font-size="12" fill="#fff" class="s-mono">act (torch)</text>
+              <rect x="430" y="140" width="140" height="44" rx="8" class="s-danger-soft" style="fill:var(--danger-soft)"/><rect x="430" y="140" width="140" height="44" rx="8" fill="none" class="s-danger-stroke"/>
+              <text x="500" y="160" text-anchor="middle" class="s-label">old buffer</text><text x="500" y="176" text-anchor="middle" class="s-small s-mono">ptr 0x...a0</text>
+              <text x="410" y="102" text-anchor="middle" class="s-small" style="font-weight:700">d.ctrl now = this memory</text>
+              <text x="410" y="118" text-anchor="middle" class="s-small">(Python attribute only)</text>
+              <rect x="520" y="54" width="104" height="30" rx="6" class="s-box"/><text x="572" y="74" text-anchor="middle" class="s-small s-mono">CUDA graph</text>
+              <path d="M560 86 V 136" class="s-line" marker-end="url(#f4-arrow)"/>
+              <rect x="350" y="206" width="130" height="30" rx="6" class="s-box"/><text x="415" y="226" text-anchor="middle" class="s-small s-mono">old view</text>
+              <path d="M460 204 L 480 188" class="s-line" marker-end="url(#f4-arrow)"/>
+              <text x="560" y="226" text-anchor="middle" class="s-small" style="font-weight:700;fill:var(--danger-ink)">stale: old values</text>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to either side."></div>
+        <figcaption><span class="fig-num">Figure 4.</span>Copy into the buffer (left) versus rebinding the field (right). Only the left survives a CUDA graph.</figcaption>
+      </figure>
+
+      <p>Example 28.3 closes the loop with a torch controller on <code>CARTPOLE</code>. Observations come out through
+        zero-copy views made <em>once</em> (they follow <code>d.qpos</code> and <code>d.qvel</code> forever, since those
+        are never replaced). The policy is a linear state feedback <span class="math">u = \mathrm{clip}(g_k\,K x, -1, 1)</span>
+        with gains <span class="math">K</span> from an LQR design, scaled by <span class="math">g_k \in [0, 1]</span>
+        across worlds, so world 0 has no controller and world 7 the full one. Actions go in with
+        <code>wp.copy(d.ctrl, wp.from_torch(act.contiguous()))</code>. An equivalent zero-copy form is
+        <code>wp.to_torch(d.ctrl).copy_(act)</code>: torch writes straight into MJWarp's buffer.</p>
+
+      <figure class="code-example" data-file="ex3_torch_ctrl.py">
+        <div class="code-head">
+          <span class="code-title">Example 28.3</span>
+          <span class="code-file">examples/28-interop-torch-and-jax/ex3_torch_ctrl.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 28.3 - a torch policy drives CARTPOLE: zero-copy obs out, actions copied in place.
+
+Every step: torch reads qpos/qvel through zero-copy views, computes a linear feedback action
+per world (gains scaled from 0 to 1 across the worlds), and the action tensor goes into d.ctrl
+with wp.from_torch + wp.copy. d.ctrl is never replaced, so its address (and any view or CUDA
+graph that holds it) stays valid. No training here: the gains come from an LQR design.
+Run: python ex3_torch_ctrl.py [--dump-json PATH]
+  --dump-json PATH writes decimated (cart x, pole angle) per world for the page's replay.
+"""
+import argparse
+import json
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=3, suppress=True)
+
+try:
+    import torch
+except ImportError:
+    torch = None
+    print("skipped: torch not installed")
+
+CARTPOLE = """
+&lt;mujoco model="cartpole"&gt;
+  &lt;option timestep="0.01" integrator="implicitfast"/&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 -2 3" dir="0 1 -1"/&gt;
+    &lt;camera name="front" pos="0 -4 1" xyaxes="1 0 0 0 0 1"/&gt;
+    &lt;geom name="rail" type="capsule" fromto="-2 0 1 2 0 1" size=".02" contype="0" conaffinity="0"/&gt;
+    &lt;body name="cart" pos="0 0 1"&gt;
+      &lt;joint name="slider" type="slide" axis="1 0 0" range="-1.8 1.8" limited="true" damping="0.1"/&gt;
+      &lt;geom name="cart" type="box" size=".2 .1 .05" mass="1" contype="0" conaffinity="0"/&gt;
+      &lt;body name="pole"&gt;
+        &lt;joint name="hinge" type="hinge" axis="0 1 0" damping="0.01"/&gt;
+        &lt;geom name="pole" type="capsule" fromto="0 0 0 0 0 .6" size=".03" mass="0.1"
+              contype="0" conaffinity="0"/&gt;
+      &lt;/body&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+  &lt;actuator&gt;&lt;motor name="push" joint="slider" gear="10" ctrlrange="-1 1" ctrllimited="true"/&gt;&lt;/actuator&gt;
+  &lt;sensor&gt;
+    &lt;jointpos joint="slider"/&gt;&lt;jointpos joint="hinge"/&gt;
+    &lt;jointvel joint="slider"/&gt;&lt;jointvel joint="hinge"/&gt;
+  &lt;/sensor&gt;
+&lt;/mujoco&gt;
+"""
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dump-json", default=None)
+args, _ = parser.parse_known_args()
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 8
+NSTEP = 1000 if ON_GPU else 300
+THETA0 = 0.2  # initial pole tilt [rad]; 0 = upright
+
+if torch is not None:
+    dev = wp.device_to_torch(wp.get_device())  # put torch work on Warp's device
+    mjm = mujoco.MjModel.from_xml_string(CARTPOLE)
+    m = mjw.put_model(mjm)
+    d = mjw.make_data(mjm, nworld=NWORLD)  # no contacts in this model
+
+    d.qpos.assign(np.tile([0.0, THETA0], (NWORLD, 1)).astype(np.float32))
+    ctrl_ptr = d.ctrl.ptr
+
+    # zero-copy views, made once: they follow d.qpos / d.qvel forever (never replaced)
+    q, v = wp.to_torch(d.qpos), wp.to_torch(d.qvel)
+    K = torch.tensor([[0.9, 6.8, 1.1, 1.2]], device=dev)        # LQR gains (x, th, xd, thd)
+    gain = torch.linspace(0.0, 1.0, NWORLD, device=dev)[:, None]  # world k: gain[k] * K
+
+    frames = []
+    for i in range(NSTEP):
+        obs = torch.cat([q, v], dim=1)                     # (nworld, 4), reads Warp memory
+        act = ((obs @ K.T) * gain).clamp(-1.0, 1.0)         # (nworld, 1) == d.ctrl.shape
+        wp.copy(d.ctrl, wp.from_torch(act.contiguous()))   # copy INTO d.ctrl, same address
+        mjw.step(m, d)
+        if args.dump_json and i % 5 == 0:
+            qp = d.qpos.numpy()
+            frames.append([[round(float(a), 3) for a in row] for row in qp])
+    wp.synchronize()
+
+    theta = d.qpos.numpy()[:, 1]
+    wrapped = (theta + np.pi) % (2 * np.pi) - np.pi  # a pole that fell may have spun around
+    print("device:", wp.get_device(), "| nworld:", NWORLD, "| steps:", NSTEP)
+    print("gain scale per world:", gain[:8, 0].cpu().numpy())
+    print("final pole angle [rad]:", theta[:8])
+    upright = np.abs(wrapped) &lt; 0.05
+    print(f"mean |wrapped pole angle| = {np.abs(wrapped).mean():.3f} rad; upright worlds: "
+          f"{int(upright.sum())}/{NWORLD}")
+    print("d.ctrl address unchanged:", d.ctrl.ptr == ctrl_ptr)
+
+    if args.dump_json:
+        with open(args.dump_json, "w") as f:
+            json.dump({"nworld": NWORLD, "dt": 5 * float(mjm.opt.timestep), "kind": "cartpole",
+                       "labels": [f"g={g:.2f}" for g in gain[:, 0].cpu().tolist()],
+                       "frames": frames}, f, separators=(",", ":"))
+        print("wrote", args.dump_json, len(frames), "frames")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 28.3"</span><span>CPU: <code>python -I ex3_torch_ctrl.py --dump-json data/ex3.json</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=8, 300 steps; on GPU nworld=4096, 1000 steps</span></summary>
+<pre class="output">device: cpu | nworld: 8 | steps: 300
+gain scale per world: [0.    0.143 0.286 0.429 0.571 0.714 0.857 1.   ]
+final pole angle [rad]: [  2.9   -16.053  -0.206   0.006   0.002   0.003   0.004   0.004]
+mean |wrapped pole angle| = 0.740 rad; upright worlds: 5/8
+d.ctrl address unchanged: True
+wrote data/ex3.json 60 frames</pre>
+        </details>
+      </figure>
+
+      <figure class="fig replay" id="cp-replay">
+        <div class="fig-frame"><canvas aria-label="Replay of eight cartpole worlds driven by a torch policy with gains from 0 to 1"></canvas></div>
+        <div class="replay-controls"><button class="btn btn-sm anim-toggle"></button><input type="range"><span class="replay-time"></span><span class="badge data-driven">Real data</span></div>
+        <div class="fig-caption-line" data-placeholder="Tap a world (or focus the canvas and use arrow keys) to highlight it."></div>
+        <figcaption><span class="fig-num">Figure 5.</span>The eight worlds of Example 28.3: cart position (m) and pole angle (rad), from <code>ex3_torch_ctrl.py --dump-json</code>, mujoco-warp 4.0.1, CPU run, nworld=8, 300 steps (every 5th step shown). Low gains (w0, w1) let the pole fall; from about g = 0.43 the controller holds it upright.</figcaption>
+        <script type="application/json" id="data-ch28-ex3" data-json-file="examples/28-interop-torch-and-jax/data/ex3.json">{"nworld":8,"dt":0.05,"kind":"cartpole","labels":["g=0.00","g=0.14","g=0.29","g=0.43","g=0.57","g=0.71","g=0.86","g=1.00"],"frames":[[[-0.0,0.2],[0.0,0.2],[0.0,0.2],[0.001,0.199],[0.001,0.199],[0.001,0.198],[0.001,0.198],[0.001,0.198]],[[-0.0,0.21],[0.004,0.201],[0.008,0.192],[0.011,0.184],[0.014,0.177],[0.017,0.17],[0.019,0.166],[0.019,0.165]],[[-0.001,0.233],[0.012,0.202],[0.023,0.176],[0.032,0.155],[0.039,0.138],[0.045,0.124],[0.049,0.115],[0.052,0.109]],[[-0.002,0.268],[0.026,0.202],[0.047,0.153],[0.062,0.117],[0.073,0.091],[0.08,0.072],[0.085,0.06],[0.088,0.053]],[[-0.003,0.319],[0.046,0.201],[0.077,0.124],[0.097,0.074],[0.109,0.042],[0.117,0.022],[0.121,0.011],[0.123,0.005]],[[-0.005,0.387],[0.071,0.198],[0.113,0.09],[0.135,0.03],[0.146,-0.003],[0.152,-0.021],[0.154,-0.029],[0.155,-0.032]],[[-0.007,0.474],[0.102,0.192],[0.153,0.052],[0.174,-0.014],[0.182,-0.043],[0.183,-0.054],[0.182,-0.057],[0.181,-0.057]],[[-0.01,0.586],[0.14,0.183],[0.196,0.012],[0.213,-0.054],[0.214,-0.075],[0.21,-0.078],[0.206,-0.076],[0.202,-0.073]],[[-0.013,0.726],[0.185,0.17],[0.241,-0.03],[0.248,-0.088],[0.241,-0.098],[0.231,-0.094],[0.224,-0.087],[0.219,-0.082]],[[-0.016,0.9],[0.235,0.152],[0.285,-0.071],[0.279,-0.116],[0.262,-0.114],[0.247,-0.102],[0.237,-0.092],[0.232,-0.085]],[[-0.019,1.111],[0.292,0.129],[0.328,-0.11],[0.305,-0.138],[0.278,-0.122],[0.258,-0.104],[0.247,-0.092],[0.24,-0.084]],[[-0.021,1.365],[0.355,0.101],[0.367,-0.147],[0.324,-0.152],[0.288,-0.124],[0.265,-0.101],[0.252,-0.088],[0.246,-0.08]],[[-0.022,1.665],[0.423,0.067],[0.402,-0.179],[0.338,-0.16],[0.293,-0.121],[0.268,-0.095],[0.255,-0.082],[0.249,-0.075]],[[-0.019,2.011],[0.495,0.027],[0.431,-0.207],[0.344,-0.16],[0.294,-0.113],[0.267,-0.087],[0.254,-0.074],[0.249,-0.068]],[[-0.013,2.399],[0.572,-0.019],[0.453,-0.229],[0.344,-0.155],[0.289,-0.102],[0.263,-0.077],[0.252,-0.066],[0.247,-0.061]],[[-0.004,2.815],[0.652,-0.071],[0.466,-0.245],[0.338,-0.145],[0.282,-0.089],[0.257,-0.066],[0.247,-0.058],[0.244,-0.054]],[[0.007,3.237],[0.733,-0.128],[0.471,-0.254],[0.326,-0.13],[0.271,-0.075],[0.249,-0.056],[0.241,-0.049],[0.239,-0.047]],[[0.017,3.634],[0.814,-0.192],[0.466,-0.255],[0.309,-0.112],[0.258,-0.061],[0.24,-0.045],[0.234,-0.041],[0.233,-0.04]],[[0.024,3.982],[0.894,-0.26],[0.452,-0.249],[0.289,-0.091],[0.244,-0.046],[0.23,-0.036],[0.226,-0.034],[0.227,-0.034]],[[0.027,4.27],[0.971,-0.334],[0.427,-0.235],[0.265,-0.069],[0.228,-0.033],[0.219,-0.027],[0.217,-0.027],[0.219,-0.028]],[[0.028,4.492],[1.042,-0.411],[0.394,-0.214],[0.238,-0.046],[0.212,-0.02],[0.207,-0.019],[0.208,-0.021],[0.211,-0.023]],[[0.028,4.648],[1.106,-0.492],[0.352,-0.186],[0.211,-0.024],[0.196,-0.009],[0.196,-0.012],[0.198,-0.015],[0.202,-0.018]],[[0.027,4.74],[1.159,-0.577],[0.302,-0.152],[0.183,-0.003],[0.18,0.0],[0.184,-0.006],[0.189,-0.011],[0.193,-0.013]],[[0.027,4.771],[1.2,-0.664],[0.246,-0.112],[0.155,0.016],[0.164,0.008],[0.172,-0.001],[0.179,-0.006],[0.184,-0.009]],[[0.026,4.743],[1.225,-0.755],[0.184,-0.068],[0.128,0.033],[0.149,0.015],[0.161,0.003],[0.169,-0.003],[0.175,-0.006]],[[0.025,4.659],[1.231,-0.848],[0.118,-0.021],[0.103,0.047],[0.135,0.02],[0.15,0.007],[0.159,0.001],[0.166,-0.003]],[[0.024,4.52],[1.215,-0.947],[0.051,0.028],[0.08,0.059],[0.122,0.024],[0.14,0.009],[0.15,0.003],[0.157,0.0]],[[0.021,4.33],[1.176,-1.058],[-0.017,0.077],[0.06,0.068],[0.11,0.026],[0.13,0.012],[0.14,0.006],[0.148,0.002]],[[0.018,4.092],[1.114,-1.189],[-0.083,0.125],[0.042,0.073],[0.099,0.028],[0.12,0.013],[0.131,0.008],[0.139,0.004]],[[0.012,3.815],[1.03,-1.349],[-0.146,0.17],[0.027,0.076],[0.09,0.028],[0.111,0.015],[0.122,0.009],[0.13,0.006]],[[0.004,3.509],[0.923,-1.547],[-0.204,0.211],[0.015,0.077],[0.081,0.028],[0.102,0.015],[0.114,0.01],[0.122,0.008]],[[-0.005,3.192],[0.793,-1.793],[-0.255,0.247],[0.006,0.075],[0.073,0.027],[0.094,0.016],[0.106,0.011],[0.114,0.009]],[[-0.014,2.885],[0.638,-2.099],[-0.298,0.277],[0.0,0.071],[0.066,0.026],[0.087,0.016],[0.098,0.012],[0.106,0.01]],[[-0.021,2.608],[0.458,-2.473],[-0.331,0.3],[-0.004,0.065],[0.06,0.025],[0.079,0.016],[0.09,0.013],[0.098,0.01]],[[-0.027,2.374],[0.252,-2.914],[-0.353,0.316],[-0.005,0.058],[0.054,0.023],[0.073,0.016],[0.083,0.013],[0.091,0.011]],[[-0.03,2.193],[0.021,-3.405],[-0.365,0.323],[-0.005,0.05],[0.049,0.021],[0.067,0.016],[0.077,0.013],[0.084,0.011]],[[-0.032,2.068],[-0.229,-3.907],[-0.364,0.321],[-0.003,0.042],[0.045,0.019],[0.061,0.015],[0.07,0.013],[0.078,0.012]],[[-0.033,1.999],[-0.496,-4.378],[-0.351,0.31],[0.0,0.033],[0.041,0.018],[0.055,0.015],[0.064,0.013],[0.071,0.012]],[[-0.034,1.986],[-0.779,-4.788],[-0.326,0.29],[0.004,0.024],[0.038,0.016],[0.05,0.014],[0.059,0.013],[0.065,0.012]],[[-0.033,2.027],[-1.079,-5.123],[-0.289,0.262],[0.009,0.016],[0.035,0.014],[0.046,0.014],[0.054,0.013],[0.06,0.012]],[[-0.032,2.119],[-1.4,-5.373],[-0.242,0.225],[0.014,0.008],[0.032,0.012],[0.042,0.013],[0.049,0.012],[0.055,0.012]],[[-0.03,2.258],[-1.742,-5.537],[-0.185,0.18],[0.019,0.002],[0.03,0.011],[0.038,0.012],[0.044,0.012],[0.05,0.012]],[[-0.027,2.437],[-1.804,-6.153],[-0.12,0.129],[0.024,-0.004],[0.027,0.01],[0.034,0.012],[0.04,0.012],[0.045,0.011]],[[-0.023,2.649],[-1.801,-6.847],[-0.049,0.073],[0.028,-0.009],[0.025,0.009],[0.031,0.011],[0.036,0.011],[0.041,0.011]],[[-0.017,2.881],[-1.801,-7.538],[0.026,0.013],[0.032,-0.013],[0.024,0.007],[0.028,0.01],[0.032,0.011],[0.037,0.011]],[[-0.011,3.121],[-1.8,-8.255],[0.104,-0.047],[0.035,-0.016],[0.022,0.007],[0.025,0.01],[0.029,0.01],[0.033,0.01]],[[-0.005,3.352],[-1.8,-8.994],[0.18,-0.108],[0.038,-0.018],[0.021,0.006],[0.023,0.009],[0.026,0.01],[0.029,0.01]],[[-0.001,3.559],[-1.8,-9.728],[0.255,-0.166],[0.039,-0.019],[0.019,0.005],[0.02,0.008],[0.023,0.009],[0.026,0.01]],[[0.003,3.733],[-1.8,-10.415],[0.324,-0.221],[0.04,-0.019],[0.018,0.005],[0.018,0.008],[0.021,0.009],[0.023,0.009]],[[0.005,3.865],[-1.8,-11.03],[0.387,-0.27],[0.04,-0.018],[0.017,0.004],[0.016,0.007],[0.018,0.008],[0.021,0.009]],[[0.007,3.952],[-1.8,-11.564],[0.441,-0.312],[0.039,-0.017],[0.015,0.004],[0.015,0.007],[0.016,0.008],[0.018,0.008]],[[0.007,3.992],[-1.8,-12.029],[0.484,-0.347],[0.037,-0.015],[0.014,0.003],[0.013,0.006],[0.014,0.007],[0.016,0.008]],[[0.006,3.986],[-1.8,-12.447],[0.515,-0.372],[0.035,-0.013],[0.013,0.003],[0.012,0.006],[0.012,0.007],[0.014,0.007]],[[0.005,3.936],[-1.8,-12.842],[0.532,-0.388],[0.033,-0.01],[0.012,0.003],[0.01,0.005],[0.011,0.006],[0.012,0.007]],[[0.002,3.846],[-1.8,-13.236],[0.535,-0.394],[0.03,-0.008],[0.011,0.003],[0.009,0.005],[0.009,0.006],[0.01,0.007]],[[-0.001,3.72],[-1.8,-13.651],[0.523,-0.388],[0.027,-0.005],[0.011,0.002],[0.008,0.004],[0.008,0.005],[0.008,0.006]],[[-0.005,3.566],[-1.8,-14.1],[0.495,-0.372],[0.024,-0.002],[0.01,0.002],[0.007,0.004],[0.007,0.005],[0.007,0.006]],[[-0.01,3.392],[-1.8,-14.588],[0.452,-0.343],[0.02,0.0],[0.009,0.002],[0.006,0.004],[0.006,0.005],[0.006,0.005]],[[-0.015,3.211],[-1.8,-15.108],[0.395,-0.304],[0.017,0.002],[0.008,0.002],[0.006,0.003],[0.005,0.004],[0.005,0.005]],[[-0.021,3.033],[-1.8,-15.639],[0.325,-0.253],[0.014,0.004],[0.008,0.002],[0.005,0.003],[0.004,0.004],[0.004,0.005]]]}</script>
+      </figure>
+
+      <div class="callout tip"><p class="callout-title">Tip: do the per-step work on the device</p><p>Everything in the
+        loop above stays on Warp's device: <code>torch.cat</code> of two views, a matmul, a clamp, one
+        <code>wp.copy</code>. The only host reads are at the end. Ch 30 turns this pattern into the
+        <code>CartpoleEnv</code> wrapper (torch backend), with the step graph-captured (Ch 24) and
+        observations and rewards from kernels (Ch 26).</p></div>
+    </section>
+
+    <!-- ===================== 4. JAX BRIDGE ===================== -->
+    <section class="sec" id="jax-bridge">
+      <h2><span class="sec-num">4</span>The JAX bridge: <code>mjw.step</code> as a JAX op</h2>
+      <p>JAX is different from torch in two ways that matter here. Its arrays are <strong>immutable</strong>: a
+        function never changes its inputs, it returns new arrays. And JAX code is <strong>traced and compiled</strong>:
+        <code>jax.jit</code> turns a Python function into one XLA program, and <code>jax.lax.scan</code> turns a loop into
+        a single compiled loop. A live zero-copy view of MJWarp state fits neither idea. Example 28.4 shows why: the
+        "immutable" <code>jax.Array</code> from <code>wp.to_jax(d.qpos)</code> changes when MJWarp steps.</p>
+      <p>The bridge that works is <abbr class="gl" data-term="jax-callable" title="Warp function that turns an annotated Python function of Warp arrays into a JAX operation (an XLA FFI custom call).">wp.jax_callable</abbr>.
+        It turns a Python function whose arguments are annotated Warp arrays into a JAX operation: an XLA
+        <em>foreign function interface</em> (FFI) call. XLA allocates the input and output buffers; when the compiled
+        program reaches the call, Warp wraps those buffers as Warp arrays (no copy) and runs your function on them. Your
+        function copies the inputs into MJWarp's own Data, steps, and copies the results into the outputs. From JAX's
+        side it is a pure function <code>(qpos, qvel) -&gt; (qpos', qvel')</code>.</p>
+
+      <h3>Step 0: the environment, before <code>import jax</code></h3>
+      <p>Three variables must be in <code>os.environ</code> before JAX starts its backend, because XLA reads them once.
+        The only placement that is always early enough is before the first <code>import jax</code>, which is why the
+        notebook sets them in a cell of their own.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Variable</th><th>Value</th><th>Why (source)</th></tr></thead>
+          <tbody>
+            <tr><td><code>XLA_FLAGS</code></td><td class="mono">--xla_gpu_graph_min_graph_size=1</td><td>Lets XLA capture regions as small as one op in its own CUDA graphs. For the Warp call that matters only in <code>graph_mode=JAX</code> (the Apollo notebook, which keeps the default), where XLA may capture it; in <code>WARP</code> mode, the course's choice, Warp captures the graph itself and the flag is harmless. Set by <code>jax_test.py</code>, <code>contrib/jax_unroll.py</code> and the Apollo notebook ("this ensures JAX embeds Warp kernels into its own computation graph").</td></tr>
+            <tr><td><code>XLA_PYTHON_CLIENT_ALLOCATOR</code></td><td class="mono">platform</td><td>"Force JAX to allocate memory on demand and deallocate when not needed (slow)" (<code>jax_test.py</code>). Otherwise JAX's allocator reserves a large share of GPU memory and Warp's buffers do not fit.</td></tr>
+            <tr><td><code>XLA_PYTHON_CLIENT_PREALLOCATE</code></td><td class="mono">false</td><td>Do not preallocate at start-up. A simpler alternative to the allocator switch on Colab; the course sets both.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout pitfall"><p class="callout-title">Pitfall: never <code>pip install jax</code> on Colab</p><p>Colab
+        ships a matched <code>jax</code> + <code>jaxlib</code> + CUDA plugin. Installing <code>jax</code> on top can replace
+        one of them and leave a CPU-only or broken JAX. Use the preinstalled one. If you imported JAX before setting the
+        variables, restart the runtime. (The repo's own <code>pip install "mujoco-warp[cuda]"</code> extra pulls
+        <code>jax[cuda12]</code>; <code>pyproject.toml</code> marks both JAX extras "temporary, remove after we land
+        MJX:Warp".)</p></div>
+
+      <figure class="code-example" data-file="ex4_jax_env_flags.py">
+        <div class="code-head">
+          <span class="code-title">Example 28.4</span>
+          <span class="code-file">examples/28-interop-torch-and-jax/ex4_jax_env_flags.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 28.4 - the three XLA environment variables, set BEFORE the first `import jax`.
+
+XLA reads these once, when its backend starts (the first jax computation or jax.devices() call);
+later changes are ignored. Setting them before `import jax` is the one placement that is always
+early enough:
+  XLA_FLAGS=--xla_gpu_graph_min_graph_size=1  lets XLA capture one-op regions in its own CUDA
+                                              graphs; for the Warp call that matters only in
+                                              graph_mode=JAX (the Apollo notebook, which keeps
+                                              the default); in WARP mode Warp captures the
+                                              graph itself and the flag is harmless; set by
+                                              jax_test.py, jax_unroll.py and Apollo
+  XLA_PYTHON_CLIENT_ALLOCATOR=platform        allocate on demand, free when done (jax_test.py)
+  XLA_PYTHON_CLIENT_PREALLOCATE=false         do not grab most of the GPU memory at start-up
+Without the last two, JAX preallocates a large fraction of GPU memory and Warp (MJWarp's
+buffers) can run out. Uses the installed JAX (on Colab: the preinstalled one); skips without it.
+Then: wp.to_jax(d.qpos) is a zero-copy DLPack view, so the "immutable" jax.Array changes when
+MJWarp steps. That is why the bridge in Example 28.5 copies in and out instead.
+Run: python ex4_jax_env_flags.py
+"""
+import os
+import sys
+
+XLA_ENV = {
+    "XLA_FLAGS": "--xla_gpu_graph_min_graph_size=1",
+    "XLA_PYTHON_CLIENT_ALLOCATOR": "platform",
+    "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+}
+already = "jax" in sys.modules  # True if something imported jax earlier in this process
+for k, v in XLA_ENV.items():
+    os.environ[k] = v
+    print(f"{k}={os.environ[k]}")
+if already:
+    print("WARNING: jax was imported before these were set; restart the runtime to apply them")
+
+try:
+    import jax
+except ImportError:
+    jax = None
+    print("skipped: jax not installed")
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+BALL_DROP = """
+&lt;mujoco model="ball_drop"&gt;
+  &lt;option timestep="0.002"/&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 0 3" dir="0 0 -1"/&gt;
+    &lt;geom name="floor" type="plane" size="5 5 .1" rgba=".8 .8 .8 1"/&gt;
+    &lt;body name="ball" pos="0 0 1"&gt;
+      &lt;freejoint/&gt;
+      &lt;geom name="ball" type="sphere" size=".1" mass="1" rgba="1 .3 .3 1"/&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+&lt;/mujoco&gt;
+"""
+
+if jax is not None:
+    print("jax", jax.__version__, "| default backend:", jax.default_backend(),
+          "| devices:", jax.devices())
+    print("warp", wp.__version__, "| warp device:", wp.get_device())
+    same = (jax.default_backend() == "gpu") == wp.get_device().is_cuda
+    print("JAX and Warp on the same kind of device:", same)
+    if jax.default_backend() != "gpu":
+        print("note: the GPU examples (WARP graph mode) need jax.default_backend() == 'gpu';"
+              " Examples 28.5-28.6 fall back to the CPU path")
+
+    mjm = mujoco.MjModel.from_xml_string(BALL_DROP)
+    m = mjw.put_model(mjm)
+    d = mjw.make_data(mjm, nworld=2, nconmax=4, njmax=16)
+    jq = wp.to_jax(d.qpos)                       # DLPack: no copy
+    z_before = np.asarray(jq[:, 2]).copy()
+    for _ in range(100):
+        mjw.step(m, d)
+    wp.synchronize()
+    print("wp.to_jax(d.qpos):", type(jq).__name__, jq.shape, jq.dtype)
+    print("z read before steps:", z_before,
+          "| same jax.Array after 100 steps:", np.asarray(jq[:, 2]))
+    del jq  # release the DLPack view while Warp is still loaded (avoids a noisy exit)</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 28.4" (after the XLA cell)</span><span>CPU: <code>python -I ex4_jax_env_flags.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run with jax 0.12.1 (CPU); on Colab the backend is <code>gpu</code> and the device <code>CudaDevice(id=0)</code> (<span class="badge colab-only">from Colab, not CPU-verified</span>)</span></summary>
+<pre class="output">XLA_FLAGS=--xla_gpu_graph_min_graph_size=1
+XLA_PYTHON_CLIENT_ALLOCATOR=platform
+XLA_PYTHON_CLIENT_PREALLOCATE=false
+jax 0.12.1 | default backend: cpu | devices: [CpuDevice(id=0)]
+warp 1.19.0 | warp device: cpu
+JAX and Warp on the same kind of device: True
+note: the GPU examples (WARP graph mode) need jax.default_backend() == 'gpu'; Examples 28.5-28.6 fall back to the CPU path
+wp.to_jax(d.qpos): ArrayImpl (2, 7) float32
+z read before steps: [1. 1.] | same jax.Array after 100 steps: [0.8018 0.8018]</pre>
+        </details>
+      </figure>
+
+      <h3>The bridge, piece by piece</h3>
+      <figure class="fig" data-anim>
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 720 300" role="img" aria-labelledby="f6t f6d" style="min-width:560px">
+            <title id="f6t">The JAX bridge: lax.scan calls jax_callable, which copies in, steps and copies out</title>
+            <desc id="f6d">A gate labelled set XLA env vars before import jax leads into a jax.jit box. Inside, lax.scan loops over a jax_callable node. The node runs the Warp function: copy in to d, mjw.step, copy out. Arrows return the outputs to the scan carry.</desc>
+            <defs><marker id="f6-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <g class="hot" data-info="<strong>The gate</strong>: <code>XLA_FLAGS</code>, <code>XLA_PYTHON_CLIENT_ALLOCATOR=platform</code>, <code>XLA_PYTHON_CLIENT_PREALLOCATE=false</code> go into <code>os.environ</code> before <code>import jax</code>.">
+              <rect x="10" y="40" width="96" height="220" rx="10" class="s-warn" opacity=".18"/>
+              <rect x="10" y="40" width="96" height="220" rx="10" fill="none" class="s-warn-stroke"/>
+              <text x="58" y="72" text-anchor="middle" class="s-label">set env</text>
+              <text x="58" y="90" text-anchor="middle" class="s-small">XLA_FLAGS</text>
+              <text x="58" y="106" text-anchor="middle" class="s-small">ALLOCATOR</text>
+              <text x="58" y="122" text-anchor="middle" class="s-small">PREALLOCATE</text>
+              <text x="58" y="236" text-anchor="middle" class="s-small">before</text>
+              <text x="58" y="250" text-anchor="middle" class="s-small s-mono">import jax</text>
+            </g>
+            <path d="M108 150 H 132" class="s-line" marker-end="url(#f6-arrow)"/>
+            <g class="hot" data-info="<strong>jax.jit(unroll)</strong>: the whole rollout becomes one XLA program. <code>.lower(qpos, qvel).compile()</code> fixes shapes: NWORLD is baked in.">
+              <rect x="136" y="18" width="576" height="270" rx="14" class="s-box-2"/>
+              <text x="152" y="40" class="s-label">jax.jit(unroll): one compiled XLA program</text>
+            </g>
+            <g class="hot" data-info="<strong>lax.scan</strong>: the carry <code>(qpos, qvel)</code> goes into the Warp op and its outputs become the next carry. <code>length=UNROLL_LENGTH</code> iterations, no Python in between.">
+              <rect x="156" y="60" width="150" height="70" rx="10" class="s-accent2-soft"/>
+              <text x="231" y="88" text-anchor="middle" class="s-label">lax.scan</text>
+              <text x="231" y="108" text-anchor="middle" class="s-small s-mono">carry = (qpos, qvel)</text>
+            </g>
+            <path d="M306 95 H 352" class="s-accent-stroke anim-flow" marker-end="url(#f6-arrow)"/>
+            <g class="hot" data-info="<strong>warp_step_fn = wp.jax_callable(warp_step, num_outputs=2, graph_mode=WARP, output_dims=...)</strong>: an FFI custom call. <code>output_dims</code> tells XLA how big the outputs are, so it can allocate them.">
+              <rect x="356" y="56" width="180" height="78" rx="10" class="s-accent-soft"/>
+              <rect x="356" y="56" width="180" height="78" rx="10" fill="none" class="s-accent-stroke"/>
+              <text x="446" y="84" text-anchor="middle" class="s-label">jax_callable</text>
+              <text x="446" y="102" text-anchor="middle" class="s-small s-mono">FFI call, graph_mode</text>
+              <text x="446" y="118" text-anchor="middle" class="s-small s-mono">output_dims fixed</text>
+            </g>
+            <g class="hot" data-info="<strong>Copy in</strong>: <code>wp.copy(d.qpos, qpos_in)</code>, <code>wp.copy(d.qvel, qvel_in)</code>. XLA owns <code>qpos_in</code>; MJWarp keeps its own buffers in <code>d</code>.">
+              <rect x="356" y="170" width="100" height="44" rx="8" class="s-box"/>
+              <text x="406" y="190" text-anchor="middle" class="s-small" style="font-weight:700">copy in</text>
+              <text x="406" y="205" text-anchor="middle" class="s-small s-mono">to d</text>
+            </g>
+            <g class="hot" data-info="<strong>mjw.step(m, d)</strong>: the ordinary MJWarp step, closed over the global <code>m</code> and <code>d</code>. With graph mode WARP it is recorded in a CUDA graph on the first call and replayed later.">
+              <rect x="470" y="170" width="100" height="44" rx="8" class="s-w0"/>
+              <text x="520" y="197" text-anchor="middle" font-size="12" fill="#fff" class="s-mono">mjw.step</text>
+            </g>
+            <g class="hot" data-info="<strong>Copy out</strong>: <code>wp.copy(qpos_out, d.qpos)</code>, <code>wp.copy(qvel_out, d.qvel)</code> into the buffers XLA allocated from <code>output_dims</code>.">
+              <rect x="584" y="170" width="100" height="44" rx="8" class="s-box"/>
+              <text x="634" y="190" text-anchor="middle" class="s-small" style="font-weight:700">copy out</text>
+              <text x="634" y="205" text-anchor="middle" class="s-small s-mono">to outputs</text>
+            </g>
+            <path d="M446 136 V 166" class="s-line" marker-end="url(#f6-arrow)"/>
+            <path d="M458 192 H 466" class="s-line" marker-end="url(#f6-arrow)"/>
+            <path d="M572 192 H 580" class="s-line" marker-end="url(#f6-arrow)"/>
+            <path d="M634 216 V 250 H 231 V 134" class="s-accent-stroke anim-flow" marker-end="url(#f6-arrow)"/>
+            <text x="430" y="268" text-anchor="middle" class="s-small">outputs become the next carry</text>
+            <g class="hot" data-info="<strong>Captured graph</strong>: in WARP mode Warp records the whole Python function (copies + step) as one CUDA graph per set of buffer addresses, and replays it.">
+              <rect x="350" y="160" width="340" height="62" rx="10" fill="none" class="s-accent2-stroke s-dashed"/>
+              <text x="684" y="156" text-anchor="end" class="s-small">CUDA graph (WARP mode)</text>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="badge illustrative">Illustrative</span></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a box to read about it."></div>
+        <figcaption><span class="fig-num">Figure 6.</span>The JAX bridge from <code>_src/jax_test.py</code>: the env gate, the jitted scan, the FFI call and the Warp function inside it.</figcaption>
+      </figure>
+
+      <p>The pieces, as <code>_src/jax_test.py</code> writes them:</p>
+      <ul>
+        <li><strong>A closure over <code>m</code> and <code>d</code>.</strong> <code>warp_step(qpos_in, qvel_in, qpos_out, qvel_out)</code>
+          does not take the model or data as arguments; it uses the ones in scope. Inputs come first, outputs last
+          (a <code>jax_callable</code> rule), and every argument has a Warp array annotation
+          (<code>wp.array2d[wp.float32]</code>).</li>
+        <li><strong><code>num_outputs=2</code> and <code>output_dims</code>.</strong> XLA allocates outputs before it
+          calls you, so their shapes are given up front: <code>{"qpos_out": (NWORLD, nq), "qvel_out": (NWORLD, nv)}</code>.
+          This is why NWORLD is fixed for a compiled program. The call returns a <em>list</em>; unpack it
+          (<code>qpos, qvel = warp_step_fn(...)</code>) or <code>lax.scan</code> complains that the carry changed from a
+          tuple to a list.</li>
+        <li><strong><code>graph_mode=wp.JaxCallableGraphMode.WARP</code>.</strong> Warp, not XLA, captures the CUDA graph.
+          The docstring says to use this mode "when the callable cannot be used as a subgraph, such as when it uses
+          conditional graph nodes", which <code>mjw.step</code> does when <code>m.opt.graph_conditional</code> is true
+          (the solver's <code>capture_while</code>).</li>
+        <li><strong>An explicit <code>m.opt.graph_conditional</code>.</strong> <code>jax_test.py</code> runs both values.
+          The course sets <code>ON_GPU and wp.is_conditional_graph_supported()</code>: conditional nodes need CUDA
+          12.4+ (<a href="24-cuda-graphs.html">Ch 24</a>). The fallback branch in <code>solver.py::_solve</code> (a fixed
+          Python loop of <code>m.opt.iterations</code> iterations) carries the comment "This branch is mostly for when JAX
+          is used as it is currently not compatible with CUDA graph conditional": that is the situation where XLA
+          captures (<code>graph_mode=JAX</code>). With <code>WARP</code> mode, Warp captures. <code>jax_test.py</code> runs both
+          settings in <code>WARP</code> mode (GPU only, and its only check is that the call does not raise; not run in
+          this course). If a capture fails on your setup, <code>False</code> is the safe choice.</li>
+        <li><strong>A skip guard.</strong> The test skips unless <code>jax.default_backend() == "gpu"</code> and
+          <code>wp.get_device().is_cuda</code>.</li>
+      </ul>
+
+      <div class="widget" id="gm-widget">
+        <p class="widget-title">Graph modes of <code>wp.jax_callable</code> <span class="badge">warp 1.19 docstring</span></p>
+        <div class="seg" role="group" aria-label="Choose a graph mode" id="gm-seg">
+          <button type="button" aria-pressed="false" data-k="NONE">NONE</button>
+          <button type="button" aria-pressed="false" data-k="JAX">JAX (default)</button>
+          <button type="button" aria-pressed="true" data-k="WARP">WARP</button>
+          <button type="button" aria-pressed="false" data-k="WARP_STAGED">WARP_STAGED</button>
+          <button type="button" aria-pressed="false" data-k="WARP_STAGED_EX">WARP_STAGED_EX</button>
+        </div>
+        <div class="gm-panel" id="gm-panel" aria-live="polite"></div>
+      </div>
+
+      <p>What happens on each call in WARP mode is worth seeing step by step, because it explains two surprises: the
+        Python body of <code>warp_step</code> does not run on every step, and the graph is tied to buffer
+        addresses.</p>
+
+      <div class="stepper" aria-label="Stepper: one jax_callable call in WARP graph mode">
+        <div class="stepper-head"><h4>One FFI call in WARP mode</h4><span class="stepper-fn">warp/_src/jax/ffi.py::FfiCallable.ffi_callback</span><span class="badge">simplified</span></div>
+        <div class="stepper-body">
+          <div class="stepper-fig">
+            <svg viewBox="0 0 360 250" role="img" aria-label="XLA calls the Warp FFI handler, which looks up a graph cache keyed by buffer addresses">
+              <defs><marker id="st-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+              <rect x="8" y="10" width="150" height="54" rx="8" class="s-accent2-soft"/>
+              <text x="83" y="32" text-anchor="middle" class="s-label">XLA program</text>
+              <text x="83" y="50" text-anchor="middle" class="s-small s-mono" data-steps="0-5">call #1: in A, out B</text>
+              <text x="83" y="50" text-anchor="middle" class="s-small s-mono" data-steps="6">call #2: in A, out B</text>
+              <text x="83" y="50" text-anchor="middle" class="s-small s-mono" data-steps="7">call #3: in B, out C</text>
+              <path d="M160 37 H 196" class="s-line" marker-end="url(#st-arrow)"/>
+              <rect x="200" y="10" width="152" height="54" rx="8" class="s-box"/>
+              <text x="276" y="32" text-anchor="middle" class="s-label">ffi_callback</text>
+              <text x="276" y="50" text-anchor="middle" class="s-small s-mono">+ XLA's cuda stream</text>
+              <text x="8" y="92" class="s-small">self.captures (LRU, graph_cache_max = 32)</text>
+              <rect x="8" y="100" width="344" height="34" rx="6" class="s-box-2"/>
+              <text x="20" y="122" class="s-small s-mono" data-steps="0-4">(empty)</text>
+              <g data-steps="5-6"><rect x="14" y="105" width="150" height="24" rx="5" class="s-ok" opacity=".35"/><text x="89" y="122" text-anchor="middle" class="s-small s-mono">key(A,B) -&gt; graph 1</text></g>
+              <g data-steps="7"><rect x="14" y="105" width="150" height="24" rx="5" class="s-ok" opacity=".35"/><text x="89" y="122" text-anchor="middle" class="s-small s-mono">key(A,B) -&gt; graph 1</text>
+                <rect x="172" y="105" width="150" height="24" rx="5" class="s-warn" opacity=".35"/><text x="247" y="122" text-anchor="middle" class="s-small s-mono">key(B,C) -&gt; graph 2</text></g>
+              <rect x="8" y="150" width="166" height="44" rx="8" class="s-box" data-active="4"/>
+              <text x="91" y="170" text-anchor="middle" class="s-small" style="font-weight:700">run Python warp_step</text>
+              <text x="91" y="186" text-anchor="middle" class="s-small s-mono">under ScopedCapture</text>
+              <rect x="186" y="150" width="166" height="44" rx="8" class="s-box" data-active="5,6"/>
+              <text x="269" y="170" text-anchor="middle" class="s-small" style="font-weight:700">launch graph</text>
+              <text x="269" y="186" text-anchor="middle" class="s-small s-mono">on XLA's stream</text>
+              <text x="8" y="222" class="s-small s-mono" data-steps="0-2">Python body ran: 0 times</text>
+              <text x="8" y="222" class="s-small s-mono" data-steps="3-6">Python body ran: 1 time</text>
+              <text x="8" y="222" class="s-small s-mono" data-steps="7">Python body ran: 2 times</text>
+              <text x="8" y="242" class="s-small s-mono" data-steps="6" style="fill:var(--ok)">cache hit: no Python, no capture</text>
+              <text x="8" y="242" class="s-small s-mono" data-steps="7" style="fill:var(--warn-ink)">miss: new addresses, capture again</text>
+            </svg>
+          </div>
+          <div class="stepper-side">
+            <pre class="stepper-code">ip = [inputs[i].data for i in array_in]
+op = [outputs[i].data for i in array_out]
+key = hash((device, call_id, *ip, *op))
+capture = self.captures.get(key)
+if capture is not None:
+    wp_cuda_graph_launch(capture.graph, stream)
+    return              # early out
+args = _build_arg_list(inputs, outputs)
+with ScopedStream(stream):
+    with ScopedCapture() as c:
+        self.func(*args)  # your warp_step
+capture_launch(c.graph)
+self.captures[key] = c  # LRU, max 32</pre>
+            <table class="stepper-vars"></table>
+          </div>
+        </div>
+        <div class="stepper-caption" aria-live="polite"></div>
+        <div class="stepper-controls">
+          <button class="btn btn-sm" data-act="prev">Prev</button>
+          <button class="btn btn-sm btn-primary" data-act="next">Step</button>
+          <button class="btn btn-sm" data-act="play">Play</button>
+          <button class="btn btn-sm btn-ghost" data-act="reset">Reset</button>
+          <input type="range">
+          <span class="stepper-count"></span>
+        </div>
+        <script type="application/json" class="stepper-data">
+        [
+          {"line": 1, "vars": {"call": 1, "inputs": "A", "outputs": "B", "cache": "{}"}, "caption": "The compiled XLA program reaches the custom call. XLA passes the buffer pointers it allocated (inputs <code>A</code>, outputs <code>B</code>) and its CUDA stream. The handler collects the input and output addresses."},
+          {"line": 3, "vars": {"call": 1, "key": "hash(A,B)", "cache": "{}"}, "caption": "The cache key is built from the device, the <code>call_id</code> and <em>every buffer address</em>. The <code>call_id</code> is fixed when Python calls <code>warp_step_fn</code>: a jitted scan traces it once, so every iteration of the compiled program shares one <code>call_id</code> (calls #1 to #3 here). Same addresses, same graph; any new address, new key."},
+          {"line": 4, "vars": {"call": 1, "key": "hash(A,B)", "capture": "None"}, "caption": "First call: nothing cached."},
+          {"line": 8, "vars": {"call": 1, "args": "wp.arrays over A, B"}, "caption": "<code>_build_arg_list</code> wraps the XLA buffers as Warp arrays (zero-copy) with the shapes from the inputs and <code>output_dims</code>."},
+          {"line": 11, "vars": {"call": 1, "python ran": 1}, "caption": "Your <code>warp_step</code> runs <strong>under a Warp capture</strong> on XLA's stream: <code>wp.copy</code> in, every kernel of <code>mjw.step</code>, <code>wp.copy</code> out are recorded, including MJWarp's conditional nodes."},
+          {"line": 13, "vars": {"call": 1, "cache": "{(A,B): g1}", "python ran": 1}, "caption": "The graph is launched once (this call's result) and stored. The cache is an ordered dict limited to <code>graph_cache_max</code> entries (default 32); the oldest is dropped."},
+          {"line": 7, "vars": {"call": 2, "key": "hash(A,B)", "capture": "g1", "python ran": 1}, "caption": "Next call with the same addresses: cache hit. The graph is replayed and the handler returns. <strong>The Python body does not run</strong>: a <code>print</code> or counter inside <code>warp_step</code> fires only on captures, and anything Python decides there is baked in (Ch 24)."},
+          {"line": 13, "vars": {"call": 3, "key": "hash(B,C)", "cache": "{g1, g2}", "python ran": 2}, "caption": "If XLA hands over different addresses (another buffer assignment), the key misses and Warp captures again. With staged modes (<code>WARP_STAGED</code>, <code>WARP_STAGED_EX</code>) Warp captures against its own stable staging buffers and copies in and out, so one graph serves any addresses."}
+        ]
+        </script>
+      </div>
+
+      <p>Now the full course version. It is <code>contrib/jax_unroll.py</code> with its three stale lines fixed (§6),
+        <code>jax_test.py</code>'s environment and explicit <code>graph_conditional</code>, and one addition: a CPU path.
+        Warp 1.19's <code>jax_callable</code> docstring says "On CPU, <code>JaxCallableGraphMode.NONE</code> and
+        <code>JaxCallableGraphMode.JAX</code> both execute without graph capture. The <code>WARP</code>,
+        <code>WARP_STAGED</code>, and <code>WARP_STAGED_EX</code> modes require CUDA." So on a CPU-only box the example
+        picks <code>NONE</code> and runs for real; on Colab it uses <code>WARP</code>.</p>
+
+      <figure class="code-example" data-file="ex5_jax_callable.py">
+        <div class="code-head">
+          <span class="code-title">Example 28.5</span>
+          <span class="code-file">examples/28-interop-torch-and-jax/ex5_jax_callable.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 28.5 - mjw.step as a JAX op: the corrected course version of contrib/jax_unroll.py.
+
+Fixes the three stale lines of contrib/jax_unroll.py (Example 28.7 finds them):
+  * the model comes from the wheel, mujoco_warp/test_data/humanoid/humanoid.xml
+    (the repo's '../benchmark' path is wrong, and benchmarks/ is not in the wheel);
+  * nconmax is PER WORLD in mujoco-warp 4.0.1 (naconmax is the total), so 64, not 64 * NWORLD;
+  * no wp.clear_kernel_cache() at import (it throws away every compiled kernel).
+It follows _src/jax_test.py: XLA env vars before `import jax`, an explicit
+m.opt.graph_conditional, a closure over m and d that copies in, steps and copies out, wrapped by
+wp.jax_callable(..., graph_mode=wp.JaxCallableGraphMode.WARP, output_dims=...), unrolled with
+jax.lax.scan inside jax.jit. NWORLD is fixed: output_dims bakes it into the op.
+GPU (Colab): needs jax.default_backend() == "gpu" and a CUDA Warp device.
+CPU fallback: Warp 1.19 also runs jax_callable on the JAX CPU backend with graph_mode NONE
+(WARP graph modes need CUDA). Skips if JAX is not installed or the two disagree on the device.
+Run: python ex5_jax_callable.py
+"""
+import os
+
+os.environ["XLA_FLAGS"] = "--xla_gpu_graph_min_graph_size=1"   # all three BEFORE import jax
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+import time
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+from etils import epath
+
+np.set_printoptions(precision=4, suppress=True)
+
+try:
+    import jax
+    from jax import numpy as jp
+except ImportError:
+    jax = None
+    print("skipped: jax not installed")
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 4
+UNROLL_LENGTH = 1000 if ON_GPU else 20
+
+if jax is not None:
+    JAX_GPU = jax.default_backend() == "gpu"
+    if JAX_GPU != ON_GPU:
+        print(f"skipped: JAX backend {jax.default_backend()} but Warp device {wp.get_device()}")
+        jax = None
+
+if jax is not None:
+    GRAPH_MODE = wp.JaxCallableGraphMode.WARP if ON_GPU else wp.JaxCallableGraphMode.NONE
+
+    path = epath.resource_path("mujoco_warp") / "test_data/humanoid/humanoid.xml"  # fix 1
+    mjm = mujoco.MjModel.from_xml_path(path.as_posix())
+    mjm.opt.iterations = 1
+    mjm.opt.ls_iterations = 4
+    mjd = mujoco.MjData(mjm)
+    mjd.qvel = np.random.default_rng(0).uniform(-0.01, 0.01, mjm.nv)  # a small kick
+    mujoco.mj_step(mjm, mjd, 3)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjw.put_model(mjm)
+    # explicit, as in jax_test.py: conditional graph nodes only with CUDA &gt;= 12.4 (Ch 24)
+    m.opt.graph_conditional = ON_GPU and wp.is_conditional_graph_supported()
+    d = mjw.put_data(mjm, mjd, nworld=NWORLD, nconmax=64, njmax=128)  # fix 2: per world
+
+    def warp_step(
+        qpos_in: wp.array2d[wp.float32],
+        qvel_in: wp.array2d[wp.float32],
+        qpos_out: wp.array2d[wp.float32],
+        qvel_out: wp.array2d[wp.float32],
+    ):
+        wp.copy(d.qpos, qpos_in)    # copy IN: JAX owns qpos_in, d keeps its own buffers
+        wp.copy(d.qvel, qvel_in)
+        mjw.step(m, d)
+        wp.copy(qpos_out, d.qpos)   # copy OUT into the buffers JAX allocated
+        wp.copy(qvel_out, d.qvel)
+
+    warp_step_fn = wp.jax_callable(
+        warp_step,
+        num_outputs=2,
+        graph_mode=GRAPH_MODE,
+        output_dims={"qpos_out": (NWORLD, mjm.nq), "qvel_out": (NWORLD, mjm.nv)},
+    )
+
+    def unroll(qpos, qvel):
+        def step(carry, _):
+            qpos, qvel = carry
+            qpos, qvel = warp_step_fn(qpos, qvel)  # returns a list: unpack it
+            return (qpos, qvel), None
+
+        (qpos, qvel), _ = jax.lax.scan(step, (qpos, qvel), length=UNROLL_LENGTH)
+        return qpos, qvel
+
+    jax_qpos = jp.tile(jp.array(d.qpos.numpy()[0]), (NWORLD, 1))
+    jax_qvel = jp.tile(jp.array(d.qvel.numpy()[0]), (NWORLD, 1))
+
+    jax_unroll_fn = jax.jit(unroll).lower(jax_qpos, jax_qvel).compile()
+    jax.block_until_ready(jax_unroll_fn(jax_qpos, jax_qvel))  # warm up (JIT, graph capture)
+
+    beg = time.perf_counter()
+    final_qpos, final_qvel = jax_unroll_fn(jax_qpos, jax_qvel)
+    jax.block_until_ready((final_qpos, final_qvel))
+    run_time = time.perf_counter() - beg
+
+    qpos = np.asarray(final_qpos)
+    print("jax", jax.__version__, "| backend:", jax.default_backend(), "| warp device:",
+          wp.get_device(), "| graph_mode:", GRAPH_MODE.name,
+          "| graph_conditional:", m.opt.graph_conditional)
+    print("nworld:", NWORLD, "| unroll:", UNROLL_LENGTH, "| naconmax:", d.naconmax,
+          "(= nconmax 64 x nworld)")
+    print("final qpos:", qpos.shape, type(final_qpos).__name__, "| all finite:",
+          bool(np.isfinite(qpos).all()))
+    print("root height z per world:", qpos[:4, 2])
+    print("overflow:", "none" if not d.overflow.numpy().any() else d.overflow.numpy())
+    label = "GPU" if ON_GPU else "CPU dev box, not a GPU number"
+    print(f"steps per second ({label}): {NWORLD * UNROLL_LENGTH / run_time:,.0f}")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 28.5"</span><span>CPU: <code>python -I ex5_jax_callable.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU path (graph_mode NONE), nworld=4, 20 steps. On Colab the first line reads <code>backend: gpu</code>, <code>graph_mode: WARP</code>, with nworld=4096 and 1000 steps; your steps/s there are your own (<span class="badge colab-only">from Colab, not CPU-verified</span>)</span></summary>
+<pre class="output">jax 0.12.1 | backend: cpu | warp device: cpu | graph_mode: NONE | graph_conditional: False
+nworld: 4 | unroll: 20 | naconmax: 256 (= nconmax 64 x nworld)
+final qpos: (4, 28) ArrayImpl | all finite: True
+root height z per world: [1.281 1.281 1.281 1.281]
+overflow: none
+steps per second (CPU dev box, not a GPU number): 1,275</pre>
+        </details>
+      </figure>
+      <p>All four worlds print the same height because they start from the same state; a JAX user would tile a
+        randomized initial state instead. The steps/s line is a CPU number from a small dev box and only shows that the
+        loop runs; on a GPU the same script reports its own figure.</p>
+
+      <div class="callout warning"><p class="callout-title">Pitfall: the op is not really pure</p><p>JAX believes
+        <code>warp_step_fn</code> is a pure function of <code>(qpos, qvel)</code>. It is not. Everything you do not copy in
+        lives on in <code>d</code> between calls: <code>d.time</code> keeps counting, <code>d.qacc_warmstart</code> carries
+        the last solver solution, <code>d.act</code>, <code>d.ctrl</code>, <code>d.mocap_pos</code> and the contact
+        buffers keep whatever the previous call left. Two jitted functions that close over the same <code>d</code> share
+        that hidden state. If you need it, pass it in and out explicitly, as the Apollo notebook does with
+        <code>ctrl</code> and <code>qacc_warmstart</code>. And because <code>d</code> has one fixed <code>nworld</code>,
+        every array that crosses the boundary has leading dimension NWORLD.</p></div>
+    </section>
+
+    <!-- ===================== 5. JAX LOOP ===================== -->
+    <section class="sec" id="jax-loop">
+      <h2><span class="sec-num">5</span>A compiled control loop with rewards in JAX</h2>
+      <p>The point of a JAX op is to put the simulator <em>inside</em> a larger JAX program. Example 28.6 adds a control
+        input and writes the policy and the reward in <code>jax.numpy</code>: each <code>lax.scan</code> iteration computes
+        <code>ctrl</code> from the state the Warp op returned, calls the op with <code>(ctrl, qpos, qvel)</code>, and adds
+        <span class="math">r = \cos\theta - 0.1\,x^2 - 0.001\,u^2</span>. The scan's second output stacks the per-step
+        rewards, which the figure below plots. Same <code>CARTPOLE</code>, same LQR gains and gain sweep as Example 28.3,
+        so the two frameworks can be compared directly.</p>
+
+      <figure class="code-example" data-file="ex6_jax_grad_free_loop.py">
+        <div class="code-head">
+          <span class="code-title">Example 28.6</span>
+          <span class="code-file">examples/28-interop-torch-and-jax/ex6_jax_grad_free_loop.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 28.6 - a jax.jit-compiled control loop around the MJWarp op, rewards computed in JAX.
+
+CARTPOLE with a linear policy written in JAX: every scan step reads the state that the
+jax_callable returned, computes ctrl in JAX, calls the Warp op (ctrl, qpos, qvel in -&gt; qpos,
+qvel out) and adds a reward. The whole rollout is one compiled XLA program. There are no
+gradients: jax.grad through the Warp op raises, because the FFI call has no JVP/VJP (and a
+custom_vjp would need backward rules that MJWarp 4.0.1 does not provide, Ch 29). The last lines
+print that error.
+GPU: graph_mode WARP. CPU fallback: graph_mode NONE (see Example 28.5).
+Run: python ex6_jax_grad_free_loop.py [--dump-json PATH]
+  --dump-json PATH writes the per-step reward of every world (decimated) for the page's chart.
+"""
+import os
+
+os.environ["XLA_FLAGS"] = "--xla_gpu_graph_min_graph_size=1"
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+import argparse
+import json
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=3, suppress=True)
+
+try:
+    import jax
+    from jax import numpy as jp
+except ImportError:
+    jax = None
+    print("skipped: jax not installed")
+
+CARTPOLE = """
+&lt;mujoco model="cartpole"&gt;
+  &lt;option timestep="0.01" integrator="implicitfast"/&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 -2 3" dir="0 1 -1"/&gt;
+    &lt;camera name="front" pos="0 -4 1" xyaxes="1 0 0 0 0 1"/&gt;
+    &lt;geom name="rail" type="capsule" fromto="-2 0 1 2 0 1" size=".02" contype="0" conaffinity="0"/&gt;
+    &lt;body name="cart" pos="0 0 1"&gt;
+      &lt;joint name="slider" type="slide" axis="1 0 0" range="-1.8 1.8" limited="true" damping="0.1"/&gt;
+      &lt;geom name="cart" type="box" size=".2 .1 .05" mass="1" contype="0" conaffinity="0"/&gt;
+      &lt;body name="pole"&gt;
+        &lt;joint name="hinge" type="hinge" axis="0 1 0" damping="0.01"/&gt;
+        &lt;geom name="pole" type="capsule" fromto="0 0 0 0 0 .6" size=".03" mass="0.1"
+              contype="0" conaffinity="0"/&gt;
+      &lt;/body&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+  &lt;actuator&gt;&lt;motor name="push" joint="slider" gear="10" ctrlrange="-1 1" ctrllimited="true"/&gt;&lt;/actuator&gt;
+  &lt;sensor&gt;
+    &lt;jointpos joint="slider"/&gt;&lt;jointpos joint="hinge"/&gt;
+    &lt;jointvel joint="slider"/&gt;&lt;jointvel joint="hinge"/&gt;
+  &lt;/sensor&gt;
+&lt;/mujoco&gt;
+"""
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dump-json", default=None)
+args, _ = parser.parse_known_args()
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 8
+NSTEP = 1000 if ON_GPU else 200
+
+if jax is not None and (jax.default_backend() == "gpu") != ON_GPU:
+    print(f"skipped: JAX backend {jax.default_backend()} but Warp device {wp.get_device()}")
+    jax = None
+
+if jax is not None:
+    mjm = mujoco.MjModel.from_xml_string(CARTPOLE)
+    m = mjw.put_model(mjm)
+    m.opt.graph_conditional = ON_GPU and wp.is_conditional_graph_supported()
+    d = mjw.make_data(mjm, nworld=NWORLD)
+
+    def warp_step(
+        ctrl_in: wp.array2d[wp.float32],
+        qpos_in: wp.array2d[wp.float32],
+        qvel_in: wp.array2d[wp.float32],
+        qpos_out: wp.array2d[wp.float32],
+        qvel_out: wp.array2d[wp.float32],
+    ):
+        wp.copy(d.ctrl, ctrl_in)
+        wp.copy(d.qpos, qpos_in)
+        wp.copy(d.qvel, qvel_in)
+        mjw.step(m, d)
+        wp.copy(qpos_out, d.qpos)
+        wp.copy(qvel_out, d.qvel)
+
+    mode = wp.JaxCallableGraphMode.WARP if ON_GPU else wp.JaxCallableGraphMode.NONE
+    step_fn = wp.jax_callable(
+        warp_step, num_outputs=2, graph_mode=mode,
+        output_dims={"qpos_out": (NWORLD, mjm.nq), "qvel_out": (NWORLD, mjm.nv)})
+
+    K = jp.array([0.9, 6.8, 1.1, 1.2])          # LQR gains, as in Example 28.3
+    gain = jp.linspace(0.0, 1.0, NWORLD)          # world k uses gain[k] * K
+
+    def rollout(qpos, qvel, gain):
+        def body(carry, _):
+            qpos, qvel, ret = carry
+            obs = jp.concatenate([qpos, qvel], axis=1)              # (nworld, 4)
+            ctrl = jp.clip((obs @ K) * gain, -1.0, 1.0)[:, None]    # policy in JAX
+            qpos, qvel = step_fn(ctrl, qpos, qvel)                 # MJWarp step
+            x, th = qpos[:, 0], qpos[:, 1]
+            reward = jp.cos(th) - 0.1 * x**2 - 0.001 * ctrl[:, 0] ** 2  # reward in JAX
+            return (qpos, qvel, ret + reward), reward   # carry, per-step output
+
+        (qpos, qvel, ret), rewards = jax.lax.scan(
+            body, (qpos, qvel, jp.zeros(NWORLD)), length=NSTEP)
+        return ret / NSTEP, rewards                   # rewards: (NSTEP, NWORLD)
+
+    qpos0 = jp.tile(jp.array([0.0, 0.2]), (NWORLD, 1))   # pole tilted 0.2 rad
+    qvel0 = jp.zeros((NWORLD, mjm.nv))
+    fn = jax.jit(rollout)
+    avg_reward, rewards = jax.block_until_ready(fn(qpos0, qvel0, gain))
+
+    r = np.asarray(avg_reward)
+    print("backend:", jax.default_backend(), "| graph_mode:", mode.name, "| nworld:", NWORLD,
+          "| steps:", NSTEP)
+    print("gain scale:     ", np.asarray(gain)[:8])
+    print("average reward: ", r[:8])
+    print(f"best world: {int(r.argmax())} (gain {float(gain[r.argmax()]):.3f}), "
+          f"reward {r.max():.3f}; worst: {r.min():.3f}")
+
+    try:  # no gradients through the Warp op
+        jax.grad(lambda g: fn(qpos0, qvel0, g)[0].sum())(gain)
+    except Exception as e:
+        print("jax.grad -&gt;", type(e).__name__ + ":", str(e).splitlines()[0])
+
+    if args.dump_json:
+        rw = np.asarray(rewards)[::4, :8]  # every 4th step, first 8 worlds
+        with open(args.dump_json, "w") as f:
+            json.dump({"dt": 4 * float(mjm.opt.timestep),
+                       "gain": np.asarray(gain)[:8].round(3).tolist(),
+                       "avg": r[:8].round(3).tolist(), "frames": rw.round(3).tolist()},
+                      f, separators=(",", ":"))
+        print("wrote", args.dump_json, len(rw), "frames")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 28.6"</span><span>CPU: <code>python -I ex6_jax_grad_free_loop.py --dump-json data/ex6.json</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU path (graph_mode NONE), nworld=8, 200 steps; on Colab graph_mode WARP, nworld=4096, 1000 steps (<span class="badge colab-only">from Colab, not CPU-verified</span>). In the notebook, where Example 28.5 already made an FFI op from a <code>warp_step</code> in the same kernel, the name reads <code>warp_step_1</code></span></summary>
+<pre class="output">backend: cpu | graph_mode: NONE | nworld: 8 | steps: 200
+gain scale:      [0.    0.143 0.286 0.429 0.571 0.714 0.857 1.   ]
+average reward:  [-0.13   0.493  0.971  0.992  0.994  0.995  0.995  0.995]
+best world: 7 (gain 1.000), reward 0.995; worst: -0.130
+jax.grad -&gt; ValueError: The FFI call to `warp_step_0` cannot be differentiated. You can use `jax.custom_jvp` or `jax.custom_vjp` to add support.
+wrote data/ex6.json 50 frames</pre>
+        </details>
+      </figure>
+
+      <figure class="fig" id="rw-fig">
+        <div class="fig-frame rw-wrap scroll-x"><svg id="rw-svg" viewBox="0 0 640 260" role="img" aria-labelledby="rwt rwd"><title id="rwt">Per-step reward of eight cartpole worlds</title><desc id="rwd">Reward over 2 seconds for gains 0 to 1. Worlds with gain 0.43 and above stay near 1, gain 0.29 dips slightly, gains 0 and 0.14 fall to about -1.</desc></svg></div>
+        <div class="rw-legend" id="rw-legend" aria-label="Toggle worlds"></div>
+        <div class="fig-caption-line" data-placeholder="Move over the chart (or focus it and use arrow keys) to read the rewards at one time."></div>
+        <figcaption><span class="fig-num">Figure 7.</span>Reward per step for the 8 worlds of Example 28.6 (<code>ex6_jax_grad_free_loop.py --dump-json</code>, mujoco-warp 4.0.1, CPU run, nworld=8, 200 steps, every 4th step). Click a legend chip to hide a world. <span class="badge data-driven">Real data</span></figcaption>
+        <script type="application/json" id="data-ch28-ex6" data-json-file="examples/28-interop-torch-and-jax/data/ex6.json">{"dt":0.04,"gain":[0.0,0.14300000667572021,0.28600001335144043,0.42899999022483826,0.5709999799728394,0.7139999866485596,0.8569999933242798,1.0],"avg":[-0.12999999523162842,0.49300000071525574,0.9710000157356262,0.9919999837875366,0.9940000176429749,0.9950000047683716,0.9950000047683716,0.9950000047683716],"frames":[[0.9800000190734863,0.9800000190734863,0.9800000190734863,0.9800000190734863,0.9800000190734863,0.9789999723434448,0.9789999723434448,0.9789999723434448],[0.9789999723434448,0.9800000190734863,0.9810000061988831,0.9819999933242798,0.9829999804496765,0.984000027179718,0.984000027179718,0.984000027179718],[0.9750000238418579,0.9800000190734863,0.9829999804496765,0.9860000014305115,0.9879999756813049,0.9890000224113464,0.9900000095367432,0.9909999966621399],[0.9700000286102295,0.9800000190734863,0.9860000014305115,0.9900000095367432,0.9919999837875366,0.9940000176429749,0.9950000047683716,0.9959999918937683],[0.9620000123977661,0.9789999723434448,0.9890000224113464,0.9940000176429749,0.9959999918937683,0.996999979019165,0.9980000257492065,0.9980000257492065],[0.949999988079071,0.9800000190734863,0.9919999837875366,0.9959999918937683,0.9980000257492065,0.9980000257492065,0.9980000257492065,0.9980000257492065],[0.9319999814033508,0.9800000190734863,0.9940000176429749,0.9980000257492065,0.9980000257492065,0.9980000257492065,0.9980000257492065,0.996999979019165],[0.906000018119812,0.9800000190734863,0.9959999918937683,0.996999979019165,0.996999979019165,0.9959999918937683,0.9959999918937683,0.9959999918937683],[0.8700000047683716,0.9810000061988831,0.9959999918937683,0.9959999918937683,0.9950000047683716,0.9940000176429749,0.9940000176429749,0.9940000176429749],[0.8190000057220459,0.9810000061988831,0.9959999918937683,0.9929999709129333,0.9919999837875366,0.9919999837875366,0.9919999837875366,0.9929999709129333],[0.7480000257492065,0.9819999933242798,0.9940000176429749,0.9900000095367432,0.9890000224113464,0.9900000095367432,0.9909999966621399,0.9919999837875366],[0.6510000228881836,0.9829999804496765,0.9900000095367432,0.9860000014305115,0.9869999885559082,0.9890000224113464,0.9900000095367432,0.9909999966621399],[0.5220000147819519,0.9829999804496765,0.9860000014305115,0.9829999804496765,0.9850000143051147,0.9879999756813049,0.9900000095367432,0.9909999966621399],[0.35499998927116394,0.9829999804496765,0.9800000190734863,0.9800000190734863,0.984000027179718,0.9879999756813049,0.9900000095367432,0.9909999966621399],[0.14900000393390656,0.9819999933242798,0.9739999771118164,0.9769999980926514,0.984000027179718,0.9879999756813049,0.9900000095367432,0.9909999966621399],[-0.09399999678134918,0.9800000190734863,0.9679999947547913,0.9760000109672546,0.984000027179718,0.9879999756813049,0.9900000095367432,0.9909999966621399],[-0.35899999737739563,0.9760000109672546,0.9610000252723694,0.9750000238418579,0.9850000143051147,0.9890000224113464,0.9909999966621399,0.9909999966621399],[-0.6200000047683716,0.9710000157356262,0.9559999704360962,0.9760000109672546,0.9860000014305115,0.9900000095367432,0.9909999966621399,0.9919999837875366],[-0.8370000123977661,0.9629999995231628,0.9509999752044678,0.9769999980926514,0.9869999885559082,0.9909999966621399,0.9919999837875366,0.9919999837875366],[-0.9710000157356262,0.9520000219345093,0.9480000138282776,0.9789999723434448,0.9879999756813049,0.9909999966621399,0.9919999837875366,0.9929999709129333],[-0.9959999918937683,0.9380000233650208,0.9459999799728394,0.9810000061988831,0.9900000095367432,0.9919999837875366,0.9929999709129333,0.9929999709129333],[-0.9150000214576721,0.9200000166893005,0.9459999799728394,0.9829999804496765,0.9909999966621399,0.9929999709129333,0.9940000176429749,0.9940000176429749],[-0.7599999904632568,0.8989999890327454,0.9470000267028809,0.9860000014305115,0.9919999837875366,0.9940000176429749,0.9940000176429749,0.9940000176429749],[-0.5709999799728394,0.8730000257492065,0.949999988079071,0.9890000224113464,0.9940000176429749,0.9940000176429749,0.9950000047683716,0.9950000047683716],[-0.382999986410141,0.8429999947547913,0.9549999833106995,0.9909999966621399,0.9940000176429749,0.9950000047683716,0.9950000047683716,0.9950000047683716],[-0.21899999678134918,0.8080000281333923,0.9610000252723694,0.9929999709129333,0.9950000047683716,0.9959999918937683,0.9950000047683716,0.9950000047683716],[-0.09099999815225601,0.7689999938011169,0.9679999947547913,0.9950000047683716,0.9959999918937683,0.9959999918937683,0.9959999918937683,0.9959999918937683],[-0.0020000000949949026,0.7260000109672546,0.9760000109672546,0.9959999918937683,0.996999979019165,0.9959999918937683,0.9959999918937683,0.9959999918937683],[0.04699999839067459,0.6800000071525574,0.9829999804496765,0.996999979019165,0.996999979019165,0.996999979019165,0.996999979019165,0.9959999918937683],[0.057999998331069946,0.6299999952316284,0.9890000224113464,0.9980000257492065,0.996999979019165,0.996999979019165,0.996999979019165,0.996999979019165],[0.03099999949336052,0.578000009059906,0.9940000176429749,0.9980000257492065,0.9980000257492065,0.996999979019165,0.996999979019165,0.996999979019165],[-0.03200000151991844,0.5230000019073486,0.9980000257492065,0.9980000257492065,0.9980000257492065,0.9980000257492065,0.996999979019165,0.996999979019165],[-0.12999999523162842,0.4659999907016754,0.9990000128746033,0.9980000257492065,0.9980000257492065,0.9980000257492065,0.9980000257492065,0.996999979019165],[-0.2590000033378601,0.40299999713897705,0.9990000128746033,0.996999979019165,0.9980000257492065,0.9980000257492065,0.9980000257492065,0.9980000257492065],[-0.414000004529953,0.3319999873638153,0.9959999918937683,0.996999979019165,0.9980000257492065,0.9980000257492065,0.9980000257492065,0.9980000257492065],[-0.5809999704360962,0.24699999392032623,0.9919999837875366,0.996999979019165,0.9990000128746033,0.9980000257492065,0.9980000257492065,0.9980000257492065],[-0.7440000176429749,0.14300000667572021,0.9850000143051147,0.996999979019165,0.9990000128746033,0.9990000128746033,0.9980000257492065,0.9980000257492065],[-0.8809999823570251,0.014000000432133675,0.9779999852180481,0.996999979019165,0.9990000128746033,0.9990000128746033,0.9990000128746033,0.9980000257492065],[-0.9710000157356262,-0.14499999582767487,0.968999981880188,0.996999979019165,0.9990000128746033,0.9990000128746033,0.9990000128746033,0.9990000128746033],[-1.0,-0.33399999141693115,0.9610000252723694,0.996999979019165,0.9990000128746033,0.9990000128746033,0.9990000128746033,0.9990000128746033],[-0.9670000076293945,-0.5460000038146973,0.953000009059906,0.996999979019165,0.9990000128746033,0.9990000128746033,0.9990000128746033,0.9990000128746033],[-0.8859999775886536,-0.7580000162124634,0.9459999799728394,0.9980000257492065,0.9990000128746033,0.9990000128746033,0.9990000128746033,0.9990000128746033],[-0.777999997138977,-0.9290000200271606,0.9399999976158142,0.9980000257492065,0.9990000128746033,0.9990000128746033,0.9990000128746033,0.9990000128746033],[-0.6629999876022339,-1.003000020980835,0.9359999895095825,0.9980000257492065,0.9990000128746033,0.9990000128746033,0.9990000128746033,0.9990000128746033],[-0.5590000152587891,-0.9350000023841858,0.9350000023841858,0.9990000128746033,1.0,0.9990000128746033,0.9990000128746033,0.9990000128746033],[-0.47699999809265137,-0.7269999980926514,0.9350000023841858,0.9990000128746033,1.0,1.0,0.9990000128746033,0.9990000128746033],[-0.42399999499320984,-0.43299999833106995,0.9390000104904175,0.9990000128746033,1.0,1.0,0.9990000128746033,0.9990000128746033],[-0.40299999713897705,-0.125,0.9440000057220459,1.0,1.0,1.0,1.0,0.9990000128746033],[-0.4129999876022339,0.13600000739097595,0.9509999752044678,1.0,1.0,1.0,1.0,1.0],[-0.45399999618530273,0.3190000057220459,0.9599999785423279,1.0,1.0,1.0,1.0,1.0]]}</script>
+      </figure>
+
+      <p>The torch and JAX versions tell the same story: gain 0 lets the pole fall, gain 0.14 loses it too, gain 0.29
+        keeps it up but swinging (up to about 0.39 rad in Figure 5, a reward dip in Figure 7), and from gain 0.43 on the
+        pole stays upright. The last line is the important one for the next chapter:
+        <code>jax.grad</code> through the op raises
+        <code>ValueError: The FFI call to `warp_step_N` cannot be differentiated</code> (<code>N</code> counts the FFI ops already made in the process from a function with the same qualified name, <code>generate_unique_name</code> in <code>warp/_src/jax/ffi.py</code>). An FFI call has no derivative
+        rule unless you attach one with <code>jax.custom_vjp</code>, and a correct one would need backward kernels for
+        <code>mjw.step</code>, which mujoco-warp 4.0.1 does not provide. Ch 29 explains <code>diff.py</code>, the adjoint
+        registry, and what you can do instead (finite differences across worlds, sampling-based optimization).</p>
+    </section>
+
+    <!-- ===================== 6. STALE CONTRIB ===================== -->
+    <section class="sec" id="stale-contrib">
+      <h2><span class="sec-num">6</span>What is stale in <code>contrib/jax_unroll.py</code></h2>
+      <p><code>contrib/jax_unroll.py</code> is the repository's benchmark of the JAX bridge: 8192 humanoids, 1000 steps
+        each, "Total steps per second". It is the right pattern, but it was written for an older API and layout, and
+        copying it as it is fails or misbehaves in three places (plus two fragile spots).</p>
+
+      <figure class="fig">
+        <div class="fig-frame">
+          <div>
+            <div class="hot" tabindex="0" data-info="<strong>Line 25</strong>: <code>resource_path('mujoco_warp')</code> is the installed package directory. <code>'../benchmark'</code> goes one level up and looks for <code>benchmark</code>; the repo folder is <code>benchmarks</code>, and it is not part of the wheel at all. The humanoid ships as <code>test_data/humanoid/humanoid.xml</code>.">
+              <div class="diff-line diff-del">- path = epath.resource_path("mujoco_warp") / "../benchmark" / "humanoid/humanoid.xml"</div>
+              <div class="diff-line diff-add">+ path = epath.resource_path("mujoco_warp") / "test_data/humanoid/humanoid.xml"</div>
+              <p class="diff-why">wrong folder name, and <code>benchmarks/</code> is not in the wheel</p>
+            </div>
+            <div class="hot" tabindex="0" data-info="<strong>Line 35</strong>: in mujoco-warp 4.0.1, <code>nconmax</code> is 'Number of contacts to allocate per world' (<code>io.py::put_data</code> docstring), and <code>naconmax</code> is the total. <code>64 * NWORLDS</code> per world times 8192 worlds is 4,294,967,296 contact slots.">
+              <div class="diff-line diff-del">- d = mjwarp.put_data(mjm, mjd, nworld=NWORLDS, nconmax=64 * NWORLDS, njmax=128)</div>
+              <div class="diff-line diff-add">+ d = mjw.put_data(mjm, mjd, nworld=NWORLD, nconmax=64, njmax=128)</div>
+              <p class="diff-why"><code>nconmax</code> is per world now: the old line asks for about 4.3e9 contacts</p>
+            </div>
+            <div class="hot" tabindex="0" data-info="<strong>Line 23</strong>: <code>wp.clear_kernel_cache()</code> deletes the generated source and compiled binaries in Warp's kernel cache directory for the current Warp version (the cache every Warp program of yours shares), so the next run recompiles all of MJWarp: minutes on CPU, and a long first call on GPU too.">
+              <div class="diff-line diff-del">- wp.clear_kernel_cache()</div>
+              <div class="diff-line diff-add">+ (deleted)</div>
+              <p class="diff-why">throws away the JIT cache at every import (Ch 4 JIT and caching)</p>
+            </div>
+            <div class="hot" tabindex="0" data-info="<strong>Lines 58-59</strong>: <code>8192</code> is hard-coded instead of <code>NWORLDS</code> in both <code>jax_qpos</code> and <code>jax_qvel</code>, so changing NWORLDS breaks the shapes. It also starts JAX from <code>qpos0</code> and zero <code>qvel</code>, so the random kick and the 3 C steps above (lines 31-33) only reach <code>d</code>'s warmstart, not the state that is stepped.">
+              <div class="diff-line diff-del">- jax_qpos = jp.tile(jp.array(mjm.qpos0), (8192, 1))</div>
+              <div class="diff-line diff-del">- jax_qvel = jp.zeros((8192, m.nv))</div>
+              <div class="diff-line diff-add">+ jax_qpos = jp.tile(jp.array(d.qpos.numpy()[0]), (NWORLD, 1))</div>
+              <div class="diff-line diff-add">+ jax_qvel = jp.tile(jp.array(d.qvel.numpy()[0]), (NWORLD, 1))</div>
+              <p class="diff-why">also fragile: hard-coded batch size, and the kicked state is never used</p>
+            </div>
+            <div class="hot" tabindex="0" data-info="<strong>Lines 9 and 18</strong>: <code>import jax</code> comes on line 9 and <code>os.environ[&quot;XLA_FLAGS&quot;]</code> only on line 18. It works only because XLA reads its environment when the backend starts, at the first <code>jp</code> call further down, not at import; any call above line 18 that started the backend would leave the flag silently ignored. <code>XLA_PYTHON_CLIENT_ALLOCATOR</code> and <code>XLA_PYTHON_CLIENT_PREALLOCATE</code> are never set, so JAX may preallocate most of the GPU memory next to MJWarp's buffers for 8192 humanoids. The Apollo notebook also sets <code>XLA_FLAGS</code> after importing JAX.">
+              <div class="diff-line diff-del">- import jax  (line 9) ... os.environ["XLA_FLAGS"] = ...  (line 18)</div>
+              <div class="diff-line diff-add">+ all three XLA variables in os.environ, then import jax (Example 28.4)</div>
+              <p class="diff-why">also fragile: works only because the XLA backend starts later; no memory settings</p>
+            </div>
+          </div>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a change to read the reason."></div>
+        <figcaption><span class="fig-num">Figure 8.</span>The stale lines of <code>contrib/jax_unroll.py</code> at commit 8f5b9f1 (red) and the course lines from Examples 28.4 and 28.5 (green): three failures, then two fragile spots (the hard-coded 8192 on lines 58-59, and <code>XLA_FLAGS</code> set after <code>import jax</code>). Line numbers are printed by Example 28.7.</figcaption>
+      </figure>
+
+      <div class="widget" id="nc-widget">
+        <p class="widget-title">What does <code>nconmax=64 * NWORLDS</code> allocate? <span class="badge">exact arithmetic</span></p>
+        <div class="control"><label for="nc-n">NWORLDS</label><input id="nc-n" type="range" min="0" max="13" step="1" value="13"><output id="nc-n-out" for="nc-n">8192</output></div>
+        <div class="calc-out">
+          <div class="stat"><div class="v" id="nc-bad">-</div><div class="k">contact slots with the stale line (naconmax = nconmax x nworld)</div><div class="logbar bad" id="nc-bar-bad"></div></div>
+          <div class="stat"><div class="v" id="nc-good">-</div><div class="k">contact slots intended (64 per world)</div><div class="logbar ok" id="nc-bar-good"></div></div>
+        </div>
+        <p class="verdict" id="nc-verdict" aria-live="polite"></p>
+        <p class="small muted">Bars are on a log scale. The ratio is always NWORLDS: the mistake grows with the very number you scale up.</p>
+      </div>
+
+      <p>Example 28.7 does the check mechanically. It reads the script as text (it never imports or runs repository
+        code), finds each stale pattern, prints the line and the fix, and then confirms the claims against the installed
+        wheel: the humanoid path exists, the <code>../benchmark</code> path does not, and the <code>put_data</code>
+        docstring says "per world".</p>
+
+      <figure class="code-example" data-file="ex7_stale_contrib_check.py">
+        <div class="code-head">
+          <span class="code-title">Example 28.7</span>
+          <span class="code-file">examples/28-interop-torch-and-jax/ex7_stale_contrib_check.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 28.7 - a static check of contrib/jax_unroll.py: find the stale lines, print the fixes.
+
+Reads contrib/jax_unroll.py as TEXT from a clone of the mujoco_warp repository; nothing from the
+clone is imported or executed. For each stale pattern it prints the line number, the line, and
+the corrected course line (Example 28.5). It also checks that the claims hold for the installed
+4.0.1 wheel. Skips if no clone is found.
+Clone (optional): git clone https://github.com/google-deepmind/mujoco_warp.git
+Run: python ex7_stale_contrib_check.py [--src PATH_TO_CLONE]   (or set MUJOCO_WARP_SRC)
+"""
+import argparse
+import os
+import pathlib
+import re
+
+import mujoco_warp as mjw
+from etils import epath
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--src", default=os.environ.get("MUJOCO_WARP_SRC"))
+args, _ = parser.parse_known_args()
+
+candidates = [args.src] if args.src else ["mujoco_warp", "../mujoco_warp", "/content/mujoco_warp"]
+script = next((pathlib.Path(c) / "contrib/jax_unroll.py" for c in candidates
+               if (pathlib.Path(c) / "contrib/jax_unroll.py").is_file()), None)
+
+CHECKS = [  # (what is stale, regex on the line, corrected course line)
+    ("model path: the repo folder is 'benchmarks' and it is not in the wheel",
+     r"\.\./benchmark\b",
+     'path = epath.resource_path("mujoco_warp") / "test_data/humanoid/humanoid.xml"'),
+    ("nconmax is per world in 4.0.1 (naconmax is the total)",
+     r"nconmax\s*=\s*64\s*\*\s*NWORLDS",
+     "d = mjw.put_data(mjm, mjd, nworld=NWORLD, nconmax=64, njmax=128)"),
+    ("clears the whole Warp kernel cache at import: every run recompiles",
+     r"wp\.clear_kernel_cache\(\)",
+     "(deleted)"),
+    ("also fragile: hard-coded 8192 instead of NWORLDS; qpos0/zero qvel drop the kick",
+     r"\(8192\b",
+     "jax_qpos = jp.tile(jp.array(d.qpos.numpy()[0]), (NWORLD, 1)); same for jax_qvel"),
+]
+
+if script is None:
+    print("skipped: no mujoco_warp clone found (pass --src or set MUJOCO_WARP_SRC)")
+else:
+    lines = script.read_text().splitlines()
+    print(f"checking {script} ({len(lines)} lines)")
+    for what, pattern, fix in CHECKS:
+        hits = [(i + 1, ln) for i, ln in enumerate(lines) if re.search(pattern, ln)]
+        if not hits:
+            print(f"\n[not found] {what}  (already fixed upstream?)")
+            continue
+        for no, ln in hits:
+            print(f"\n[{what}]\n  line {no:&gt;2}: {ln.strip()}\n  course:  {fix}")
+    # Order check: XLA reads its environment once; set it before `import jax` (Example 28.4).
+    first = lambda pat: next((i + 1 for i, ln in enumerate(lines) if re.search(pat, ln)), None)
+    jax_line, flags_line = first(r"^\s*import jax\b"), first(r"environ\[.XLA_FLAGS.\]")
+    missing = [v for v in ("XLA_PYTHON_CLIENT_ALLOCATOR", "XLA_PYTHON_CLIENT_PREALLOCATE")
+               if not any(v in ln for ln in lines)]
+    if jax_line and flags_line and flags_line &gt; jax_line:
+        print(f"\n[also fragile: XLA_FLAGS set after import jax; works only because the backend starts later]"
+              f"\n  line {jax_line:&gt;2}: import jax\n  line {flags_line:&gt;2}: {lines[flags_line - 1].strip()}"
+              f"\n  course:  all three XLA variables in os.environ before import jax")
+    if missing:
+        print("  never set:", ", ".join(missing), "(JAX may preallocate most of the GPU memory)")
+
+# The claims, checked against the installed wheel (no clone needed):
+pkg = pathlib.Path(str(epath.resource_path("mujoco_warp")))
+print("\nwheel has test_data/humanoid/humanoid.xml:",
+      (pkg / "test_data/humanoid/humanoid.xml").is_file(),
+      "| wheel has ../benchmark/humanoid:", (pkg.parent / "benchmark/humanoid").exists())
+doc = mjw.put_data.__doc__
+print("put_data docstring:", " ".join(re.search(r"nconmax: (.*?)\.", doc).group(1).split()))
+NWORLDS = 8192
+print(f"nconmax=64*NWORLDS with NWORLDS={NWORLDS} asks for naconmax = "
+      f"{64 * NWORLDS * NWORLDS:,} contacts (intended: {64 * NWORLDS:,})")</code></pre>
+        <div class="run-note"><span>Colab: notebook cells "clone" and "Example 28.7"</span><span>CPU: <code>python -I ex7_stale_contrib_check.py --src PATH_TO_CLONE</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">run from a directory that holds the clone (<code>mujoco_warp/</code>) at commit 8f5b9f1; without a clone, a skip line and then the last three lines print. In Colab the clone is <code>mjw_src/</code>, so the first line reads <code>checking mjw_src/contrib/jax_unroll.py</code></span></summary>
+<pre class="output">checking mujoco_warp/contrib/jax_unroll.py (85 lines)
+
+[model path: the repo folder is 'benchmarks' and it is not in the wheel]
+  line 25: path = epath.resource_path("mujoco_warp") / "../benchmark" / "humanoid/humanoid.xml"
+  course:  path = epath.resource_path("mujoco_warp") / "test_data/humanoid/humanoid.xml"
+
+[nconmax is per world in 4.0.1 (naconmax is the total)]
+  line 35: d = mjwarp.put_data(mjm, mjd, nworld=NWORLDS, nconmax=64 * NWORLDS, njmax=128)
+  course:  d = mjw.put_data(mjm, mjd, nworld=NWORLD, nconmax=64, njmax=128)
+
+[clears the whole Warp kernel cache at import: every run recompiles]
+  line 23: wp.clear_kernel_cache()
+  course:  (deleted)
+
+[also fragile: hard-coded 8192 instead of NWORLDS; qpos0/zero qvel drop the kick]
+  line 58: jax_qpos = jp.tile(jp.array(mjm.qpos0), (8192, 1))
+  course:  jax_qpos = jp.tile(jp.array(d.qpos.numpy()[0]), (NWORLD, 1)); same for jax_qvel
+
+[also fragile: hard-coded 8192 instead of NWORLDS; qpos0/zero qvel drop the kick]
+  line 59: jax_qvel = jp.zeros((8192, m.nv))
+  course:  jax_qpos = jp.tile(jp.array(d.qpos.numpy()[0]), (NWORLD, 1)); same for jax_qvel
+
+[also fragile: XLA_FLAGS set after import jax; works only because the backend starts later]
+  line  9: import jax
+  line 18: os.environ["XLA_FLAGS"] = "--xla_gpu_graph_min_graph_size=1"
+  course:  all three XLA variables in os.environ before import jax
+  never set: XLA_PYTHON_CLIENT_ALLOCATOR, XLA_PYTHON_CLIENT_PREALLOCATE (JAX may preallocate most of the GPU memory)
+
+wheel has test_data/humanoid/humanoid.xml: True | wheel has ../benchmark/humanoid: False
+put_data docstring: Number of contacts to allocate per world
+nconmax=64*NWORLDS with NWORLDS=8192 asks for naconmax = 4,294,967,296 contacts (intended: 524,288)</pre>
+        </details>
+      </figure>
+      <div class="callout note"><p class="callout-title">The same <code>nconmax</code> trap in the Apollo notebook</p><p>
+        <code>contrib/apptronik_apollo_locomotion.ipynb</code> sets <code>NCONMAX = NCONWORLD * NWORLD</code> and passes
+        it as <code>nconmax=NCONMAX</code>, with the same per-world reading in 4.0.1. When you reuse it, pass
+        <code>nconmax=NCONWORLD</code> (or <code>naconmax=NCONWORLD * NWORLD</code>). <code>contrib/README.md</code> calls the folder "a home for experiments, helper scripts and other tools that are
+        not officially part of MJWarp", whose contents "are subject to change with no notice". Treat everything in it as
+        a pattern to adapt, not a script to run.</p></div>
+    </section>
+
+    <!-- ===================== 7. CUSTOM VMAP ===================== -->
+    <section class="sec" id="custom-vmap">
+      <h2><span class="sec-num">7</span>Batching per-env code: the <code>custom_vmap</code> pattern</h2>
+      <p>JAX RL libraries (Brax, Playground's MJX environments) write the environment step for <em>one</em>
+        environment and then call <code>jax.vmap</code> to run thousands. <code>vmap</code> normally works by pushing a
+        batch dimension through every operation. A Warp op cannot be treated that way: it was built for one fixed
+        <code>NWORLD</code> and fixed <code>output_dims</code>. <code>wp.jax_callable</code> does take a
+        <code>vmap_method</code> argument (default <code>"broadcast_all"</code>, also settable per call) that it passes to
+        <code>jax.ffi.ffi_call</code>. Under <code>jax.vmap</code> the batched FFI call gets an extra leading axis, and
+        Warp folds the batch dims into each array's first dim (<code>collapse_batch_dims</code>), so the Python function
+        sees arrays with B times as many rows. A Warp function that closes over a fixed-size <code>mjw.Data</code>
+        (<code>nworld=1</code> or <code>NWORLD</code>) cannot accept that: the arrays it receives no longer have the shape of
+        the Data it steps, which is why the Apollo pattern routes the batch to an op built for <code>NWORLD</code>
+        worlds instead. The Apollo locomotion notebook
+        (<code>contrib/apptronik_apollo_locomotion.ipynb</code>) solves this with
+        <code>jax.custom_batching.custom_vmap</code>: you give the per-env function a <em>vmap rule</em>, and when
+        <code>vmap</code> meets the function it calls the rule once with the whole batch. The rule calls the batched
+        MJWarp op a single time.</p>
+
+      <figure class="fig" data-anim>
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 640 280" role="img" aria-labelledby="f9t f9d">
+            <title id="f9t">custom_vmap: many per-env calls collapse into one batched Warp call</title>
+            <desc id="f9d">Eight per-environment step calls on the left slide into one batched call on the right, which steps all eight worlds in one MJWarp launch sequence.</desc>
+            <defs><marker id="f9-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <text x="20" y="22" class="s-label">jax.vmap(env_step) over 8 envs</text>
+            <text x="402" y="22" class="s-label">def_vmap rule</text>
+            <g class="s-mono" font-size="11">
+              <g class="anim-collapse" style="--dx:250px"><rect x="20" y="34" width="150" height="24" rx="5" class="s-w0"/><text x="95" y="50" text-anchor="middle" fill="#000">env_step(env 0)</text></g>
+              <g class="anim-collapse delay-1" style="--dx:250px"><rect x="20" y="62" width="150" height="24" rx="5" class="s-w1"/><text x="95" y="78" text-anchor="middle" fill="#000">env_step(env 1)</text></g>
+              <g class="anim-collapse delay-2" style="--dx:250px"><rect x="20" y="90" width="150" height="24" rx="5" class="s-w2"/><text x="95" y="106" text-anchor="middle" fill="#000">env_step(env 2)</text></g>
+              <g class="anim-collapse delay-3" style="--dx:250px"><rect x="20" y="118" width="150" height="24" rx="5" class="s-w3"/><text x="95" y="134" text-anchor="middle" fill="#000">env_step(env 3)</text></g>
+              <g class="anim-collapse delay-1" style="--dx:250px"><rect x="20" y="146" width="150" height="24" rx="5" class="s-w4"/><text x="95" y="162" text-anchor="middle" fill="#000">env_step(env 4)</text></g>
+              <g class="anim-collapse delay-2" style="--dx:250px"><rect x="20" y="174" width="150" height="24" rx="5" class="s-w5"/><text x="95" y="190" text-anchor="middle" fill="#000">env_step(env 5)</text></g>
+              <g class="anim-collapse delay-3" style="--dx:250px"><rect x="20" y="202" width="150" height="24" rx="5" class="s-w6"/><text x="95" y="218" text-anchor="middle" fill="#000">env_step(env 6)</text></g>
+              <g class="anim-collapse delay-4" style="--dx:250px"><rect x="20" y="230" width="150" height="24" rx="5" class="s-w7"/><text x="95" y="246" text-anchor="middle" fill="#000">env_step(env 7)</text></g>
+            </g>
+            <path d="M182 144 H 392" class="s-accent-stroke anim-flow" marker-end="url(#f9-arrow)"/>
+            <text x="287" y="134" text-anchor="middle" class="s-small">axis_size = 8, in_batched</text>
+            <g class="hot" data-info="<strong>The vmap rule</strong> gets <code>axis_size</code>, the <code>in_batched</code> flags and the batched arrays. It tiles inputs that are not batched (the Apollo rule tiles <code>ctrl</code>), calls the NWORLD-world op once, and returns <code>(outputs, out_batched)</code>.">
+              <rect x="400" y="60" width="222" height="170" rx="12" class="s-accent-soft anim-merge"/>
+              <rect x="400" y="60" width="222" height="170" rx="12" fill="none" class="s-accent-stroke"/>
+              <text x="511" y="90" text-anchor="middle" class="s-label">one MJWarp call</text>
+              <text x="511" y="112" text-anchor="middle" class="s-small s-mono">opN(ctrl, qpos, qvel)</text>
+              <text x="511" y="130" text-anchor="middle" class="s-small s-mono">shapes (8, ...)</text>
+              <g>
+                <rect x="418" y="146" width="20" height="20" rx="3" class="s-w0"/><rect x="442" y="146" width="20" height="20" rx="3" class="s-w1"/>
+                <rect x="466" y="146" width="20" height="20" rx="3" class="s-w2"/><rect x="490" y="146" width="20" height="20" rx="3" class="s-w3"/>
+                <rect x="514" y="146" width="20" height="20" rx="3" class="s-w4"/><rect x="538" y="146" width="20" height="20" rx="3" class="s-w5"/>
+                <rect x="562" y="146" width="20" height="20" rx="3" class="s-w6"/><rect x="586" y="146" width="20" height="20" rx="3" class="s-w7"/>
+              </g>
+              <text x="511" y="190" text-anchor="middle" class="s-small">mjw.step over nworld = 8</text>
+              <text x="511" y="210" text-anchor="middle" class="s-small s-mono">return (q, v), (True, True)</text>
+            </g>
+            <text x="511" y="256" text-anchor="middle" class="s-small">Apollo notebook: 8192 envs, 1 call</text>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="badge illustrative">Illustrative</span></div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to the batched call."></div>
+        <figcaption><span class="fig-num">Figure 9.</span><code>custom_vmap</code>: the per-env calls (left) never run one by one; <code>vmap</code> hands the whole batch to the rule, which steps every world in one MJWarp call.</figcaption>
+      </figure>
+
+      <p>The Apollo rule, condensed (it works on <code>mjx.Data</code> structs; the full cell also lists which
+        <code>mjx.Data</code> fields come back batched):</p>
+      <div class="code-block"><pre><code class="language-python">@jax.custom_batching.custom_vmap
+def step(d: mjx.Data):
+  return d
+
+@step.def_vmap
+def step_vmap_rule(axis_size, in_batched, d: mjx.Data):
+  if in_batched[0].ctrl:
+    assert d.ctrl.shape[0] == axis_size
+  else:
+    d = d.replace(ctrl=jp.tile(d.ctrl, (axis_size, 1)))
+  ...
+  qpos, qvel, xpos, xmat, qacc_warmstart, subtree_com, cvel, site_xpos = jax_mjwarp_step(
+    d.ctrl, d.qpos, d.qvel, d.qacc_warmstart
+  )
+  d = d.replace(qpos=qpos, qvel=qvel, ...)
+  return d, out_batched</code></pre></div>
+      <p>Three details carry over to any use of the pattern. The Warp op is fixed to NWORLD, so the rule asserts or tiles
+        to that size (the notebook also tiles a single policy action to NWORLD for its rollout). The op returns more than
+        <code>qpos</code>/<code>qvel</code>: whatever the env's observation and reward code reads (<code>xpos</code>,
+        <code>site_xpos</code>, <code>cvel</code>, ...) plus <code>qacc_warmstart</code>, so the solver's warmstart
+        survives the functional round trip. And a small custom kernel (<code>xquat_to_xmat</code>) converts MJWarp's
+        <code>(w, x, y, z)</code> body quaternions into the rotation matrices that <code>mjx.Data.xmat</code> expects.
+        Example 28.8 is a minimal, runnable version on plain arrays that counts how often the Warp function runs.</p>
+
+      <figure class="code-example" data-file="ex8_custom_vmap.py">
+        <div class="code-head">
+          <span class="code-title">Example 28.8</span>
+          <span class="code-file">examples/28-interop-torch-and-jax/ex8_custom_vmap.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 28.8 - the custom_vmap pattern (Apollo notebook): many per-env calls, one Warp call.
+
+RL libraries such as Brax write the env step for ONE environment and jax.vmap it over the batch.
+A Warp op with fixed output_dims cannot be vmapped like a jnp function, so the Apollo notebook
+(contrib/apptronik_apollo_locomotion.ipynb) wraps the per-env step in
+jax.custom_batching.custom_vmap: the vmap rule receives the whole batch and calls the batched
+MJWarp op once. This example counts how often the Python Warp function runs:
+  * loop: NLOOP (at most 8) separate calls of a 1-world op;   * vmap: one call of the NWORLD-world op.
+wp.jax_callable has vmap_method="broadcast_all", but that folds the batch into each array's first
+dim, which a function closing over a fixed-size mjw.Data cannot accept; hence custom_vmap.
+The loop is capped: on a GPU in WARP mode the graph-cache key is (device, call_id, buffer
+addresses), and every eager Python call gets a new call_id, so each one misses the cache and
+captures a new CUDA graph of mjw.step. A jitted function traces once and keeps one call_id.
+Runs on JAX CPU (graph_mode NONE) or GPU (WARP); skips without JAX.
+Run: python ex8_custom_vmap.py
+"""
+import os
+
+os.environ["XLA_FLAGS"] = "--xla_gpu_graph_min_graph_size=1"
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+try:
+    import jax
+    from jax import numpy as jp
+except ImportError:
+    jax = None
+    print("skipped: jax not installed")
+
+PENDULUM = """
+&lt;mujoco model="double_pendulum"&gt;
+  &lt;option timestep="0.01"&gt;&lt;flag energy="enable"/&gt;&lt;/option&gt;
+  &lt;worldbody&gt;
+    &lt;light pos="0 -2 3" dir="0 1 -1"/&gt;
+    &lt;camera name="side" pos="0 -3 1" xyaxes="1 0 0 0 0 1"/&gt;
+    &lt;body name="link1" pos="0 0 1.5"&gt;
+      &lt;joint name="hinge1" type="hinge" axis="0 1 0"/&gt;
+      &lt;geom type="capsule" fromto="0 0 0 0 0 -.5" size=".04" mass="1"/&gt;
+      &lt;body name="link2" pos="0 0 -.5"&gt;
+        &lt;joint name="hinge2" type="hinge" axis="0 1 0"/&gt;
+        &lt;geom type="capsule" fromto="0 0 0 0 0 -.5" size=".04" mass="1"/&gt;
+        &lt;site name="tip" pos="0 0 -.5"/&gt;
+      &lt;/body&gt;
+    &lt;/body&gt;
+  &lt;/worldbody&gt;
+  &lt;actuator&gt;&lt;motor name="shoulder" joint="hinge1" gear="1" ctrlrange="-5 5"/&gt;&lt;/actuator&gt;
+  &lt;sensor&gt;
+    &lt;jointpos name="q1" joint="hinge1"/&gt;
+    &lt;jointvel name="v1" joint="hinge1"/&gt;
+    &lt;framepos name="tip_pos" objtype="site" objname="tip"/&gt;
+  &lt;/sensor&gt;
+  &lt;keyframe&gt;&lt;key name="horizontal" qpos="1.5708 0"/&gt;&lt;/keyframe&gt;
+&lt;/mujoco&gt;
+"""
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 8192 if ON_GPU else 8
+NLOOP = min(NWORLD, 8)  # per-env eager calls to compare (each gets a new call_id: a new capture on GPU)
+
+if jax is not None and (jax.default_backend() == "gpu") != ON_GPU:
+    print(f"skipped: JAX backend {jax.default_backend()} but Warp device {wp.get_device()}")
+    jax = None
+
+if jax is not None:
+    mjm = mujoco.MjModel.from_xml_string(PENDULUM)
+    m = mjw.put_model(mjm)
+    m.opt.graph_conditional = ON_GPU and wp.is_conditional_graph_supported()
+    mode = wp.JaxCallableGraphMode.WARP if ON_GPU else wp.JaxCallableGraphMode.NONE
+    calls = {"n": 0}
+
+    def make_op(nworld):
+        """A jax op stepping `nworld` worlds: (ctrl, qpos, qvel) -&gt; (qpos, qvel)."""
+        d = mjw.make_data(mjm, nworld=nworld)
+
+        def warp_step(ctrl_in: wp.array2d[wp.float32], qpos_in: wp.array2d[wp.float32],
+                      qvel_in: wp.array2d[wp.float32], qpos_out: wp.array2d[wp.float32],
+                      qvel_out: wp.array2d[wp.float32]):
+            calls["n"] += 1  # Python side: runs once per FFI execution without graph replay
+            wp.copy(d.ctrl, ctrl_in)
+            wp.copy(d.qpos, qpos_in)
+            wp.copy(d.qvel, qvel_in)
+            mjw.step(m, d)
+            wp.copy(qpos_out, d.qpos)
+            wp.copy(qvel_out, d.qvel)
+
+        return wp.jax_callable(warp_step, num_outputs=2, graph_mode=mode,
+                               output_dims={"qpos_out": (nworld, mjm.nq),
+                                            "qvel_out": (nworld, mjm.nv)})
+
+    op1, opN = make_op(1), make_op(NWORLD)
+
+    # The per-env step an RL library wants to vmap: shapes (nu,), (nq,), (nv,).
+    @jax.custom_batching.custom_vmap
+    def env_step(ctrl, qpos, qvel):
+        qpos, qvel = op1(ctrl[None], qpos[None], qvel[None])  # unbatched call: 1 world
+        return qpos[0], qvel[0]
+
+    @env_step.def_vmap
+    def env_step_vmap(axis_size, in_batched, ctrl, qpos, qvel):
+        assert axis_size == NWORLD, "the Warp op is built for a fixed NWORLD"
+        ctrl, qpos, qvel = (x if b else jp.tile(x, (axis_size, 1))  # tile unbatched inputs
+                            for x, b in zip((ctrl, qpos, qvel), in_batched))
+        qpos, qvel = opN(ctrl, qpos, qvel)                     # ONE batched MJWarp call
+        return (qpos, qvel), (True, True)                      # both outputs are batched
+
+    ctrl = jp.linspace(-1.0, 1.0, NWORLD)[:, None]            # a different torque per env
+    qpos = jp.tile(jp.array(mjm.key_qpos[0]), (NWORLD, 1))
+    qvel = jp.zeros((NWORLD, mjm.nv))
+
+    calls["n"] = 0
+    loop = [env_step(ctrl[i], qpos[i], qvel[i]) for i in range(NLOOP)]
+    jax.block_until_ready(loop)
+    n_loop = calls["n"]
+    q_loop = np.stack([np.asarray(q) for q, _ in loop])
+
+    calls["n"] = 0
+    q_vmap, _ = jax.block_until_ready(jax.jit(jax.vmap(env_step))(ctrl, qpos, qvel))
+    n_vmap = calls["n"]
+
+    print("backend:", jax.default_backend(), "| graph_mode:", mode.name, "| envs:", NWORLD)
+    print(f"python loop over the first {NLOOP} envs: {n_loop} Warp calls of a 1-world op")
+    print(f"jax.vmap + custom_vmap: {n_vmap} Warp call of the {NWORLD}-world op")
+    print("hinge1 after one step, loop:", q_loop[:4, 0])
+    print("hinge1 after one step, vmap:", np.asarray(q_vmap)[:4, 0])
+    print("max |loop - vmap| over those envs:",
+          float(np.abs(q_loop - np.asarray(q_vmap)[:NLOOP]).max()))</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 28.8"</span><span>CPU: <code>python -I ex8_custom_vmap.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU path (graph_mode NONE), 8 envs. On a GPU with WARP mode the counter counts captures, not calls: 8192 envs in the vmap call, but the eager loop stays at 8 envs because each eager 1-world call gets a new <code>call_id</code>, which is part of the graph-cache key, so it always captures a new CUDA graph (<span class="badge colab-only">not CPU-verified</span>)</span></summary>
+<pre class="output">backend: cpu | graph_mode: NONE | envs: 8
+python loop over the first 8 envs: 8 Warp calls of a 1-world op
+jax.vmap + custom_vmap: 1 Warp call of the 8-world op
+hinge1 after one step, loop: [1.5678 1.568  1.5681 1.5683]
+hinge1 after one step, vmap: [1.5678 1.568  1.5681 1.5683]
+max |loop - vmap| over those envs: 0.0</pre>
+        </details>
+      </figure>
+      <p>Eight Python-level calls of a 1-world op versus one call of the 8-world op, with identical results
+        (<code>max |loop - vmap|: 0.0</code>). On a GPU the difference is the whole point of MJWarp: one launch sequence
+        over 8192 worlds instead of 8192 tiny ones. The example keeps the eager loop to the first 8 envs even there:
+        in <code>WARP</code> mode the graph-cache key is <code>hash((device_ordinal, call_id, *ip, *op))</code>
+        (<code>warp/_src/jax/ffi.py</code>), and every Python-level call of a <code>jax_callable</code> assigns a new
+        <code>call_id</code> (<code>self.call_id += 1</code> in <code>__call__</code>). So each eager call misses the cache
+        even if XLA happens to reuse the same addresses, and captures a new CUDA graph of <code>mjw.step</code>; each
+        eager call pays a full graph capture, so 8192 eager calls are impractical. A jitted function traces once, keeps
+        one <code>call_id</code> and replays while the addresses match. Each eager call also adds one entry to the op's
+        <code>call_descriptors</code> dict, which is never removed.</p>
+    </section>
+
+    <!-- ===================== 8. MJX + CONTRACT ===================== -->
+    <section class="sec" id="mjx-contract">
+      <h2><span class="sec-num">8</span>MJX <code>impl="warp"</code> and the field contract</h2>
+      <p>Hand-written <code>jax_callable</code> wrappers are the do-it-yourself route. The official JAX route is
+        <strong>MJX</strong>, MuJoCo's JAX package, which the README names for JAX users: "you can use MJWarp via MJX and
+        the legacy MJX environments in Playground's <code>rss2025</code> directory". The MuJoCo documentation describes
+        an MJX implementation switch, <code>impl="warp"</code>, that runs a subset of the MJWarp API behind MJX's JAX
+        interface. MJX is a separate package (<code>mujoco-mjx</code>) and its API is not part of this repository, so this
+        course does not print MJX calls; check the MJX docs for the version you install.</p>
+      <div class="callout version"><p class="callout-title">Version note</p><p>The repo marks its own JAX bridges as
+        temporary: <code>_src/jax_test.py</code> carries "TODO(team): JAX test is temporary, remove after we land
+        MJX:Warp", and <code>pyproject.toml</code> says the same about the <code>[cpu]</code>/<code>[cuda]</code> JAX extras.
+        Expect the hand-written bridge to be replaced by MJX's.</p></div>
+
+      <p>What the repository does contain is the contract MJX relies on to wrap MJWarp's structs:
+        <code>_src/io_jax_test.py</code> ("do not edit this file without consulting with the MuJoCo/MJX team"). It is a
+        useful checklist for anyone who writes their own wrapper, because it says exactly what you may assume about
+        <code>Model</code> and <code>Data</code>:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Test</th><th>What it guarantees</th></tr></thead>
+          <tbody>
+            <tr><td><code>test_put_model_nworld_array</code></td><td>Batched Model arrays carry <code>_is_batched</code> and have leading dim 1 unless <code>batch_sizes</code> asks for more (<code>geom_pos</code> becomes <code>(2, ngeom)</code> with <code>batch_sizes={"geom_pos": 2}</code>); <code>opt.gravity</code> is batched; <code>body_parentid</code> is not.</td></tr>
+            <tr><td><code>test_put_data_nworld_array</code></td><td>Every Data array whose size changes with <code>nworld</code> has <code>nworld</code> as its leading dim (compared at nworld=2 and 7). Note: contact arrays such as <code>d.contact.dist</code> are sized <code>naconmax</code>, and the test passes them only because it calls <code>put_data(..., nconmax=1)</code>, which makes <code>naconmax == nworld</code>. Do not read the test as covering pooled arrays.</td></tr>
+            <tr><td><code>test_public_api_jax_compat</code></td><td>Field annotations are only <code>int</code>, <code>bool</code>, <code>float</code>, array specs, enums, variadic non-nested tuples, or nested dataclasses from <code>mujoco_warp</code>. "Vector types are not allowed" as a field type. <code>Callback</code> fields are skipped (not JAX-serializable).</td></tr>
+            <tr><td><code>test_types_match_annotations</code></td><td>Runtime values match the annotations (arrays are <code>wp.array</code>, NumPy scalars map to <code>int/float/bool</code>), for <code>put_model</code>, <code>put_data</code> and <code>make_data</code>.</td></tr>
+            <tr><td><code>test_make_put_data_dims_match</code></td><td><code>make_data</code> and <code>put_data</code> give the same shapes for the same sizes.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The <code>_is_batched</code> mark comes from <code>warp_util.mark_batched</code>, which
+        <code>put_model</code>, <code>make_data</code>, <code>put_data</code> and <code>create_render_context</code> call
+        on their result: it sets <code>arr._is_batched = True</code> on every array whose type spec starts with
+        <code>"*"</code> or <code>"nworld"</code>. A wrapper can use it to decide which fields get a batch axis. On the
+        <code>pendula.xml</code> fixture, <code>m.geom_pos</code>, <code>m.qpos0</code>, <code>m.opt.gravity</code> and
+        <code>d.qpos</code> carry the mark, while <code>m.body_parentid</code> and <code>d.contact.dist</code> do not
+        (checked on CPU with the 4.0.1 wheel).</p>
+      <div class="callout pitfall"><p class="callout-title">Pitfall: <code>_is_batched</code> is metadata</p><p>A
+        batched Model field with leading dim 1 is read with <code>worldid % 1</code> by the kernels (round-robin,
+        <a href="06-batched-data-layout.html#round-robin">Ch 6 §7</a>). A JAX wrapper must not assume
+        <code>shape[0] == nworld</code> for Model fields; only Data fields scale with nworld.</p></div>
+    </section>
+
+    <!-- ===================== 9. ECOSYSTEM ===================== -->
+    <section class="sec" id="ecosystem">
+      <h2><span class="sec-num">9</span>The ecosystem: where MJWarp plugs in</h2>
+      <p>You rarely need to write the bridge yourself. The README's "Integrating MuJoCo Warp" section lists the
+        frameworks that already did. They are pointers here: their installs and APIs live outside this repository.</p>
+      <div class="cards">
+        <a class="card" href="https://github.com/google-deepmind/mujoco_playground" target="_blank" rel="noopener"><span class="card-num">PyTorch · first party</span><h3>MuJoCo Playground</h3><p>GPU RL environment suite from the MuJoCo team; with reaf-sim, "the official first-party PyTorch simulation frameworks". Legacy MJX (JAX) envs live in its <code>rss2025</code> directory.</p></a>
+        <a class="card" href="https://github.com/google-deepmind/reaf-sim" target="_blank" rel="noopener"><span class="card-num">PyTorch · first party</span><h3>reaf-sim</h3><p>First-party PyTorch simulation framework: GPU RL training, single-threaded sim eval, sim-to-real workflows (README).</p></a>
+        <a class="card" href="https://github.com/isaac-sim/IsaacLab" target="_blank" rel="noopener"><span class="card-num">PyTorch · via Newton</span><h3>Isaac Lab</h3><p>Integrates MJWarp through Newton, NVIDIA's multi-physics platform (MJWarp's source files are copyright "The Newton Developers").</p></a>
+        <a class="card" href="https://github.com/mujocolab/mjlab" target="_blank" rel="noopener"><span class="card-num">PyTorch · direct</span><h3>mjlab</h3><p>Isaac Lab's manager-based API directly on top of MJWarp, without Newton.</p></a>
+        <a class="card" href="https://mujoco.readthedocs.io/en/stable/mjx.html" target="_blank" rel="noopener"><span class="card-num">JAX</span><h3>MJX</h3><p>MuJoCo's JAX package; <code>impl="warp"</code> uses MJWarp. The route the repo is moving its JAX tests to.</p></a>
+      </div>
+      <p>Whichever you pick, the mechanics underneath are the ones in this chapter: zero-copy views for observations,
+        in-place writes for actions, fixed batch sizes, and care with streams and graphs. Ch 30 builds a small version
+        of such an environment from scratch.</p>
+    </section>
+
+    <!-- ===================== QUIZ ===================== -->
+    <section class="sec" id="quiz">
+      <h2><span class="sec-num">10</span>Check yourself</h2>
+      <div class="quiz">
+        <div class="quiz-head"><h3>Quiz</h3><span class="quiz-score" aria-live="polite"></span></div>
+        <div class="quiz-q" data-answer="b">
+          <p class="q">You make <code>q = wp.to_torch(d.qpos)</code>, then call <code>mjw.step(m, d)</code> 10 times. What does <code>q</code> contain?</p>
+          <ul class="choices">
+            <li><button data-explain="That would be a copy. to_torch returns a view of the same buffer.">The values from before the steps</button></li>
+            <li><button>The values after the 10 steps</button></li>
+            <li><button data-explain="The view stays valid (it even holds a reference to the Warp array); nothing invalidates it.">Undefined data: the view is invalid after a step</button></li>
+          </ul>
+          <div class="quiz-feedback"><code>q.data_ptr() == d.qpos.ptr</code>: it is the same memory, so it always shows the current state (after the Warp work has finished).</div>
+        </div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q">A policy returns a <code>torch.float64</code> action tensor. What does <code>wp.copy(d.ctrl, wp.from_torch(act))</code> do?</p>
+          <ul class="choices">
+            <li><button data-explain="Warp does not convert dtypes in wp.copy.">Converts to float32 on the fly</button></li>
+            <li><button data-explain="from_torch maps float64 to wp.float64 without complaint; the error comes later.">from_torch raises</button></li>
+            <li><button>wp.copy raises "Incompatible array data types"</button></li>
+          </ul>
+          <div class="quiz-feedback">float64 is 8 bytes and the float32 field 4, and <code>wp.copy</code> compares element byte sizes, so it raises. Beware the 4-byte case: an <code>int32</code> tensor would pass the size check and be copied bit for bit as garbage floats, with no error. Call <code>act.float()</code> first (Example 28.2, part 3).</div>
+        </div>
+        <div class="quiz-q" data-answer="a">
+          <p class="q">What does <code>wp.from_torch(acts[:, 1])</code> return for a <code>(nworld, 3)</code> float32 tensor?</p>
+          <ul class="choices">
+            <li><button>A strided, zero-copy Warp array (is_contiguous False)</button></li>
+            <li><button data-explain="Scalar dtypes keep the strides; only vector/matrix dtypes need contiguous inner dims.">A RuntimeError about strides</button></li>
+            <li><button data-explain="from_torch never copies.">A contiguous copy</button></li>
+          </ul>
+          <div class="quiz-feedback">Byte strides <code>(12,)</code>; <code>wp.copy</code> into <code>d.ctrl</code> then works. A <code>vec3</code> view with a strided inner dim would raise.</div>
+        </div>
+        <div class="quiz-q" data-answer="b">
+          <p class="q">When must you order the torch and Warp streams yourself?</p>
+          <ul class="choices">
+            <li><button data-explain="Warp's default stream is a blocking stream, which synchronizes with the legacy default stream torch uses.">Always, even with both libraries on their default streams</button></li>
+            <li><button><span>When torch works on a <code>torch.cuda.Stream()</code> of its own</span></button></li>
+            <li><button data-explain="There are no CUDA streams on the CPU device.">Only on CPU</button></li>
+          </ul>
+          <div class="quiz-feedback"><code>torch.cuda.Stream()</code> streams are non-blocking; run MJWarp on the same stream with <code>wp.ScopedStream(wp.stream_from_torch(side))</code> or wait between them.</div>
+        </div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q">Why are the three XLA variables set before <code>import jax</code>?</p>
+          <ul class="choices">
+            <li><button data-explain="Warp does not read XLA variables.">Warp reads them when it initializes</button></li>
+            <li><button data-explain="The memory variables matter most on a GPU, where JAX and Warp share device memory.">They only matter for CPU JAX</button></li>
+            <li><button>XLA reads them once when its backend starts; otherwise JAX can grab most of the GPU memory and starve Warp</button></li>
+          </ul>
+          <div class="quiz-feedback">Before the import is the one placement that is always early enough; the notebook gives them a cell of their own.</div>
+        </div>
+        <div class="quiz-q" data-answer="a">
+          <p class="q"><code>put_data(mjm, mjd, nworld=8192, nconmax=64 * 8192)</code> in mujoco-warp 4.0.1 allocates how many contact slots?</p>
+          <ul class="choices">
+            <li><button>About 4.3 billion</button></li>
+            <li><button data-explain="That is what the line meant in the old API, where nconmax was the total.">524,288</button></li>
+            <li><button data-explain="nconmax is not capped at the default.">The default for the model</button></li>
+          </ul>
+          <div class="quiz-feedback"><code>nconmax</code> is per world; the total <code>naconmax = nconmax x nworld = 64 x 8192 x 8192 = 4,294,967,296</code>. Pass <code>nconmax=64</code>.</div>
+        </div>
+        <div class="quiz-q" data-answer="b">
+          <p class="q">With <code>graph_mode=WARP</code>, a <code>print</code> inside <code>warp_step</code> fires...</p>
+          <ul class="choices">
+            <li><button data-explain="Cache hits replay the graph and return early; Python does not run.">on every scan iteration</button></li>
+            <li><button>only when Warp captures a graph (a new call_id, i.e. every eager call or a new trace, or new buffer addresses)</button></li>
+            <li><button data-explain="It runs during capture.">never</button></li>
+          </ul>
+          <div class="quiz-feedback"><code>FfiCallable.ffi_callback</code> keys a graph cache by <code>(device, call_id, buffer addresses)</code> and replays on a hit (the stepper in §4). Inside one jitted program the <code>call_id</code> is fixed, so it replays while the addresses match; every eager Python call gets a new <code>call_id</code> and always captures.</div>
+        </div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q">Why does the Apollo notebook wrap its step in <code>jax.custom_batching.custom_vmap</code>?</p>
+          <ul class="choices">
+            <li><button data-explain="custom_vmap is about batching, not gradients.">To make the step differentiable</button></li>
+            <li><button data-explain="The rule calls the batched op once; it does not loop.">To loop over environments in Python</button></li>
+            <li><button><span>So that <code>jax.vmap</code> of a per-env step becomes one call of the fixed-NWORLD Warp op</span></button></li>
+          </ul>
+          <div class="quiz-feedback">Example 28.8: 8 calls of a 1-world op in a loop versus 1 call of the 8-world op under vmap.</div>
+        </div>
+        <div class="quiz-q" data-answer="a">
+          <p class="q">Two different jitted functions close over the same <code>d</code> and both call the Warp op. What do they share?</p>
+          <ul class="choices">
+            <li><button><span>Hidden state that is not copied in: <code>d.time</code>, <code>d.qacc_warmstart</code>, <code>d.act</code>, contacts...</span></button></li>
+            <li><button data-explain="JAX knows nothing about d; it only sees inputs and outputs.">Nothing, JAX functions are pure</button></li>
+            <li><button data-explain="qpos and qvel are copied in from JAX on every call.">Only qpos and qvel</button></li>
+          </ul>
+          <div class="quiz-feedback">Pass whatever state matters in and out explicitly (Apollo does it for <code>ctrl</code> and <code>qacc_warmstart</code>).</div>
+        </div>
+        <button class="btn btn-sm quiz-reset" type="button">Reset quiz</button>
+      </div>
+    </section>
+
+    <!-- ===================== EXERCISES ===================== -->
+    <section class="sec" id="exercises">
+      <h2><span class="sec-num">11</span>Exercises</h2>
+      <p>The setup for all three auto-checked exercises (CPU torch is enough):</p>
+      <div class="code-block"><pre><code class="language-python">import mujoco
+import numpy as np
+import torch
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+# CARTPOLE: paste the MJCF string from Example 28.3
+NWORLD = 8
+mjm = mujoco.MjModel.from_xml_string(CARTPOLE)
+m = mjw.put_model(mjm)
+d = mjw.make_data(mjm, nworld=NWORLD)
+dev = wp.device_to_torch(wp.get_device())</code></pre></div>
+
+      <div class="exercise">
+        <div class="exercise-head"><h3>Exercise 28.1: a write through the view</h3><span class="ex-level auto">Auto-checked</span></div>
+        <p>Make a torch view of <code>d.ctrl</code> and write <code>k / 10</code> into world <code>k</code> using torch only.
+          The assert reads the values back through Warp.</p>
+        <div class="code-block"><pre><code class="language-python">c = ...  # a torch view of d.ctrl
+...      # write k / 10 into world k, with torch
+assert np.allclose(d.ctrl.numpy()[:, 0], np.arange(NWORLD) / 10)</code></pre></div>
+        <details class="solution"><summary>Show solution</summary><div class="solution-body">
+          <div class="code-block"><pre><code class="language-python">c = wp.to_torch(d.ctrl)
+c[:, 0] = torch.arange(NWORLD, dtype=torch.float32, device=dev) / 10
+assert np.allclose(d.ctrl.numpy()[:, 0], np.arange(NWORLD) / 10)</code></pre></div>
+          <p>No copy back is needed: <code>c</code> and <code>d.ctrl</code> are one buffer.</p>
+        </div></details>
+      </div>
+
+      <div class="exercise">
+        <div class="exercise-head"><h3>Exercise 28.2: <code>make_ctrl_writer(d)</code></h3><span class="ex-level auto">Auto-checked</span></div>
+        <p>Write <code>make_ctrl_writer(d)</code>. It returns a function <code>write(actions)</code> that copies a torch
+          tensor of shape <code>(nworld, nu)</code> into <code>d.ctrl</code> <em>without replacing it</em>, accepting any
+          float dtype. The asserts check the values and that <code>d.ctrl</code> is still the same object at the same
+          address.</p>
+        <div class="code-block"><pre><code class="language-python">def make_ctrl_writer(d):
+    ...
+
+before_obj, before_ptr = d.ctrl, d.ctrl.ptr
+write = make_ctrl_writer(d)
+write(torch.full((NWORLD, mjm.nu), 0.5, dtype=torch.float64, device=dev))
+assert d.ctrl is before_obj and d.ctrl.ptr == before_ptr
+assert np.allclose(d.ctrl.numpy(), 0.5)
+mjw.step(m, d)</code></pre></div>
+        <details class="solution"><summary>Show solution</summary><div class="solution-body">
+          <div class="code-block"><pre><code class="language-python">def make_ctrl_writer(d):
+    target = d.ctrl                      # hold the array, not the attribute
+    def write(actions):
+        src = wp.from_torch(actions.to(torch.float32).contiguous())
+        wp.copy(target, src)             # values move, the address stays
+    return write</code></pre></div>
+          <p><code>.to(torch.float32)</code> fixes the dtype trap from §2; <code>.contiguous()</code> is free when the tensor already is.</p>
+        </div></details>
+      </div>
+
+      <div class="exercise">
+        <div class="exercise-head"><h3>Exercise 28.3: sanitize awkward actions</h3><span class="ex-level auto">Auto-checked</span></div>
+        <p>The action tensor below is float64 <em>and</em> a strided view. First confirm that a direct
+          <code>wp.copy</code> fails, then write <code>to_ctrl_tensor(actions, d)</code> so that the copy works and the
+          values arrive unchanged.</p>
+        <div class="code-block"><pre><code class="language-python">raw = torch.linspace(-1, 1, 2 * NWORLD, dtype=torch.float64).reshape(NWORLD, 2)[:, :1]
+assert not raw.is_contiguous() and raw.dtype == torch.float64
+try:
+    wp.copy(d.ctrl, wp.from_torch(raw))
+    raise AssertionError("expected a RuntimeError")
+except RuntimeError:
+    pass
+
+def to_ctrl_tensor(actions, d):
+    ...
+
+wp.copy(d.ctrl, wp.from_torch(to_ctrl_tensor(raw, d)))
+assert np.allclose(d.ctrl.numpy(), raw.numpy())</code></pre></div>
+        <details class="solution"><summary>Show solution</summary><div class="solution-body">
+          <div class="code-block"><pre><code class="language-python">def to_ctrl_tensor(actions, d):
+    return actions.to(device=dev, dtype=torch.float32).reshape(d.ctrl.shape).contiguous()</code></pre></div>
+          <p>The dtype is what breaks the first copy; the stride alone would have been fine for a scalar array. Making it
+            contiguous anyway keeps the function safe for vector dtypes too.</p>
+        </div></details>
+      </div>
+
+      <div class="exercise">
+        <div class="exercise-head"><h3>Stretch: <code>mjw.forward</code> as a JAX op</h3><span class="ex-level stretch">Stretch</span></div>
+        <p>Wrap <code>mjw.forward</code> with <code>wp.jax_callable</code> so that it maps <code>(qpos, qvel)</code> to
+          <code>qacc</code> (one output), and wrap <code>mjw.step</code> as in Example 28.5. On the double pendulum
+          (Euler integrator, no damping) check that <code>qvel + h * qacc</code> from the forward op equals the
+          <code>qvel</code> the step op returns. Then explain what the two ops share when they close over one <code>d</code>, and
+          what <code>jax.grad</code> does to either.</p>
+        <details class="solution"><summary>Show a solution sketch</summary><div class="solution-body">
+          <div class="code-block"><pre><code class="language-python">def warp_forward(qpos_in: wp.array2d[wp.float32], qvel_in: wp.array2d[wp.float32],
+                 qacc_out: wp.array2d[wp.float32]):
+    wp.copy(d.qpos, qpos_in); wp.copy(d.qvel, qvel_in)
+    mjw.forward(m, d)
+    wp.copy(qacc_out, d.qacc)
+
+fwd = wp.jax_callable(warp_forward, num_outputs=1, graph_mode=mode,
+                      output_dims={"qacc_out": (NWORLD, mjm.nv)})
+(qacc,) = fwd(qpos, qvel)                  # a list of one array
+qpos1, qvel1 = stp(qpos, qvel)
+assert jp.allclose(qvel + mjm.opt.timestep * qacc, qvel1, atol=1e-5)</code></pre></div>
+          <p>On CPU (graph mode NONE) the largest difference is about 4e-7, float32 rounding. Both ops copy into and out of
+            the same <code>d</code>: everything not copied in (<code>d.time</code>, <code>d.qacc_warmstart</code>,
+            <code>d.ctrl</code>, contacts) is shared, and whatever one op leaves in <code>d</code> is what the other op's next call starts from, except the fields it copies in. Give
+            each op its own Data when that matters. <code>jax.grad</code> raises for both (§5).</p>
+        </div></details>
+      </div>
+    </section>
+
+    <!-- ===================== SUMMARY ===================== -->
+    <section class="sec" id="summary">
+      <h2><span class="sec-num">12</span>Summary</h2>
+      <div class="takeaways">
+        <h3>Key takeaways</h3>
+        <ul>
+          <li><code>wp.to_torch(d.field)</code> is a zero-copy view (same <code>data_ptr</code>); make views once and reuse them. <code>.numpy()</code> is a copy that goes stale.</li>
+          <li>MJWarp is float32; composite dtypes become trailing dims; quaternions stay <code>(w, x, y, z)</code>.</li>
+          <li><code>wp.from_torch</code> keeps strides for scalar dtypes, refuses strided inner dims for vector dtypes, and maps float64 to float64. <code>wp.copy</code> only checks element byte size: float64/int64 raise, int32/uint32 are reinterpreted bit for bit with no error. Convert with <code>.float()</code> first.</li>
+          <li>Default torch and Warp streams are ordered; a <code>torch.cuda.Stream()</code> needs <code>wp.stream_from_torch</code> or an explicit wait.</li>
+          <li>Actions go <em>into</em> <code>d.ctrl</code> (<code>wp.copy</code> or <code>to_torch(d.ctrl).copy_</code>); rebinding <code>d.ctrl</code> breaks graphs and views.</li>
+          <li>For JAX: set the XLA variables before <code>import jax</code>, wrap a closure with <code>wp.jax_callable(..., graph_mode=WARP, output_dims=...)</code>, set <code>graph_conditional</code> explicitly, keep NWORLD fixed, unroll with <code>lax.scan</code>. On CPU, graph mode NONE works.</li>
+          <li>In WARP mode the Python body runs only on capture; graphs are cached per <code>(call_id, buffer addresses)</code>, and every eager call has a new <code>call_id</code>. Hidden state in <code>d</code> survives between calls.</li>
+          <li><code>contrib/jax_unroll.py</code>: wrong <code>../benchmark</code> path, <code>nconmax</code> that is per world now, a kernel-cache wipe. <code>custom_vmap</code> turns per-env code into one batched call. MJX <code>impl="warp"</code> is the official JAX route.</li>
+        </ul>
+      </div>
+      <p>Next, <a href="29-gradients-and-system-identification.html">Ch 29</a> takes up the question §5 left open:
+        derivatives. It explains why <code>mjw.step</code> cannot be differentiated in 4.0.1 and how to optimize and
+        identify parameters anyway.</p>
+      <p class="stuck">Stuck? See <a href="../reference/troubleshooting.html">Troubleshooting</a> or the <a href="../reference/course-map.html">course map</a>.</p>
+    </section>
+
+    <!-- ===================== SOURCE MAP ===================== -->
+    <section class="sec" id="source-map">
+      <h2><span class="sec-num">13</span>Source map</h2>
+      <p class="small muted">mujoco_warp paths are in the 4.0.1 wheel unless marked "repo only"; warp paths are in warp-lang 1.19.0.</p>
+      <div class="table-wrap">
+        <table class="source-map">
+          <thead><tr><th>Concept</th><th>File</th><th>Function</th></tr></thead>
+          <tbody>
+            <tr><td>torch zero-copy views</td><td>warp/_src/torch.py</td><td>to_torch, from_torch, device_to_torch</td></tr>
+            <tr><td>torch streams</td><td>warp/_src/torch.py</td><td>stream_from_torch, stream_to_torch (blocking vs non-blocking docstrings)</td></tr>
+            <tr><td>JAX zero-copy views</td><td>warp/_src/jax/__init__.py</td><td>to_jax, from_jax</td></tr>
+            <tr><td>JAX op from a Python function</td><td>warp/_src/jax/ffi.py</td><td>jax_callable, JaxCallableGraphMode, FfiCallable.ffi_callback</td></tr>
+            <tr><td>The reference bridge</td><td>mujoco_warp/_src/jax_test.py</td><td>JAXTest.test_jax</td></tr>
+            <tr><td>Field contract for MJX</td><td>mujoco_warp/_src/io_jax_test.py</td><td>_check_annotation_compat, _leading_dims_scale_w_nworld, IOTest</td></tr>
+            <tr><td>Batched-array marks</td><td>mujoco_warp/_src/warp_util.py</td><td>mark_batched, is_array_spec</td></tr>
+            <tr><td><code>nconmax</code> per world, <code>naconmax</code> total</td><td>mujoco_warp/_src/io.py</td><td>put_data, make_data (docstrings)</td></tr>
+            <tr><td>Solver conditional loop (why WARP mode)</td><td>mujoco_warp/_src/solver.py</td><td>_solve (<code>wp.capture_while</code> when <code>opt.graph_conditional</code>, else a fixed loop "mostly for when JAX is used")</td></tr>
+            <tr><td>Callback fields skipped by the contract</td><td>mujoco_warp/_src/types.py</td><td>Callback</td></tr>
+            <tr><td>Stale unroll benchmark (repo only)</td><td>contrib/jax_unroll.py</td><td>lines 9, 18, 23, 25, 35, 58, 59</td></tr>
+            <tr><td>custom_vmap pattern (repo only)</td><td>contrib/apptronik_apollo_locomotion.ipynb</td><td>mjwarp_step, step_vmap_rule, xquat_to_xmat</td></tr>
+            <tr><td>Temporary JAX extras (repo only)</td><td>pyproject.toml</td><td>[project.optional-dependencies] cpu, cuda</td></tr>
+            <tr><td>Ecosystem pointers (repo only)</td><td>README.md</td><td>"Integrating MuJoCo Warp"</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="chapter-footer">
+      <div class="complete-row"><button class="btn complete-btn" data-slug="28-interop-torch-and-jax">Mark chapter as complete</button></div>
+      <nav class="pager" aria-label="Chapter pager">
+        <a class="prev" href="27-rays-lidar-and-batch-rendering.html"><span class="dir">Previous</span><span class="ttl">Ch 27 · Rays, Lidar and Batch Rendering for Thousands of Worlds</span></a>
+        <a class="index" href="../index.html"><span class="dir">All chapters</span><span class="ttl">Index</span></a>
+        <a class="next" href="29-gradients-and-system-identification.html"><span class="dir">Next</span><span class="ttl">Ch 29 · Gradients, Sampling-Based Optimization and Parallel System Identification</span></a>
+      </nav>
+      <p class="site-footer">MuJoCo Warp course · mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1</p>
+    </footer>
+  </main>
+</div>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/xml.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="../assets/course.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  MW.onReady(function () {
+    var $ = function (s, r) { return (r || document).querySelector(s); };
+    var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+    function svg(tag, attrs, parent) { return MW.svgEl(tag, attrs, parent); }
+    function txt(parent, x, y, s, cls, anchor) {
+      var t = svg("text", { x: x, y: y, "class": cls || "s-small", "text-anchor": anchor || "start" }, parent);
+      t.textContent = s; return t;
+    }
+    function pressSeg(seg, btn) { $$("button", seg).forEach(function (b) { b.setAttribute("aria-pressed", b === btn ? "true" : "false"); }); }
+
+    // ---------- Widget: view or copy (values from Example 28.1) ----------
+    (function () {
+      var root = $("#vc-svg"), verdict = $("#vc-verdict");
+      var st;
+      function reset() { st = { buf: [1, 1, 1, 1], snap: null, wrote: false, stepped: false }; draw(); verdict.className = "verdict"; verdict.textContent = "Start with button 1."; }
+      function row(y, label, sub, vals, mode) {
+        txt(root, 10, y + 18, label, "s-label"); txt(root, 10, y + 34, sub, "s-small s-mono");
+        for (var k = 0; k < 4; k++) {
+          var g = svg("g", { "class": "vc-cell" + (mode && mode[k] ? " " + mode[k] : "") }, root);
+          svg("rect", { x: 200 + k * 108, y: y, width: 100, height: 40, rx: 7, "class": "s-box" }, g);
+          txt(g, 250 + k * 108, y + 25, vals ? vals[k].toFixed(4) : "-", "s-label s-mono", "middle");
+        }
+      }
+      function draw() {
+        root.innerHTML = '<title id="vct">Three rows of ball heights: the Warp buffer, the torch view and a NumPy snapshot</title><desc id="vcd">Pressing the buttons updates the cells; stale copies turn red.</desc>';
+        for (var k = 0; k < 4; k++) txt(root, 250 + k * 108, 14, "world " + k + " z", "s-small", "middle");
+        row(24, "Warp d.qpos", "buffer @ ptr", st.buf, null);
+        row(84, "torch view q", "same ptr", st.buf, null);
+        var stale = st.snap && st.snap.some(function (v, k) { return v !== st.buf[k]; });
+        row(144, "NumPy snapshot", st.snap ? "its own copy" : "(not taken)", st.snap, stale ? ["vc-stale", "vc-stale", "vc-stale", "vc-stale"] : null);
+        svg("path", { d: "M188 44 C 170 70, 170 80, 188 104", "class": "s-accent-stroke" }, root);
+      }
+      document.querySelectorAll("[data-vc]").forEach(function (b) {
+        b.addEventListener("click", function () {
+          var a = b.getAttribute("data-vc");
+          if (a === "reset") return reset();
+          if (a === "write") { st.buf = [0.5, 1.0, 1.5, 2.0]; st.wrote = true; verdict.className = "verdict ok"; verdict.textContent = "torch wrote; Warp sees it at once (same memory)."; }
+          if (a === "snap") { st.snap = st.buf.slice(); verdict.className = "verdict"; verdict.textContent = "snapshot = d.qpos.numpy(): a copy in host memory."; }
+          if (a === "step") {
+            if (st.stepped) { verdict.className = "verdict warn"; verdict.textContent = "Example 28.1 ran 100 steps once; press Reset to replay."; return; }
+            if (!st.wrote) { verdict.className = "verdict warn"; verdict.textContent = "Press 1 first: the recorded values start from the torch write."; return; }
+            st.buf = [0.3018, 0.8018, 1.3018, 1.8018]; st.stepped = true;
+            verdict.className = st.snap ? "verdict bad" : "verdict ok";
+            verdict.textContent = st.snap ? "The view follows the buffer; the snapshot is stale (red)." : "Both views show the new state. Try again with a snapshot first.";
+          }
+          draw();
+        });
+      });
+      reset();
+    })();
+
+    // ---------- Widget: strides explorer (outcomes from Example 28.2) ----------
+    (function () {
+      var root = $("#sx-svg"), verdict = $("#sx-verdict"), seg = $("#sx-seg");
+      var cases = [
+        { order: [0,1,2,3,4,5,6,7,8,9,10,11], stride: "(3, 1)", res: "contiguous: wp.from_torch(acts) -> zero-copy (4, 3) float32 array", cls: "ok" },
+        { order: [1,4,7,10], stride: "(3,)", res: "strided: wp.from_torch(slice) -> zero-copy, strides (12,) bytes, is_contiguous False; wp.copy into d.ctrl works", cls: "ok" },
+        { order: [0,4,8,1,5,9,2,6,10,3,7,11], stride: "(1, 4)", res: "vec3 with strided inner dim -> RuntimeError: the source inner strides are not contiguous", cls: "bad" },
+        { order: [0,4,8,1,5,9,2,6,10,3,7,11], stride: "(3, 1)", res: "pairs.contiguous() copies into a NEW buffer in read order; then wp.from_torch(..., dtype=wp.vec3) -> shape (4,)", cls: "ok", copy: true }
+      ];
+      function draw(k) {
+        var c = cases[k];
+        root.innerHTML = '<title id="sxt">Twelve float32 cells of one torch buffer and the cells a view selects</title><desc id="sxd">The memory of acts; highlighted cells are those the chosen view reads, in order.</desc>';
+        txt(root, 10, 18, c.copy ? "new buffer (copy), 12 x float32" : "torch storage of acts: 12 x float32 (byte offset = 4 x index)", "s-small");
+        var cw = 50;
+        for (var i = 0; i < 12; i++) {
+          var pos = c.order.indexOf(i), x = 10 + i * cw, val = c.copy ? c.order[i] : i;
+          var picked = pos >= 0;
+          svg("rect", { x: x, y: 28, width: cw - 4, height: 40, rx: 5, "class": "sx-cell" + (picked ? (c.cls === "bad" ? " bad" : " pick") : "") }, root);
+          txt(root, x + (cw - 4) / 2, 53, String(val), "s-label s-mono", "middle");
+          if (picked && c.order.length < 12) txt(root, x + (cw - 4) / 2, 86, "#" + pos, "s-small s-mono", "middle");
+          if (picked && c.order.length === 12) txt(root, x + (cw - 4) / 2, 86, "#" + (c.copy ? i : pos), "s-small s-mono", "middle");
+        }
+        for (var w = 0; w < 4; w++) { var lx = 10 + w * 3 * cw; svg("rect", { x: lx, y: 96, width: 3 * cw - 4, height: 6, rx: 3, "class": "s-w" + w }, root); txt(root, lx + 72, 118, k === 2 || (k === 3 && !c.copy) ? "" : "world " + w + " row", "s-small", "middle"); }
+        txt(root, 10, 146, "torch stride (elements): " + c.stride + (k === 2 ? "  last dim strided by 4: not a packed vec3" : ""), "s-small s-mono");
+        txt(root, 10, 164, k === 1 ? "every 3rd element: column 1 of each world's row" : (k === 2 ? "each vec3 would read elements 0, 4, 8 (not adjacent)" : ""), "s-small");
+        verdict.className = "verdict " + c.cls; verdict.textContent = c.res;
+      }
+      $$("button", seg).forEach(function (b) { b.addEventListener("click", function () { pressSeg(seg, b); draw(+b.getAttribute("data-k")); }); });
+      draw(0);
+    })();
+
+    // ---------- Figure 3: stream lanes ----------
+    (function () {
+      var seg = $("#lane-seg"), fig = $("#lane-fig");
+      function show(k) { $$("[data-lane]", fig).forEach(function (g) { g.style.display = g.getAttribute("data-lane").split(" ").indexOf(String(k)) >= 0 ? "" : "none"; }); }
+      $$("button", seg).forEach(function (b) { b.addEventListener("click", function () { pressSeg(seg, b); show(+b.getAttribute("data-k")); }); });
+      show(0);
+    })();
+
+    // ---------- Widget: graph modes ----------
+    (function () {
+      var seg = $("#gm-seg"), panel = $("#gm-panel");
+      var modes = {
+        NONE: ["Disable graph capture.", "Your Python function runs on every call.", "yes", "Callables that do host synchronization. The course's CPU fallback."],
+        JAX: ["Let JAX (XLA) capture the graph, so the call can be a subgraph of a larger JAX capture.", "Runs during XLA's capture; XLA replays.", "yes (no capture on CPU)", "Pure kernel launches. Not mjw.step with conditional nodes."],
+        WARP: ["Let Warp capture the graph and replay it for matching buffer addresses.", "Only on a capture: when the key (device, call_id, buffer addresses) is new. A jitted program keeps one call_id and replays while the addresses match; every eager Python call gets a new call_id, so it always captures (cache of graph_cache_max = 32).", "no: requires CUDA", "jax_test.py, jax_unroll.py, Apollo: mjw.step, which may use conditional graph nodes."],
+        WARP_STAGED: ["Capture a Warp graph against stable staging buffers, with the input and output copies inside the graph.", "Once per compiled call; graph reused for any addresses.", "no: requires CUDA", "When XLA's buffer addresses keep changing. Uses extra device memory."],
+        WARP_STAGED_EX: ["Capture against stable staging buffers, but submit the input and output copies outside the graph.", "Once per compiled call.", "no: requires CUDA", "Same, with the copies as separate memcpy batches. Benchmark both staged modes."]
+      };
+      function show(k) {
+        var m = modes[k];
+        panel.innerHTML = "<dl><dt>mode</dt><dd><code>wp.JaxCallableGraphMode." + k + "</code></dd><dt>what</dt><dd>" + m[0] + "</dd><dt>Python body runs</dt><dd>" + m[1] + "</dd><dt>JAX CPU backend</dt><dd>" + m[2] + "</dd><dt>use for</dt><dd>" + m[3] + "</dd></dl>";
+      }
+      $$("button", seg).forEach(function (b) { b.addEventListener("click", function () { pressSeg(seg, b); show(b.getAttribute("data-k")); }); });
+      show("WARP");
+    })();
+
+    // ---------- Figure 5: cartpole replay (Example 28.3 data) ----------
+    (function () {
+      var el = $("#cp-replay"), data = MW.readJSON("data-ch28-ex3");
+      if (!data) return;
+      var cols = el.clientWidth < 560 ? 2 : 4, rows = Math.ceil(data.nworld / cols);  // 2 columns on phones
+      MW.replay(el, data, { cols: cols, aspect: cols === 4 ? 2 : 0.9, draw: function (ctx, fr, st, fi, hi) {
+        var cw = st.w / cols, ch = st.h / rows;
+        for (var w = 0; w < data.nworld; w++) {
+          var x0 = (w % cols) * cw, y0 = Math.floor(w / cols) * ch, x = fr[w][0], th = fr[w][1];
+          var railY = y0 + ch * 0.68, scale = (cw - 16) / 3.6, cx = x0 + cw / 2 + x * scale, L = Math.min(ch * 0.5, cw * 0.32);
+          ctx.globalAlpha = hi >= 0 && hi !== w ? 0.3 : 1;
+          ctx.strokeStyle = MW.css("--border-strong"); ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(x0 + 8, railY); ctx.lineTo(x0 + cw - 8, railY); ctx.stroke();
+          ctx.fillStyle = MW.css("--surface-3") || MW.css("--border"); ctx.fillRect(cx - 12, railY - 6, 24, 12);
+          ctx.strokeStyle = MW.worldColor(w); ctx.lineWidth = Math.max(2, L / 14);
+          ctx.beginPath(); ctx.moveTo(cx, railY); ctx.lineTo(cx + L * Math.sin(th), railY - L * Math.cos(th)); ctx.stroke();
+          ctx.fillStyle = MW.worldColor(w); ctx.beginPath(); ctx.arc(cx + L * Math.sin(th), railY - L * Math.cos(th), Math.max(2.5, L / 9), 0, 6.283); ctx.fill();
+          ctx.fillStyle = MW.css("--muted"); ctx.font = "11px " + MW.css("--font-mono"); ctx.textAlign = "left";
+          ctx.fillText("w" + w + " " + (data.labels ? data.labels[w] : ""), x0 + 6, y0 + 14);
+        }
+        ctx.globalAlpha = 1;
+      } });
+      // MW.replay prints "g=0.14: value [0.14,0.183]"; these listeners run after its own and name the numbers.
+      var cv = $("canvas", el), cl = $(".fig-caption-line", el);
+      function nameValues() {
+        var m = cl && /^(.*): value \[([^,\]]+),([^\]]+)\]$/.exec(cl.textContent);
+        if (m) cl.textContent = m[1] + ": cart x = " + m[2] + " m, pole angle = " + m[3] + " rad";
+      }
+      if (cv) ["mousemove", "click", "keydown"].forEach(function (ev) { cv.addEventListener(ev, nameValues); });
+    })();
+
+    // ---------- Figure 7: reward chart (Example 28.6 data) ----------
+    (function () {
+      var data = MW.readJSON("data-ch28-ex6"), root = $("#rw-svg"), legend = $("#rw-legend");
+      if (!data) return;
+      var fig = $("#rw-fig"), line = $(".fig-caption-line", fig);
+      var on = data.gain.map(function () { return true; }), cursor = -1;
+      var X0 = 52, X1 = 628, Y0 = 20, Y1 = 220, n = data.frames.length, ymin = -1.1, ymax = 1.1;
+      function sx(i) { return X0 + (X1 - X0) * i / (n - 1); }
+      function sy(v) { return Y1 - (Y1 - Y0) * (v - ymin) / (ymax - ymin); }
+      function draw() {
+        root.innerHTML = '<title id="rwt">Per-step reward of eight cartpole worlds</title><desc id="rwd">Reward over 2 seconds for gains 0 to 1.</desc>';
+        [-1, -0.5, 0, 0.5, 1].forEach(function (v) {
+          svg("line", { x1: X0, x2: X1, y1: sy(v), y2: sy(v), "class": "s-line", "stroke-opacity": v === 0 ? 0.9 : 0.35 }, root);
+          txt(root, X0 - 6, sy(v) + 4, v.toFixed(1), "s-small s-mono", "end");
+        });
+        for (var s = 0; s <= 2; s += 0.5) { var i = s / data.dt; txt(root, sx(Math.min(n - 1, i)), Y1 + 18, s.toFixed(1) + " s", "s-small s-mono", "middle"); }
+        txt(root, X0, Y1 + 36, "time", "s-small");
+        txt(root, 12, Y0 - 6, "reward per step", "s-small");
+        for (var w = 0; w < data.gain.length; w++) {
+          if (!on[w]) continue;
+          var d = data.frames.map(function (fr, i) { return (i ? "L" : "M") + sx(i).toFixed(1) + " " + sy(fr[w]).toFixed(1); }).join(" ");
+          svg("path", { d: d, fill: "none", stroke: MW.worldColor(w), "stroke-width": 2 }, root);
+        }
+        if (cursor >= 0) svg("line", { x1: sx(cursor), x2: sx(cursor), y1: Y0, y2: Y1, "class": "s-accent-stroke" }, root);
+        svg("rect", { x: X0, y: Y0, width: X1 - X0, height: Y1 - Y0, fill: "transparent", id: "rw-hit" }, root);
+      }
+      function say() {
+        if (cursor < 0) { line.textContent = ""; return; }
+        var fr = data.frames[cursor];
+        line.textContent = "t = " + (cursor * data.dt).toFixed(2) + " s: " + data.gain.map(function (g, w) { return on[w] ? "w" + w + " " + fr[w].toFixed(2) : null; }).filter(Boolean).join(" | ");
+      }
+      data.gain.forEach(function (g, w) {
+        var b = document.createElement("button"); b.type = "button"; b.setAttribute("aria-pressed", "true");
+        b.style.setProperty("--c", "var(--world-" + w + ")"); b.textContent = "w" + w + " g=" + g.toFixed(2) + " avg " + data.avg[w].toFixed(2);
+        b.addEventListener("click", function () { on[w] = !on[w]; b.setAttribute("aria-pressed", on[w] ? "true" : "false"); draw(); say(); });
+        legend.appendChild(b);
+      });
+      function pick(e) { var r = root.getBoundingClientRect(), x = (e.clientX - r.left) * 640 / r.width; cursor = Math.max(0, Math.min(n - 1, Math.round((x - X0) / (X1 - X0) * (n - 1)))); draw(); say(); }
+      root.addEventListener("mousemove", pick); root.addEventListener("click", pick);
+      root.setAttribute("tabindex", "0");
+      root.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowRight") cursor = Math.min(n - 1, cursor + 1); else if (e.key === "ArrowLeft") cursor = Math.max(0, cursor < 0 ? 0 : cursor - 1); else return;
+        e.preventDefault(); draw(); say();
+      });
+      draw();
+      MW.onTheme(draw);
+    })();
+
+    // ---------- Widget: nconmax calculator ----------
+    (function () {
+      var inp = $("#nc-n"), out = $("#nc-n-out");
+      function fmt(x) { return x.toLocaleString("en-US"); }
+      function upd() {
+        var n = Math.pow(2, +inp.value), bad = 64 * n * n, good = 64 * n, top = Math.log10(64 * 8192 * 8192);
+        out.textContent = fmt(n);
+        inp.setAttribute("aria-valuetext", fmt(n) + " worlds");
+        $("#nc-bad").textContent = fmt(bad); $("#nc-good").textContent = fmt(good);
+        $("#nc-bar-bad").style.width = (100 * Math.log10(bad) / top).toFixed(1) + "%";
+        $("#nc-bar-good").style.width = (100 * Math.log10(good) / top).toFixed(1) + "%";
+        var v = $("#nc-verdict");
+        v.className = "verdict " + (n > 1 ? "bad" : "ok");
+        v.textContent = (n > 1 ? "stale line allocates " + fmt(n) + "x too many contact slots" : "with one world the two lines agree") + " (stale line: " + fmt(bad) + " slots, intended: " + fmt(good) + ")";
+      }
+      inp.addEventListener("input", upd); upd();
+    })();
+  });
+});
+</script>
+</body>
+</html>

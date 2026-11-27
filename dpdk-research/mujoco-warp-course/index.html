@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MuJoCo Warp Course</title>
+<meta name="description" content="A 30-chapter course that teaches MuJoCo Warp (MJWarp), GPU-batched MuJoCo on NVIDIA Warp, from first principles to RL at scale.">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="assets/course.css">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<style>
+  @keyframes hero-sweep { 0% { transform: translateX(0); } 100% { transform: translateX(420px); } }
+  .anim-sweep-x { animation: hero-sweep 2.2s linear infinite; }
+  .hero-worlds { width: 100%; height: auto; display: block; }
+  .home-section { margin: 3.5rem 0; }
+  .colab-steps { counter-reset: s; list-style: none; padding: 0; display: grid; gap: 10px; }
+  .colab-steps li { counter-increment: s; position: relative; padding: 12px 14px 12px 52px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); margin: 0; }
+  .colab-steps li::before { content: counter(s); position: absolute; left: 14px; top: 12px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #10200a; font: 700 .8rem var(--font-mono); }
+  .arc-svg { width: 100%; height: auto; display: block; }
+  .ver { font: 600 .8rem var(--font-mono); color: var(--muted); }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+<header class="topbar">
+  <a class="brand" href="index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">30 chapters</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Site">
+    <a href="#chapters"><span class="lbl">Chapters</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg></a>
+    <a href="#reference"><span class="lbl">Reference</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 4h11l3 3v13H5z"/><path d="M9 10h6M9 14h6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<main id="main" class="content-wide">
+  <section class="home-hero">
+    <div class="home-hero-grid">
+      <div>
+        <p class="eyebrow">A 30-chapter interactive course</p>
+        <h1>MuJoCo Warp, <span class="grad">from zero to expert</span></h1>
+        <p class="lede">Learn MJWarp, MuJoCo rewritten as NVIDIA Warp kernels, by building up from rigid-body
+          physics and your first GPU kernel to the collision pipeline, the constraint solver, CUDA graphs and
+          reinforcement learning with thousands of worlds at once.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="chapters/01-what-is-mujoco-warp.html">Start with Chapter 1</a>
+          <a class="btn" href="#colab">Run it on Colab</a>
+        </div>
+        <p class="ver" style="margin-top:16px">mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1</p>
+      </div>
+      <figure class="fig" data-anim style="margin:0">
+        <div class="fig-frame grid-bg" style="padding:10px">
+<!-- HERO:BEGIN -->
+<svg viewBox="0 0 500 390" role="img" aria-labelledby="hero-t hero-d" class="hero-worlds">
+<title id="hero-t">Forty worlds simulated by one kernel launch</title>
+<desc id="hero-d">A grid of forty pendulums, one per world, each colored by its world index and swinging with a slightly different initial angle, while a pulse sweeps across them to show a single launch.</desc>
+<rect x="1" y="1" width="498" height="388" rx="18" class="s-box-2"/>
+<text x="20" y="32" class="s-label">mjw.step(m, d)</text>
+<text x="480" y="32" text-anchor="end" class="s-small s-mono">nworld = 40</text>
+<rect x="10" y="44" width="70" height="336" rx="10" class="s-accent anim-sweep-x" opacity=".12"/>
+<g class="anim-swing" style="transform-origin:40.0px 52.0px;--a0:-25deg;--a1:25deg;animation-delay:-0.33s"><line x1="40.0" y1="52.0" x2="40.0" y2="91.7" class="s-line"/><circle cx="40.0" cy="91.7" r="7" class="s-w0"/></g>
+<circle cx="40.0" cy="52.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:100.0px 52.0px;--a0:-32deg;--a1:32deg;animation-delay:-0.16s"><line x1="100.0" y1="52.0" x2="100.0" y2="91.7" class="s-line"/><circle cx="100.0" cy="91.7" r="7" class="s-w1"/></g>
+<circle cx="100.0" cy="52.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:160.0px 52.0px;--a0:-30deg;--a1:30deg;animation-delay:-0.80s"><line x1="160.0" y1="52.0" x2="160.0" y2="91.7" class="s-line"/><circle cx="160.0" cy="91.7" r="7" class="s-w2"/></g>
+<circle cx="160.0" cy="52.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:220.0px 52.0px;--a0:-19deg;--a1:19deg;animation-delay:-1.12s"><line x1="220.0" y1="52.0" x2="220.0" y2="91.7" class="s-line"/><circle cx="220.0" cy="91.7" r="7" class="s-w3"/></g>
+<circle cx="220.0" cy="52.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:280.0px 52.0px;--a0:-19deg;--a1:19deg;animation-delay:-0.95s"><line x1="280.0" y1="52.0" x2="280.0" y2="91.7" class="s-line"/><circle cx="280.0" cy="91.7" r="7" class="s-w4"/></g>
+<circle cx="280.0" cy="52.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:340.0px 52.0px;--a0:-20deg;--a1:20deg;animation-delay:-0.20s"><line x1="340.0" y1="52.0" x2="340.0" y2="91.7" class="s-line"/><circle cx="340.0" cy="91.7" r="7" class="s-w5"/></g>
+<circle cx="340.0" cy="52.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:400.0px 52.0px;--a0:-27deg;--a1:27deg;animation-delay:-1.82s"><line x1="400.0" y1="52.0" x2="400.0" y2="91.7" class="s-line"/><circle cx="400.0" cy="91.7" r="7" class="s-w6"/></g>
+<circle cx="400.0" cy="52.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:460.0px 52.0px;--a0:-21deg;--a1:21deg;animation-delay:-0.49s"><line x1="460.0" y1="52.0" x2="460.0" y2="91.7" class="s-line"/><circle cx="460.0" cy="91.7" r="7" class="s-w7"/></g>
+<circle cx="460.0" cy="52.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:40.0px 116.0px;--a0:-32deg;--a1:32deg;animation-delay:-2.08s"><line x1="40.0" y1="116.0" x2="40.0" y2="155.7" class="s-line"/><circle cx="40.0" cy="155.7" r="7" class="s-w0"/></g>
+<circle cx="40.0" cy="116.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:100.0px 116.0px;--a0:-31deg;--a1:31deg;animation-delay:-0.87s"><line x1="100.0" y1="116.0" x2="100.0" y2="155.7" class="s-line"/><circle cx="100.0" cy="155.7" r="7" class="s-w1"/></g>
+<circle cx="100.0" cy="116.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:160.0px 116.0px;--a0:-39deg;--a1:39deg;animation-delay:-0.10s"><line x1="160.0" y1="116.0" x2="160.0" y2="155.7" class="s-line"/><circle cx="160.0" cy="155.7" r="7" class="s-w2"/></g>
+<circle cx="160.0" cy="116.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:220.0px 116.0px;--a0:-37deg;--a1:37deg;animation-delay:-0.64s"><line x1="220.0" y1="116.0" x2="220.0" y2="155.7" class="s-line"/><circle cx="220.0" cy="155.7" r="7" class="s-w3"/></g>
+<circle cx="220.0" cy="116.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:280.0px 116.0px;--a0:-21deg;--a1:21deg;animation-delay:-0.26s"><line x1="280.0" y1="116.0" x2="280.0" y2="155.7" class="s-line"/><circle cx="280.0" cy="155.7" r="7" class="s-w4"/></g>
+<circle cx="280.0" cy="116.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:340.0px 116.0px;--a0:-25deg;--a1:25deg;animation-delay:-1.80s"><line x1="340.0" y1="116.0" x2="340.0" y2="155.7" class="s-line"/><circle cx="340.0" cy="155.7" r="7" class="s-w5"/></g>
+<circle cx="340.0" cy="116.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:400.0px 116.0px;--a0:-22deg;--a1:22deg;animation-delay:-1.28s"><line x1="400.0" y1="116.0" x2="400.0" y2="155.7" class="s-line"/><circle cx="400.0" cy="155.7" r="7" class="s-w6"/></g>
+<circle cx="400.0" cy="116.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:460.0px 116.0px;--a0:-32deg;--a1:32deg;animation-delay:-0.82s"><line x1="460.0" y1="116.0" x2="460.0" y2="155.7" class="s-line"/><circle cx="460.0" cy="155.7" r="7" class="s-w7"/></g>
+<circle cx="460.0" cy="116.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:40.0px 180.0px;--a0:-30deg;--a1:30deg;animation-delay:-0.14s"><line x1="40.0" y1="180.0" x2="40.0" y2="219.7" class="s-line"/><circle cx="40.0" cy="219.7" r="7" class="s-w0"/></g>
+<circle cx="40.0" cy="180.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:100.0px 180.0px;--a0:-19deg;--a1:19deg;animation-delay:-0.45s"><line x1="100.0" y1="180.0" x2="100.0" y2="219.7" class="s-line"/><circle cx="100.0" cy="219.7" r="7" class="s-w1"/></g>
+<circle cx="100.0" cy="180.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:160.0px 180.0px;--a0:-33deg;--a1:33deg;animation-delay:-0.94s"><line x1="160.0" y1="180.0" x2="160.0" y2="219.7" class="s-line"/><circle cx="160.0" cy="219.7" r="7" class="s-w2"/></g>
+<circle cx="160.0" cy="180.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:220.0px 180.0px;--a0:-25deg;--a1:25deg;animation-delay:-1.29s"><line x1="220.0" y1="180.0" x2="220.0" y2="219.7" class="s-line"/><circle cx="220.0" cy="219.7" r="7" class="s-w3"/></g>
+<circle cx="220.0" cy="180.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:280.0px 180.0px;--a0:-28deg;--a1:28deg;animation-delay:-0.66s"><line x1="280.0" y1="180.0" x2="280.0" y2="219.7" class="s-line"/><circle cx="280.0" cy="219.7" r="7" class="s-w4"/></g>
+<circle cx="280.0" cy="180.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:340.0px 180.0px;--a0:-35deg;--a1:35deg;animation-delay:-1.54s"><line x1="340.0" y1="180.0" x2="340.0" y2="219.7" class="s-line"/><circle cx="340.0" cy="219.7" r="7" class="s-w5"/></g>
+<circle cx="340.0" cy="180.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:400.0px 180.0px;--a0:-23deg;--a1:23deg;animation-delay:-1.26s"><line x1="400.0" y1="180.0" x2="400.0" y2="219.7" class="s-line"/><circle cx="400.0" cy="219.7" r="7" class="s-w6"/></g>
+<circle cx="400.0" cy="180.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:460.0px 180.0px;--a0:-30deg;--a1:30deg;animation-delay:-1.93s"><line x1="460.0" y1="180.0" x2="460.0" y2="219.7" class="s-line"/><circle cx="460.0" cy="219.7" r="7" class="s-w7"/></g>
+<circle cx="460.0" cy="180.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:40.0px 244.0px;--a0:-34deg;--a1:34deg;animation-delay:-0.63s"><line x1="40.0" y1="244.0" x2="40.0" y2="283.7" class="s-line"/><circle cx="40.0" cy="283.7" r="7" class="s-w0"/></g>
+<circle cx="40.0" cy="244.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:100.0px 244.0px;--a0:-40deg;--a1:40deg;animation-delay:-0.26s"><line x1="100.0" y1="244.0" x2="100.0" y2="283.7" class="s-line"/><circle cx="100.0" cy="283.7" r="7" class="s-w1"/></g>
+<circle cx="100.0" cy="244.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:160.0px 244.0px;--a0:-27deg;--a1:27deg;animation-delay:-1.67s"><line x1="160.0" y1="244.0" x2="160.0" y2="283.7" class="s-line"/><circle cx="160.0" cy="283.7" r="7" class="s-w2"/></g>
+<circle cx="160.0" cy="244.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:220.0px 244.0px;--a0:-21deg;--a1:21deg;animation-delay:-1.08s"><line x1="220.0" y1="244.0" x2="220.0" y2="283.7" class="s-line"/><circle cx="220.0" cy="283.7" r="7" class="s-w3"/></g>
+<circle cx="220.0" cy="244.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:280.0px 244.0px;--a0:-19deg;--a1:19deg;animation-delay:-1.47s"><line x1="280.0" y1="244.0" x2="280.0" y2="283.7" class="s-line"/><circle cx="280.0" cy="283.7" r="7" class="s-w4"/></g>
+<circle cx="280.0" cy="244.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:340.0px 244.0px;--a0:-35deg;--a1:35deg;animation-delay:-1.26s"><line x1="340.0" y1="244.0" x2="340.0" y2="283.7" class="s-line"/><circle cx="340.0" cy="283.7" r="7" class="s-w5"/></g>
+<circle cx="340.0" cy="244.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:400.0px 244.0px;--a0:-37deg;--a1:37deg;animation-delay:-0.69s"><line x1="400.0" y1="244.0" x2="400.0" y2="283.7" class="s-line"/><circle cx="400.0" cy="283.7" r="7" class="s-w6"/></g>
+<circle cx="400.0" cy="244.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:460.0px 244.0px;--a0:-33deg;--a1:33deg;animation-delay:-1.31s"><line x1="460.0" y1="244.0" x2="460.0" y2="283.7" class="s-line"/><circle cx="460.0" cy="283.7" r="7" class="s-w7"/></g>
+<circle cx="460.0" cy="244.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:40.0px 308.0px;--a0:-31deg;--a1:31deg;animation-delay:-1.00s"><line x1="40.0" y1="308.0" x2="40.0" y2="347.7" class="s-line"/><circle cx="40.0" cy="347.7" r="7" class="s-w0"/></g>
+<circle cx="40.0" cy="308.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:100.0px 308.0px;--a0:-36deg;--a1:36deg;animation-delay:-2.08s"><line x1="100.0" y1="308.0" x2="100.0" y2="347.7" class="s-line"/><circle cx="100.0" cy="347.7" r="7" class="s-w1"/></g>
+<circle cx="100.0" cy="308.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:160.0px 308.0px;--a0:-28deg;--a1:28deg;animation-delay:-1.46s"><line x1="160.0" y1="308.0" x2="160.0" y2="347.7" class="s-line"/><circle cx="160.0" cy="347.7" r="7" class="s-w2"/></g>
+<circle cx="160.0" cy="308.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:220.0px 308.0px;--a0:-19deg;--a1:19deg;animation-delay:-1.54s"><line x1="220.0" y1="308.0" x2="220.0" y2="347.7" class="s-line"/><circle cx="220.0" cy="347.7" r="7" class="s-w3"/></g>
+<circle cx="220.0" cy="308.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:280.0px 308.0px;--a0:-32deg;--a1:32deg;animation-delay:-2.18s"><line x1="280.0" y1="308.0" x2="280.0" y2="347.7" class="s-line"/><circle cx="280.0" cy="347.7" r="7" class="s-w4"/></g>
+<circle cx="280.0" cy="308.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:340.0px 308.0px;--a0:-36deg;--a1:36deg;animation-delay:-0.63s"><line x1="340.0" y1="308.0" x2="340.0" y2="347.7" class="s-line"/><circle cx="340.0" cy="347.7" r="7" class="s-w5"/></g>
+<circle cx="340.0" cy="308.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:400.0px 308.0px;--a0:-26deg;--a1:26deg;animation-delay:-1.47s"><line x1="400.0" y1="308.0" x2="400.0" y2="347.7" class="s-line"/><circle cx="400.0" cy="347.7" r="7" class="s-w6"/></g>
+<circle cx="400.0" cy="308.0" r="2" class="s-muted"/>
+<g class="anim-swing" style="transform-origin:460.0px 308.0px;--a0:-18deg;--a1:18deg;animation-delay:-1.02s"><line x1="460.0" y1="308.0" x2="460.0" y2="347.7" class="s-line"/><circle cx="460.0" cy="347.7" r="7" class="s-w7"/></g>
+<circle cx="460.0" cy="308.0" r="2" class="s-muted"/>
+</svg>
+<!-- HERO:END -->
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="small muted">One launch steps every world. Each pendulum is a separate world.</span></div>
+      </figure>
+    </div>
+  </section>
+
+  <section class="home-section" aria-labelledby="progress-h">
+    <h2 id="progress-h" class="sr-only">Your progress</h2>
+    <div class="course-progress" role="presentation"><span></span></div>
+    <p class="small muted course-progress-text" style="margin-top:6px">Mark chapters complete at the end of each page; progress is saved in this browser.</p>
+  </section>
+
+  <section class="home-section" id="arc" aria-labelledby="arc-h">
+    <h2 id="arc-h">The course arc</h2>
+    <p class="muted">Six parts. Each one ends with a checkpoint project that pulls its chapters together.</p>
+    <figure class="fig" data-anim style="margin-top:12px">
+      <div class="fig-frame scroll-x">
+        <svg class="arc-svg" viewBox="0 0 960 150" role="img" aria-labelledby="arc-t">
+          <title id="arc-t">Six parts from foundations to RL at scale</title>
+          <defs><marker id="arc-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+          <path d="M20 75 H 940" class="s-accent-stroke anim-flow" opacity=".6"/>
+          <g class="hot" data-info="<strong>Part I, Foundations (Ch 1-7)</strong>: what MJWarp is, MuJoCo, a physics primer, Warp and the GPU, the batched layout, the pipeline. Checkpoint: a 10k bouncing-balls dashboard.">
+            <circle cx="80" cy="75" r="30" class="s-accent-soft"/><text x="80" y="81" text-anchor="middle" class="s-label">I</text>
+            <text x="80" y="128" text-anchor="middle" class="s-small">Foundations</text></g>
+          <g class="hot" data-info="<strong>Part II, Driving simulations (Ch 8-10)</strong>: resets, state, mocap and control; contacts and buffer sizing; domain randomization. Checkpoint: the robust slide study.">
+            <circle cx="240" cy="75" r="30" class="s-accent-soft"/><text x="240" y="81" text-anchor="middle" class="s-label">II</text>
+            <text x="240" y="128" text-anchor="middle" class="s-small">Driving sims</text></g>
+          <g class="hot" data-info="<strong>Part III, Inside the dynamics (Ch 11-14)</strong>: equations of motion and the mass matrix, forces and actuators, integrators, sensors and inverse dynamics. Checkpoint: humanoid arm tracking.">
+            <circle cx="400" cy="75" r="30" class="s-accent2-soft"/><text x="400" y="81" text-anchor="middle" class="s-label">III</text>
+            <text x="400" y="128" text-anchor="middle" class="s-small">Dynamics</text></g>
+          <g class="hot" data-info="<strong>Part IV, Collision (Ch 15-18)</strong>: broadphase, primitive colliders, GJK/EPA, heightfields and SDFs. Checkpoint: falling clutter.">
+            <circle cx="560" cy="75" r="30" class="s-accent2-soft"/><text x="560" y="81" text-anchor="middle" class="s-label">IV</text>
+            <text x="560" y="128" text-anchor="middle" class="s-small">Collision</text></g>
+          <g class="hot" data-info="<strong>Part V, Constraints, solver, soft bodies (Ch 19-23)</strong>: constraints as optimization, CG and Newton, islands and sleep, determinism, flex. Checkpoint: cloth on a box stack.">
+            <circle cx="720" cy="75" r="30" class="s-accent-soft"/><text x="720" y="81" text-anchor="middle" class="s-label">V</text>
+            <text x="720" y="128" text-anchor="middle" class="s-small">Solver &amp; soft</text></g>
+          <g class="hot" data-info="<strong>Part VI, Performance, extension, integration (Ch 24-30)</strong>: CUDA graphs, profiling, custom kernels, rays and rendering, torch/JAX, gradients and system ID, the RL capstone.">
+            <circle cx="880" cy="75" r="30" class="s-accent-soft"/><text x="880" y="81" text-anchor="middle" class="s-label">VI</text>
+            <text x="880" y="128" text-anchor="middle" class="s-small">Scale &amp; RL</text></g>
+          <circle cx="20" cy="75" r="6" class="s-accent anim-pulse"/>
+        </svg>
+      </div>
+      <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a part to see what it covers."></div>
+    </figure>
+    <div class="arc">
+      <div class="arc-step"><span class="part">Part I · Ch 1-7</span><h3>Foundations</h3><p>MuJoCo, physics, Warp, many worlds, the pipeline.</p></div>
+      <div class="arc-step"><span class="part">Part II · Ch 8-10</span><h3>Driving simulations</h3><p>Resets, control, contacts, randomization.</p></div>
+      <div class="arc-step"><span class="part">Part III · Ch 11-14</span><h3>Inside the dynamics</h3><p>Mass matrix, forces, integrators, sensors.</p></div>
+      <div class="arc-step"><span class="part">Part IV · Ch 15-18</span><h3>Collision</h3><p>Broadphase, primitives, GJK/EPA, SDFs.</p></div>
+      <div class="arc-step"><span class="part">Part V · Ch 19-23</span><h3>Solver and soft bodies</h3><p>Optimization, CG/Newton, sleep, flex.</p></div>
+      <div class="arc-step"><span class="part">Part VI · Ch 24-30</span><h3>Scale and integration</h3><p>Graphs, profiling, kernels, rendering, RL.</p></div>
+    </div>
+  </section>
+
+  <section class="home-section" id="colab" aria-labelledby="colab-h">
+    <h2 id="colab-h">How to use Colab with this course</h2>
+    <div class="hero-grid">
+      <ol class="colab-steps">
+        <li>Open a chapter and press <strong>Open in Colab</strong> at the top (or download the notebook).</li>
+        <li>In Colab: <strong>Runtime &gt; Change runtime type</strong>, pick a GPU (T4, L4 or A100) and save.</li>
+        <li>Run the first cells: <code>!nvidia-smi</code>, then the standard setup cell. It checks the driver, installs the pinned versions and prints <code>device: cuda:0</code>.</li>
+        <li>Run the example cells top to bottom. Every notebook is self-contained: it needs no other files.</li>
+        <li>Compare with the page's <em>Expected output</em>. Those were captured on CPU with small budgets; on the GPU the examples use bigger budgets, so numbers and timings differ.</li>
+      </ol>
+      <div>
+        <div class="callout tip"><p class="callout-title">Tip</p><p>The first <code>mjw.step</code> compiles the kernels (tens of seconds). Later calls reuse Warp's kernel cache, so they are fast.</p></div>
+        <div class="callout warning"><p class="callout-title">Pitfall</p><p>If the setup cell prints <em>Warp sees no GPU</em>, the runtime is CPU-only. Change the runtime type and run the setup cell again.</p></div>
+        <div class="callout note"><p class="callout-title">Without Colab</p><p>Every example also runs on a laptop CPU: <code>pip install "mujoco-warp[viewer]==4.0.1" "mujoco-core[rendering]==4.0.1" "warp-lang==1.19.0" matplotlib mediapy</code>, then <code>python examples/&lt;chapter&gt;/exNN_name.py</code>.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="home-section" id="chapters" aria-labelledby="chapters-h">
+    <h2 id="chapters-h">Chapters</h2>
+    <p class="muted">Grouped by level. Prerequisites always point to lower-numbered chapters, so reading in order always works.</p>
+<!-- CHAPTERS:BEGIN -->
+<section class="level-group" id="level-beginner">
+  <h2><span class="badge level-beginner">Beginner</span> 6 chapters</h2>
+  <p class="muted">Physics, MuJoCo, Warp and your first thousands of worlds.</p>
+  <ol class="chapter-list">
+    <li><a class="chapter-item" data-slug="01-what-is-mujoco-warp" href="chapters/01-what-is-mujoco-warp.html"><span class="n">01</span><div><h3>What Is MuJoCo Warp?</h3><p>Part I · What physics simulation, MuJoCo, GPUs, Warp and MJWarp are; a pinned, driver-aware Colab setup; hello world in 1 and 1024 worlds (real 256-world replay hero); the unsupported features in plain language.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="02-mujoco-essentials" href="chapters/02-mujoco-essentials.html"><span class="n">02</span><div><h3>MuJoCo Essentials for MJWarp Users</h3><p>Part I · MuJoCo essentials: MJCF, MjModel/MjData, joints and coordinates, the (w,x,y,z) quaternion convention (owner), limits, defaults, soft contacts and solref/solimp intuition (owner), equalities, mocap, actuators, sensors, MjSpec, rendering a frame.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="03-rigid-body-physics-primer" href="chapters/03-rigid-body-physics-primer.html"><span class="n">03</span><div><h3>Rigid-Body Physics from Scratch: Particles, Rigid Bodies, Joints and Contacts</h3><p>Part I · Rigid-body physics from scratch in NumPy: F=ma, explicit vs semi-implicit Euler, a penalty-floor bouncing ball, the 6-DOF rigid-body state, inertia tensor and principal axes, gyroscopic term, quaternion integration, reduced coordinates, contacts and limits as constraints.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="04-warp-and-the-gpu" href="chapters/04-warp-and-the-gpu.html"><span class="n">04</span><div><h3>NVIDIA Warp and How a GPU Runs Your Kernel</h3><p>Part I · NVIDIA Warp and the GPU execution model: arrays and vector dtypes, kernels, wp.func, SIMT warps, blocks, divergence, coalescing, JIT caching and the log level, atomics, timing, the wp.quat storage pitfall and reading a real MJWarp kernel; tiles as an optional preview.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="05-first-simulation" href="chapters/05-first-simulation.html"><span class="n">05</span><div><h3>Your First MJWarp Simulation (and How to See It)</h3><p>Part I · The four-call workflow (put_model, make_data/put_data, step/forward, get_data_into), Option fields, float32 accuracy and chaos, and seeing worlds: real batch-rendered frames, videos, mjwarp-viewer and mjwarp-record (GPU-only CLI with a CPU manual loop).</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="06-batched-data-layout" href="chapters/06-batched-data-layout.html"><span class="n">06</span><div><h3>Many Worlds: The Batched Data Layout</h3><p>Part I · The nworld-first layout, linear memory and coalescing, in-place writes vs replacement, round-robin batched Model fields, pooled arrays, host-read costs, plotting many worlds, and when the GPU beats C MuJoCo (throughput vs nworld).</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+  </ol>
+</section>
+<section class="level-group" id="level-intermediate">
+  <h2><span class="badge level-intermediate">Intermediate</span> 4 chapters</h2>
+  <p class="muted">The pipeline, resets and control, contacts, domain randomization.</p>
+  <ol class="chapter-list">
+    <li><a class="chapter-item" data-slug="07-pipeline-tour" href="chapters/07-pipeline-tour.html"><span class="n">07</span><div><h3>A Guided Tour of step and forward</h3><p>Part I · The stage order of forward and step as the 4.0.1 wheel runs it (pipeline breadcrumb), calling stages by hand, the force-budget identity, kernel counts and the pipeline-wide launch-shape atlas, disable flags, EventTracer, a CUDA-graph teaser; Part I checkpoint.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="08-resets-state-and-control" href="chapters/08-resets-state-and-control.html"><span class="n">08</span><div><h3>Resets, State, Mocap and Control Loops</h3><p>Part II · Masked and keyframe resets, state snapshots with every State bit and composite (PHYSICS, WARMSTART for bitwise replays), per-world mocap targets and eq_active, step1/step2 and control callbacks, ctrl clamping, device-side auto-reset with a non-finite guard, parallel-rollout MPC.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="09-contacts-and-buffer-sizing" href="chapters/09-contacts-and-buffer-sizing.html"><span class="n">09</span><div><h3>Contacts, Constraint Budgets and Overflow</h3><p>Part II · The Contact struct and pooled contact buffer, normals and ContactType bits, sizing parameters and defaults, the generated OverflowType catalogue with a real-data LED panel, starvation, a sizing recipe and memory estimates, contact forces, friction-cone intuition.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="10-domain-randomization" href="chapters/10-domain-randomization.html"><span class="n">10</span><div><h3>Domain Randomization with Batched Model Fields</h3><p>Part II · Domain randomization: per-world Model fields, batchable vs structural fields, derived constants in plain language, set_const with SetConstGroup (deprecated aliases noted) and its caveats, set_length_range, on-device re-randomization; Part II checkpoint.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+  </ol>
+</section>
+<section class="level-group" id="level-advanced">
+  <h2><span class="badge level-advanced">Advanced</span> 6 chapters</h2>
+  <p class="muted">Inside the dynamics and the first half of collision detection.</p>
+  <ol class="chapter-list">
+    <li><a class="chapter-item" data-slug="11-equations-of-motion-kinematics-mass-matrix" href="chapters/11-equations-of-motion-kinematics-mass-matrix.html"><span class="n">11</span><div><h3>Equations of Motion, Kinematics and the Mass Matrix</h3><p>Part III · Equations of motion in generalized coordinates, spatial vectors and the com frame, the kinematics-outputs table, branch-parallel kinematics, contiguous subtrees, CSR mass matrix, the factorize subtlety and the four factorization paths (block router).</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="12-forces-actuators-tendons" href="chapters/12-forces-actuators-tendons.html"><span class="n">12</span><div><h3>Forces: Passive, Springs, Bias, Actuators and Tendons</h3><p>Part III · Passive forces decomposed by name (springs incl. polynomial and plastic, dampers incl. actuator damping, gravcomp, fluid), RNE as MJWarp runs it, transmissions and the sparse moment layout, the actuator pipeline, MuJoCo 4 actuators (DC motor; PID and SO3 rejected in 4.0.1), muscles, tendons.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="13-integrators" href="chapters/13-integrators.html"><span class="n">13</span><div><h3>Time Integration: Euler, RK4, Implicit and Discrete</h3><p>Part III · Time integration: _advance (incl. quaternion and plastic updates), semi-implicit Euler with implicit damping, RK4, implicitfast, implicit, a discrete overview, energy behaviour, convergence studies and the quaternion-integrate widget.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="14-sensors-delays-inverse-dynamics" href="chapters/14-sensors-delays-inverse-dynamics.html"><span class="n">14</span><div><h3>Sensors, Delays and Inverse Dynamics</h3><p>Part III · Sensor stages and the full catalogue, verified rangefinder/contact/interval MJCF, cutoff and interval sampling, energy, actuator and sensor delays with history ring buffers, inverse dynamics; Part III checkpoint (humanoid arm tracking).</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="15-geometry-toolkit-and-broadphase" href="chapters/15-geometry-toolkit-and-broadphase.html"><span class="n">15</span><div><h3>Collision I: Geometry Toolkit, Pair Filtering and the Broadphase</h3><p>Part IV · Collision I: geometry toolkit (bounding volumes, SAT, closest points), model-time pair filtering, bounding-volume filters, NXN and SAP broadphases (real projection direction, per-world sort, work packages), choosing and benchmarking a broadphase.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="16-primitive-narrowphase" href="chapters/16-primitive-narrowphase.html"><span class="n">16</span><div><h3>Collision II: Geom Types and Primitive Colliders</h3><p>Part IV · Collision II: the dispatch table, the fused primitive narrowphase kernel vs per-pair convex kernels, write_contact and material mixing, the primitive colliders including box-box SAT and clipping, surface velocity, calling core colliders from your own kernel.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+  </ol>
+</section>
+<section class="level-group" id="level-expert">
+  <h2><span class="badge level-expert">Expert</span> 14 chapters</h2>
+  <p class="muted">Convex collision, the solver, soft bodies, performance, interop and RL at scale.</p>
+  <ol class="chapter-list">
+    <li><a class="chapter-item" data-slug="17-convex-collision-gjk-epa" href="chapters/17-convex-collision-gjk-epa.html"><span class="n">17</span><div><h3>Collision III: Convex Shapes with GJK, EPA and Multi-Contact</h3><p>Part IV · Collision III: support functions, GJK in 2D and 3D, EPA and the horizon, multi-contact clipping, the grid-stride CCD kernels, CCD scratch sizing (calculator), ccd_iterations tuning and CCD/EPA_HORIZON overflow, meshes as convex hulls.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="18-heightfields-and-sdfs" href="chapters/18-heightfields-and-sdfs.html"><span class="n">18</span><div><h3>Collision IV: Heightfields, SDFs and User SDF Plugins</h3><p>Part IV · Collision IV: heightfield prisms, SDF narrowphase and octree sampling, user SDF plugins (patch before the first compile, fresh processes), custom analytic SDFs; Part IV checkpoint (falling clutter on rigid geometry).</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="19-constraints-as-optimization" href="chapters/19-constraints-as-optimization.html"><span class="n">19</span><div><h3>Constraints as Convex Optimization</h3><p>Part V · Constraints as convex optimization: the math toolkit (GD vs Newton vs CG, linesearch), the 1-D toy, the efc row layout and J storage (dense vs CSR), softness from solref/solimp, friction cones, limits and the six equality types, optimality checks.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="20-solvers-cg-newton" href="chapters/20-solvers-cg-newton.html"><span class="n">20</span><div><h3>The Primal Solvers: CG, Newton and the Exact Linesearch</h3><p>Part V · The primal solvers: solve flow, CG and Newton, incremental Hessian updates (state-flip strip), the exact linesearch, termination and LS_ITERATIONS, per-world convergence via capture_while, warmstart, noslip and run_qacc_smooth.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="21-islands-and-sleep" href="chapters/21-islands-and-sleep.html"><span class="n">21</span><div><h3>Islands and Sleeping</h3><p>Part V · Islands and sleeping: GPU DSU, sleep cycles and wake triggers, the full 4.0.1 sleep requirements table, the init-asleep workaround, compacted solves and nvmax (NVMAX only with sleep), collision with sleep.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="22-determinism-and-reproducibility" href="chapters/22-determinism-and-reproducibility.html"><span class="n">22</span><div><h3>Determinism and Reproducibility</h3><p>Part V · Determinism and reproducibility: nondeterminism sources, what DeterminismType really does in 4.0.1, bitwise tests on contact-free models, replay testing, PHYSICS|WARMSTART snapshots, and the cost of determinism.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="23-soft-bodies-flex-discrete-integrator" href="chapters/23-soft-bodies-flex-discrete-integrator.html"><span class="n">23</span><div><h3>Soft Bodies: Flex, Cloth, Rods and the Discrete Integrator</h3><p>Part V · Soft bodies: flexcomp ropes, cloth and volumes, elasticity and plasticity, rods, interpolated flexes, flex collision and its unsupported combinations (no hfield/SDF), flex equalities, the discrete integrator and effective metric (owner); Part V checkpoint.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="24-cuda-graphs" href="chapters/24-cuda-graphs.html"><span class="n">24</span><div><h3>CUDA Graphs: Capture, Replay and What Gets Baked</h3><p>Part VI · CUDA graphs: capture and replay, baked vs live (knob board), the replace-array rule, conditional nodes (capture_while/capture_if), CUDA 12.4 and the graph_conditional fallback, eager vs graph throughput, the capture_step helper.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="25-profiling-benchmarking-tuning" href="chapters/25-profiling-benchmarking-tuning.html"><span class="n">25</span><div><h3>Profiling, Benchmarking and Tuning for Throughput</h3><p>Part VI · Profiling, benchmarking and tuning: launch configuration, EventTracer workflow, mjwarp-testspeed with its full flags (ctrl noise defaults, --function), trajectory replay, the benchmarks suite and nightly runs, memory vs nworld, a tuning checklist.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="26-custom-kernels-and-extending" href="chapters/26-custom-kernels-and-extending.html"><span class="n">26</span><div><h3>Writing Custom Kernels and Extending MJWarp</h3><p>Part VI · Writing custom kernels: analyzer-clean conventions, obs/reward/done kernels captured with step and auto-reset, exact callback contracts, user-written contacts, kernel factories and cache_kernel, tiles (owner), userdata, testing and the kernel analyzer.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="27-rays-lidar-and-batch-rendering" href="chapters/27-rays-lidar-and-batch-rendering.html"><span class="n">27</span><div><h3>Rays, Lidar and Batch Rendering for Thousands of Worlds</h3><p>Part VI · Rays and rendering: mjw.ray/rays and lidar (owner of rays), the world-grouped BVH, every create_render_context option (keyword-only), camera and light modes, compute_ray and thread mapping, the megakernel and shading, buffers on real pixels, Gaussian splats, visual DR, graphs.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="28-interop-torch-and-jax" href="chapters/28-interop-torch-and-jax.html"><span class="n">28</span><div><h3>Interop with PyTorch and JAX</h3><p>Part VI · Interop: torch zero-copy with dtype/stream/contiguity caveats, feeding actions in place, the JAX bridge with jax_callable (XLA env vars set before import, Colab&#x27;s preinstalled JAX), a corrected jax_unroll, custom_vmap and MJX pointers.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="29-gradients-and-system-identification" href="chapters/29-gradients-and-system-identification.html"><span class="n">29</span><div><h3>Gradients, Sampling-Based Optimization and Parallel System Identification</h3><p>Part VI · Gradients and optimization: forward vs reverse mode and wp.Tape on a plain kernel, diff.py in 4.0.1 (no registered rules, so no mjw call inside a Tape), register_adjoint options, finite differences across worlds, CEM, parallel system identification (non-RL capstone).</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+    <li><a class="chapter-item" data-slug="30-capstone-rl-at-scale" href="chapters/30-capstone-rl-at-scale.html"><span class="n">30</span><div><h3>Capstone: GPU-Native Reinforcement Learning at Scale</h3><p>Part VI · Capstone: an on-device RL environment (graph-captured substeps, kernels, auto-reset, in-graph DR, torch or warp backend), reference PPO on cartpole, a contact-rich humanoid-standing track, robustness evaluation, rendering, and the course wrap-up.</p></div><span class="done-mark" aria-hidden="true"></span></a></li>
+  </ol>
+</section>
+<!-- CHAPTERS:END -->
+  </section>
+
+  <section class="home-section" id="reference" aria-labelledby="ref-h">
+    <h2 id="ref-h">Reference pages</h2>
+    <div class="cards">
+      <a class="card" href="reference/glossary.html"><span class="card-num">TERMS</span><h3>Glossary</h3><p>One-line definitions for every term.</p></a>
+      <a class="card" href="reference/api-at-a-glance.html"><span class="card-num">API</span><h3>API at a glance</h3><p>Public names, supported features, CLI flags.</p></a>
+      <a class="card" href="reference/repo-tour.html"><span class="card-num">REPO</span><h3>Repository tour</h3><p>What lives where in <code>mujoco_warp/</code>.</p></a>
+      <a class="card" href="reference/troubleshooting.html"><span class="card-num">HELP</span><h3>Troubleshooting</h3><p>Symptom, cause, fix and owning chapter.</p></a>
+      <a class="card" href="reference/course-map.html"><span class="card-num">MAP</span><h3>Course map</h3><p>The pipeline, linked to the chapters.</p></a>
+      <a class="card" href="reference/math-toolkit.html"><span class="card-num">MATH</span><h3>Math toolkit</h3><p>Quaternions, Cholesky, CG, Newton, linesearch.</p></a>
+    </div>
+    <h3 id="cheatsheets-h" style="margin-top:2rem">Cheat sheets, one per Part</h3>
+    <p class="muted">One printable page per Part: the key calls, defaults, pitfalls and links back to the chapter sections.</p>
+    <div class="cards">
+      <a class="card" href="reference/cheatsheet-part1.html"><span class="card-num">Part I · Ch 1-7</span><h3>Foundations</h3><p>The four calls, shape rules, writing inputs, options, Warp basics, the pipeline.</p></a>
+      <a class="card" href="reference/cheatsheet-part2.html"><span class="card-num">Part II · Ch 8-10</span><h3>Driving simulations</h3><p>Resets, snapshots, control, buffer sizing, overflow, randomization.</p></a>
+      <a class="card" href="reference/cheatsheet-part3.html"><span class="card-num">Part III · Ch 11-14</span><h3>Inside the dynamics</h3><p>Stage data, mass matrix, the force ledger, actuators, integrators, sensors.</p></a>
+      <a class="card" href="reference/cheatsheet-part4.html"><span class="card-num">Part IV · Ch 15-18</span><h3>Collision</h3><p>Filters, dispatch, contact rules, convex colliders, heightfields and SDFs.</p></a>
+      <a class="card" href="reference/cheatsheet-part5.html"><span class="card-num">Part V · Ch 19-23</span><h3>Constraints, solver, soft bodies</h3><p>Constraint rows, solver knobs, sleep, determinism, flex.</p></a>
+      <a class="card" href="reference/cheatsheet-part6.html"><span class="card-num">Part VI · Ch 24-30</span><h3>Performance and integration</h3><p>Graphs, tuning, extending, rays and rendering, interop, gradients, RL.</p></a>
+    </div>
+  </section>
+
+  <footer class="site-footer" style="padding:24px 0 48px;border-top:1px solid var(--border)">
+    MuJoCo Warp course · built against mujoco-warp 4.0.1 (source commit 8f5b9f1) · warp-lang 1.19.0 · mujoco-core 4.0.1.
+    MuJoCo and MuJoCo Warp are projects of Google DeepMind with NVIDIA; this course is an independent study guide.
+  </footer>
+</main>
+<script defer src="assets/course.js"></script>
+</body>
+</html>

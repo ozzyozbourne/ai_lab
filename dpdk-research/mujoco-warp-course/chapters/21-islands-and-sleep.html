@@ -1,0 +1,2129 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ch 21 · Islands and Sleeping</title>
+<meta name="description" content="How MJWarp finds constraint islands with a GPU disjoint-set union, puts resting islands to sleep, wakes them, and solves only the awake DOFs (nvmax).">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="../assets/course.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+  /* Chapter 21 local styles */
+  .c21-node { stroke: var(--border-strong); stroke-width: 1.5; transition: fill .25s; }
+  .c21-cell { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1; }
+  .c21-cell-hi { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  .c21-edge { fill: none; stroke: var(--accent-2); stroke-width: 2.5; }
+  .c21-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  .c21-lbl { font: 600 .8rem var(--font-sans); color: var(--muted); min-width: 108px; }
+  .c21-trees { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
+  .c21-tree { border: 1px solid var(--border); border-radius: 10px; padding: 10px; background: var(--surface-2, var(--surface)); min-width: 0; }
+  .c21-tree h5 { margin: 0 0 6px; font: 700 .85rem var(--font-sans); display: flex; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
+  .c21-bar { height: 10px; border-radius: 6px; background: var(--border); overflow: hidden; margin: 6px 0; }
+  .c21-bar > span { display: block; height: 100%; background: var(--accent); width: 0; transition: width .25s; }
+  .c21-tree[data-asleep="1"] { filter: grayscale(.85); opacity: .75; }
+  .c21-tree[data-asleep="1"] .c21-bar > span { background: var(--muted); }
+  .c21-val { font: 600 .9rem var(--font-mono); }
+  .c21-log { font: .8rem/1.5 var(--font-mono); background: var(--code-bg); border-radius: 8px; padding: 8px 10px; min-height: 4.5em; overflow-x: auto; white-space: pre-wrap; }
+  .c21-verdict { border-radius: 10px; padding: 10px 12px; font: .86rem/1.5 var(--font-sans); border: 1px solid var(--border); margin-top: 10px; overflow-wrap: anywhere; }
+  .c21-verdict[data-kind="ok"] { border-color: var(--ok); }
+  .c21-verdict[data-kind="error"] { border-color: var(--danger); }
+  .c21-verdict[data-kind="warn"] { border-color: var(--warn); }
+  .c21-verdict code { overflow-wrap: anywhere; }
+  .math-block { overflow-x: auto; overflow-y: hidden; position: relative; }
+  /* ghost stations that are also "here" (st-sleep, st-island): keep them readable in both themes */
+  .mw-breadcrumb .station.ghost.here rect { fill: var(--accent-soft); stroke: var(--accent); }
+  .mw-breadcrumb .station.ghost.here text { fill: var(--text); }
+  .c21-chip { display: inline-block; font: 600 .75rem var(--font-mono); padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border); }
+  .c21-tbtn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+  @media (max-width: 560px) { .c21-trees { grid-template-columns: 1fr; } .c21-lbl { min-width: 0; width: 100%; } }
+  /* sleep-cycle animation (Figure 4): 10 s loop */
+  .anim-c21-bar { transform-box: fill-box; transform-origin: left center; animation: c21-bar 10s linear infinite; }
+  .anim-c21-arrow { animation: c21-arrow 10s linear infinite; opacity: 0; }
+  .anim-c21-sleep { animation: c21-sleep 10s linear infinite; }
+  .anim-c21-push { animation: c21-push 10s linear infinite; opacity: 0; }
+  .anim-c21-lbl-a { animation: c21-lbl-a 10s linear infinite; }
+  .anim-c21-lbl-s { animation: c21-lbl-s 10s linear infinite; opacity: 0; }
+  @keyframes c21-bar { 0% { transform: scaleX(0); } 40% { transform: scaleX(1); } 80% { transform: scaleX(1); } 82% { transform: scaleX(0); } 100% { transform: scaleX(0); } }
+  @keyframes c21-arrow { 0%, 44% { opacity: 0; } 50%, 79% { opacity: 1; } 82%, 100% { opacity: 0; } }
+  @keyframes c21-sleep { 0%, 50% { opacity: 1; filter: none; } 56%, 79% { opacity: .35; filter: grayscale(1); } 82%, 100% { opacity: 1; filter: none; } }
+  @keyframes c21-push { 0%, 74% { opacity: 0; } 76%, 84% { opacity: 1; } 88%, 100% { opacity: 0; } }
+  @keyframes c21-lbl-a { 0%, 50% { opacity: 1; } 52%, 80% { opacity: 0; } 82%, 100% { opacity: 1; } }
+  @keyframes c21-lbl-s { 0%, 50% { opacity: 0; } 52%, 80% { opacity: 1; } 82%, 100% { opacity: 0; } }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="icon-btn toc-toggle" type="button" aria-label="Table of contents">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">Ch 21 of 30</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Chapter navigation">
+    <a href="20-solvers-cg-newton.html" class="prev" aria-label="Previous chapter"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">Prev</span></a>
+    <a href="22-determinism-and-reproducibility.html" class="next" aria-label="Next chapter"><span class="lbl">Next</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol data-auto></ol>
+    <p class="toc-progress" aria-live="off"></p>
+  </aside>
+
+  <main id="main" class="content">
+    <header class="chapter-hero">
+      <p class="eyebrow">Part V · Chapter 21</p>
+      <h1>Islands and Sleeping</h1>
+      <p class="lede">A warehouse full of boxes that have stopped moving still costs a full physics step per box,
+        unless the simulator notices that nothing is happening. MJWarp does this in two layers: it groups the
+        bodies that push on each other into <em>islands</em>, and it lets an island that has been still for long
+        enough <em>fall asleep</em>, so its contacts, constraint rows and DOFs drop out of the step until something
+        wakes it. This chapter takes both apart, kernel by kernel, and shows every rule the 4.0.1 wheel enforces.</p>
+      <div class="hero-meta">
+        <span class="badge level-expert">Expert</span>
+        <span>About 75 min</span><span class="sep">·</span>
+        <span class="prereqs">Prerequisites: <a href="20-solvers-cg-newton.html">Ch 20</a> (Newton solver), <a href="09-contacts-and-buffer-sizing.html">Ch 9</a> (contacts and overflow)</span>
+      </div>
+      <div class="hero-grid">
+        <div>
+          <h2 class="sr-only">You will learn</h2>
+          <ul class="learn-list">
+            <li>What a constraint island is, and how <code>island.py</code> finds islands with a lock-free GPU disjoint-set union (<code>_dsu_union</code>, <code>_dsu_find</code>).</li>
+            <li>How a tree falls asleep: the <code>tree_asleep</code> countdown, <code>sleep_tolerance</code>, sleep cycles, and every way a tree wakes up.</li>
+            <li>Every sleep requirement <code>put_model</code> and <code>make_data</code> enforce in 4.0.1, and how to start a scene asleep without <code>sleep="init"</code>.</li>
+            <li>How the compacted solve gathers only awake DOFs into <code>nvmax_pad</code> buffers, how to size <code>nvmax</code>, and why NVMAX overflow only fires with sleep on.</li>
+            <li>How collision runs in two passes with sleep, and when sleep makes a scene cheaper (and when it does not).</li>
+          </ul>
+        </div>
+        <div>
+          <div class="hero-actions">
+            <a class="btn btn-colab" href="https://colab.research.google.com/github/ozzyozbourne/ai_lab/blob/main/dpdk-research/mujoco-warp-course/notebooks/21-islands-and-sleep.ipynb" target="_blank" rel="noopener">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M9 7.5a5 5 0 1 0 0 9"/><path d="M15 7.5a5 5 0 1 1 0 9"/></svg>
+              Open in Colab
+            </a>
+            <a class="btn" href="../notebooks/21-islands-and-sleep.ipynb" download>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 21h16"/></svg>
+              Download notebook
+            </a>
+          </div>
+          <p class="small muted" style="margin-top:10px">In Colab: Runtime &gt; Change runtime type &gt; GPU, then run the first cell.</p>
+        </div>
+      </div>
+    </header>
+
+    <section class="recap" aria-labelledby="recap-h">
+      <h2 id="recap-h" data-toc="Recap">Before you start: recap</h2>
+      <ul>
+        <li>Each world has its own constraint rows (<code>efc</code>): contacts, equalities, joint limits and friction, filled by <code>make_constraint</code> up to <code>njmax</code> per world (<a href="09-contacts-and-buffer-sizing.html#sizing-parameters">Ch 9 §5</a>).</li>
+        <li>The Newton solver minimizes a convex cost over <code>qacc</code>; each iteration factors a dense Hessian of size nv (<a href="20-solvers-cg-newton.html">Ch 20</a>).</li>
+        <li>Overflow is reported through bits in <code>d.overflow</code>, one int per world, decoded with <code>mjw.OverflowType</code> (<a href="09-contacts-and-buffer-sizing.html#overflow-detection">Ch 9 §7</a>).</li>
+        <li>The pipeline order is kinematics → collision → make_constraint → smooth forces → solve → integrate (<a href="07-pipeline-tour.html#stage-order">Ch 7 §2</a>).</li>
+        <li>A CUDA graph records launches once and replays them; conditional nodes loop on device; <a href="07-pipeline-tour.html#cuda-graphs">Ch 7 §10</a>.</li>
+      </ul>
+    </section>
+
+    <div class="mw-breadcrumb" data-here="st-sleep st-collision st-island st-solve" data-sleep></div>
+
+    <!-- ===================================================== 1. ISLANDS -->
+    <section class="sec" id="islands">
+      <h2><span class="sec-num">1</span>Islands: who is coupled to whom</h2>
+      <p>Start with the unit MJWarp reasons about. A <abbr class="gl" data-term="kinematic-tree" title="A body hanging directly off the world body, together with all its descendants. Trees are the unit of sleeping.">kinematic tree</abbr>
+        is a body that hangs directly off the world body, together with all of its children. A free box is a tree
+        with one body and 6 DOFs; a robot arm bolted to the floor is one tree with many bodies. MuJoCo numbers the
+        trees <code>0 .. ntree-1</code>, and every DOF knows its tree (<code>m.dof_treeid</code>), as does every
+        body (<code>m.body_treeid</code>; static bodies get -1).</p>
+      <p>Two trees are <em>coupled</em> when one constraint row touches DOFs of both: a contact between two boxes,
+        a weld between two bodies, a tendon running over two arms. A contact between a box and the static floor
+        involves only one tree: it does not couple anything, but it does make that tree <em>constrained</em>. An
+        <abbr class="gl" data-term="island" title="A maximal group of kinematic trees connected through constraint rows. Trees in different islands do not influence each other within a step.">island</abbr>
+        is a maximal group of trees connected through constraint rows. Trees in different islands cannot exert
+        any force on each other during the step, which is what makes it safe to freeze one island while another
+        keeps moving.</p>
+
+      <figure class="fig">
+        <div class="fig-frame grid-bg">
+          <svg viewBox="0 0 640 300" role="img" aria-labelledby="f1t f1d">
+            <title id="f1t">A scene and its island graph</title>
+            <desc id="f1d">Left: eight boxes, a stack of three, three loose boxes and two touching boxes. Right: the same trees as graph nodes, with edges for contacts between trees and the resulting islands.</desc>
+            <text x="16" y="24" class="s-label">Scene (Example 21.8)</text>
+            <line x1="16" y1="236" x2="300" y2="236" class="s-ink" stroke-width="2"/>
+            <text x="20" y="254" class="s-small">floor (static, tree -1)</text>
+            <g class="hot" data-info="<strong>Stack s0, s1, s2 (trees 0-2)</strong>: three contacts box-on-box couple the trees; the bottom box also touches the floor. One island: <code>tree_island = 0, 0, 0</code>.">
+              <rect x="30" y="196" width="40" height="40" rx="3" class="s-w0"/><rect x="30" y="156" width="40" height="40" rx="3" class="s-w0" opacity=".85"/><rect x="30" y="116" width="40" height="40" rx="3" class="s-w0" opacity=".7"/>
+              <text x="50" y="221" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">t0</text><text x="50" y="181" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">t1</text><text x="50" y="141" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">t2</text>
+            </g>
+            <g class="hot" data-info="<strong>Loose boxes a, b, c (trees 3-5)</strong>: each touches only the static floor. Each is constrained but uncoupled, so each is its own island: <code>tree_island = 1, 2, 3</code>.">
+              <rect x="96" y="196" width="40" height="40" rx="3" class="s-w1"/><text x="116" y="221" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">t3</text>
+              <rect x="150" y="196" width="40" height="40" rx="3" class="s-w2"/><text x="170" y="221" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">t4</text>
+              <rect x="204" y="196" width="40" height="40" rx="3" class="s-w3"/><text x="224" y="221" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">t5</text>
+            </g>
+            <g class="hot" data-info="<strong>Side-by-side p, q (trees 6, 7)</strong>: their faces touch (x spacing 0.199 m for 0.2 m boxes), so a box-box contact couples them. One island: <code>tree_island = 4, 4</code>.">
+              <rect x="252" y="196" width="22" height="40" rx="3" class="s-w4"/><rect x="274" y="196" width="22" height="40" rx="3" class="s-w4" opacity=".75"/>
+              <text x="263" y="190" text-anchor="middle" class="s-mono" font-size="11">t6</text><text x="286" y="190" text-anchor="middle" class="s-mono" font-size="11">t7</text>
+            </g>
+            <text x="350" y="24" class="s-label">Island graph</text>
+            <!-- graph -->
+            <g class="hot" data-info="An <strong>edge</strong> is a constraint row whose Jacobian touches two trees (here: box-box contacts). Rows that touch one tree only mark it active.">
+              <text x="420" y="140" class="s-small">← edges = contact rows</text>
+            </g>
+            <g class="hot" data-info="<strong>Island 0</strong> = trees 0, 1, 2 (the stack).">
+              <rect x="356" y="70" width="48" height="140" rx="20" class="s-accent-soft"/>
+              <path d="M380 90 L380 140 L380 190" class="c21-edge"/>
+              <circle cx="380" cy="90" r="14" class="s-w0"/><circle cx="380" cy="140" r="14" class="s-w0"/><circle cx="380" cy="190" r="14" class="s-w0"/>
+              <text x="380" y="94" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">2</text><text x="380" y="144" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">1</text><text x="380" y="194" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">0</text>
+              <text x="380" y="232" text-anchor="middle" class="s-small">island 0</text>
+            </g>
+            <g class="hot" data-info="<strong>Islands 1, 2, 3</strong>: one tree each. Their only rows are floor contacts.">
+              <circle cx="450" cy="190" r="14" class="s-w1"/><circle cx="500" cy="190" r="14" class="s-w2"/><circle cx="550" cy="190" r="14" class="s-w3"/>
+              <text x="450" y="194" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">3</text><text x="500" y="194" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">4</text><text x="550" y="194" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">5</text>
+              <text x="450" y="232" text-anchor="middle" class="s-small">1</text><text x="500" y="232" text-anchor="middle" class="s-small">2</text><text x="550" y="232" text-anchor="middle" class="s-small">3</text>
+            </g>
+            <g class="hot" data-info="<strong>Island 4</strong> = trees 6 and 7, coupled by the face contact.">
+              <rect x="578" y="120" width="44" height="90" rx="20" class="s-accent-soft"/>
+              <path d="M600 140 L600 190" class="c21-edge"/>
+              <circle cx="600" cy="140" r="14" class="s-w4"/><circle cx="600" cy="190" r="14" class="s-w4"/>
+              <text x="600" y="144" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">7</text><text x="600" y="194" text-anchor="middle" class="s-mono" font-size="11" fill="#fff">6</text>
+              <text x="600" y="232" text-anchor="middle" class="s-small">island 4</text>
+            </g>
+            <g class="hot" data-info="<strong>Not in this scene</strong> (all 8 trees here touch the floor). A tree with <strong>no constraint row at all</strong> (a box in free flight, such as Example 21.1's box 3) gets <code>tree_island = -1</code> and is not counted in <code>nisland</code>.">
+              <circle cx="470" cy="80" r="14" class="s-box" stroke-dasharray="4 3"/>
+              <text x="470" y="84" text-anchor="middle" class="s-mono" font-size="11">?</text>
+              <text x="492" y="78" class="s-small">not in this scene: a tree</text><text x="492" y="92" class="s-small">with no rows gets -1</text>
+            </g>
+            <text x="350" y="276" class="s-small s-mono">tree_island = [0 0 0 1 2 3 4 4], nisland = 5</text>
+          </svg>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a group of boxes or islands."></div>
+        <figcaption><span class="fig-num">Figure 1.</span>The scene of Example 21.8 and its island graph. Islands are numbered in the order of their smallest tree, as in C MuJoCo.</figcaption>
+      </figure>
+
+      <h3>Where islands live in Data</h3>
+      <p>The output of island discovery is per world: <code>d.nisland</code> (shape <code>(nworld,)</code>) and
+        <code>d.tree_island</code> (shape <code>(nworld, ntree)</code>, the island id of each tree or -1). After a
+        sleep-enabled solve, <code>island.compute_island_mapping</code> also fills the per-DOF and per-row views
+        (<code>d.dof_island</code>, <code>d.efc.island</code>, <code>d.island_nv</code>, <code>d.island_nefc</code>,
+        <code>d.map_dof2idof</code>, ...). <code>make_data</code> always allocates <code>tree_island</code>,
+        <code>nisland</code> and <code>efc.island</code>, with or without sleep, so you can call island discovery on any
+        Data.</p>
+      <p>Who calls it? <code>forward.py::fwd_position</code> runs <code>island.island(m, d)</code> right after
+        <code>make_constraint</code>, but only under <code>if sleep_enabled</code>, where
+        <code>sleep_enabled = SLEEP and not DisableBit.ISLAND</code>. Without sleep the arrays keep whatever was in
+        them (zeros and -1 from <code>make_data</code>). The public <code>mjw.island(m, d)</code> runs discovery on
+        demand, on whatever efc rows the last <code>forward</code> produced.</p>
+
+      <figure class="code-example" data-file="ex1_islands.py">
+        <div class="code-head">
+          <span class="code-title">Example 21.1</span>
+          <span class="code-file">examples/21-islands-and-sleep/ex1_islands.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 21.1 - constraint islands: who is coupled to whom.
+
+Six boxes, one kinematic tree each. Five rest on the floor (each touches only the static floor),
+box 3 hangs in the air (no constraint at all). With sleep enabled, mjw.forward runs island
+discovery; with sleep disabled it does not, but the public mjw.island(m, d) still works.
+C MuJoCo (mj_forward) is printed for comparison: it always computes islands.
+
+Run: python ex1_islands.py
+"""
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 2
+
+Z = [0.099, 0.099, 0.099, 0.6, 0.099, 0.099]   # box 3 starts in the air
+
+
+def boxes_xml(sleep):
+    flag = '&lt;flag sleep="enable"/&gt;' if sleep else ""
+    bodies = "".join(
+        f'&lt;body name="box{i}" pos="{0.5 * i:.2f} 0 {z}"&gt;&lt;freejoint/&gt;'
+        f'&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;' for i, z in enumerate(Z))
+    return (f'&lt;mujoco&gt;&lt;option timestep="0.01" solver="Newton"&gt;{flag}&lt;/option&gt;&lt;worldbody&gt;'
+            f'&lt;geom name="floor" type="plane" size="5 5 .1"/&gt;{bodies}&lt;/worldbody&gt;&lt;/mujoco&gt;')
+
+
+for sleep in (True, False):
+    mjm = mujoco.MjModel.from_xml_string(boxes_xml(sleep))
+    m = mjw.put_model(mjm)
+    d = mjw.make_data(mjm, nworld=NWORLD, nconmax=32, njmax=128)
+    print(f"--- sleep {'enabled' if sleep else 'disabled'}: ntree {mjm.ntree}, nv {mjm.nv}")
+    print("  island arrays allocated:", "tree_island", d.tree_island.shape,
+          "nisland", d.nisland.shape, "efc.island", d.efc.island.shape)
+    mjw.forward(m, d)
+    print("  after forward:     nisland", d.nisland.numpy()[0],
+          "tree_island", d.tree_island.numpy()[0], "nefc", d.nefc.numpy()[0])
+    mjw.island(m, d)                        # public entry point: island discovery only
+    print("  after mjw.island:  nisland", d.nisland.numpy()[0],
+          "tree_island", d.tree_island.numpy()[0])
+
+mjd = mujoco.MjData(mjm)
+mujoco.mj_forward(mjm, mjd)
+print("C MuJoCo mj_forward: nisland", mjd.nisland, "tree_island", mjd.tree_island)
+print("overflow:", "none" if not d.overflow.numpy().any() else d.overflow.numpy())</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 21.1"</span><span>CPU: <code>python -I ex1_islands.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=2; GPU uses nworld=4096</span></summary>
+<pre class="output">--- sleep enabled: ntree 6, nv 36
+  island arrays allocated: tree_island (2, 6) nisland (2,) efc.island (2, 128)
+  after forward:     nisland 5 tree_island [ 0  1  2 -1  3  4] nefc 80
+  after mjw.island:  nisland 5 tree_island [ 0  1  2 -1  3  4]
+--- sleep disabled: ntree 6, nv 36
+  island arrays allocated: tree_island (2, 6) nisland (2,) efc.island (2, 128)
+  after forward:     nisland 0 tree_island [-1 -1 -1 -1 -1 -1] nefc 80
+  after mjw.island:  nisland 5 tree_island [ 0  1  2 -1  3  4]
+C MuJoCo mj_forward: nisland 5 tree_island [ 0  1  2 -1  3  4]
+overflow: none</pre>
+        </details>
+      </figure>
+      <p>Read the two halves side by side. With sleep enabled, <code>forward</code> already filled the islands: five
+        islands, and box 3 (in the air, no rows) is -1. With sleep disabled, <code>forward</code> left
+        <code>nisland = 0</code>, yet the same 80 rows exist; one call to <code>mjw.island</code> produces the same
+        partition, and it matches C MuJoCo, which always computes islands in <code>mj_forward</code>.</p>
+    </section>
+
+    <!-- ===================================================== 2. DSU -->
+    <section class="sec" id="dsu">
+      <h2><span class="sec-num">2</span>Finding islands on a GPU: a lock-free disjoint-set union</h2>
+      <p>On a CPU you would find islands with a graph search or a sequential
+        <abbr class="gl" data-term="dsu" title="Disjoint-set union (union-find): a forest of parent pointers where each set is identified by its root; union links two roots, find walks to the root.">disjoint-set union</abbr>
+        (DSU, also called union-find). Each tree starts as its own set, represented by a <code>parent</code> array
+        where <code>parent[t] = t</code> means "t is a root". <em>Find</em> walks parent pointers up to the root;
+        <em>union</em> makes one root the parent of the other. After processing every edge, two trees are in the same
+        island exactly when they have the same root.</p>
+      <p>MJWarp has to do this for thousands of worlds and thousands of rows at once, with many threads updating the
+        same <code>parent</code> array concurrently. <code>island.py::direct_dsu</code> uses three ideas that make
+        the parallel version safe without locks:</p>
+      <ol>
+        <li><strong>Always hook the higher root under the lower root.</strong> Parent pointers only ever point to a
+          smaller tree id, so no thread can create a cycle, and the final root of every island is its smallest tree.</li>
+        <li><strong>Link with compare-and-swap.</strong> <code>wp.atomic_cas(parent, worldid, high_root, high_root, low_root)</code>
+          writes only if <code>parent[high_root]</code> is still <code>high_root</code>, that is, if it is still a
+          root. If another thread got there first, the CAS fails and the loop recomputes both roots and tries again.</li>
+        <li><strong>Shorten paths with <code>atomic_min</code>.</strong> While walking up, <code>_dsu_find</code>
+          lowers <code>parent[current]</code> to its grandparent when the grandparent is smaller. Because the
+          pointers only decrease, a stale read never breaks anything: it only makes a path a bit longer.</li>
+      </ol>
+
+      <div class="stepper" data-manual id="dsu-stepper" aria-label="Stepper: GPU disjoint-set union over constraint rows">
+        <div class="stepper-head"><h4>Island discovery, one row at a time</h4><span class="stepper-fn">island.py::direct_dsu → _island_dsu, _dsu_union, _dsu_find</span><span class="badge illustrative">Illustrative row order</span></div>
+        <div class="stepper-body">
+          <div class="stepper-fig">
+            <svg id="dsu-svg" viewBox="0 0 360 250" role="img" aria-label="Six trees as nodes; constraint rows appear as edges; the parent array and tree_island array update below">
+              <text x="8" y="16" class="s-small">trees (nodes) and constraint rows (edges)</text>
+              <path data-steps="1-" d="M260 70 Q 288 28 316 70" class="c21-edge"/>
+              <text data-steps="1-" x="288" y="38" text-anchor="middle" class="s-small s-mono">r0</text>
+              <path data-steps="3-" d="M148 70 Q 232 6 316 70" class="c21-edge"/>
+              <text data-steps="3-" x="232" y="26" text-anchor="middle" class="s-small s-mono">r1</text>
+              <path data-steps="5-" d="M92 84 L92 112" class="c21-edge"/>
+              <text data-steps="5-" x="100" y="104" class="s-small s-mono">r2</text>
+              <path data-steps="6-" d="M36 84 Q 176 150 316 84" class="c21-edge"/>
+              <text data-steps="6-" x="176" y="128" text-anchor="middle" class="s-small s-mono">r3</text>
+              <rect x="70" y="112" width="44" height="6" rx="2" class="s-ink"/>
+              <text x="66" y="124" text-anchor="end" class="s-small">floor</text>
+              <g id="dsu-nodes"></g>
+              <text x="8" y="160" class="s-small s-mono">parent</text>
+              <text x="8" y="140" class="s-small">tree id</text>
+              <text x="8" y="208" class="s-small s-mono">tree_island</text>
+              <g id="dsu-cells"></g>
+              <text id="dsu-nis" x="8" y="244" class="s-small s-mono">nisland = 0</text>
+            </svg>
+          </div>
+          <div class="stepper-side">
+            <pre class="stepper-code">_reset_dsu: parent[t] = t; tree_island[t] = -1
+_island_dsu: lanes stride over the efc rows
+  tree0, tree1 = trees touched by the row
+  _dsu_union(parent, tree0, tree1):
+    activate: atomic_max(tree_island[t], 0)
+    r0, r1 = _dsu_find(tree0), _dsu_find(tree1)
+    if r0 == r1: return
+    atomic_cas(parent[max(r0,r1)] -&gt; min(r0,r1))
+  _dsu_find: if gp &lt; parent: atomic_min(parent[cur], gp)
+_compress_roots: parent[t] = _dsu_find(t)
+_label_roots: number roots in ascending tree order
+_propagate_labels: tree_island[t] = tree_island[parent[t]]</pre>
+            <table class="stepper-vars"></table>
+          </div>
+        </div>
+        <div class="stepper-caption" aria-live="polite"></div>
+        <div class="stepper-controls">
+          <button class="btn btn-sm" data-act="prev">Prev</button>
+          <button class="btn btn-sm btn-primary" data-act="next">Step</button>
+          <button class="btn btn-sm" data-act="play">Play</button>
+          <button class="btn btn-sm btn-ghost" data-act="reset">Reset</button>
+          <input type="range">
+          <span class="stepper-count"></span>
+        </div>
+        <script type="application/json" class="stepper-data">
+        [
+          {"line": 1, "parent": [0,1,2,3,4,5], "isl": ["-1","-1","-1","-1","-1","-1"], "nis": 0, "vars": {"row": "-", "tree0, tree1": "-", "roots": "-"}, "caption": "<code>_reset_dsu</code> runs over <code>(nworld, ntree)</code>: every tree is its own root and is marked inactive (<code>tree_island = -1</code>). The <code>parent</code> array is a scratch workspace allocated by <code>island.island</code>."},
+          {"line": 5, "parent": [0,1,2,3,4,5], "isl": ["-1","-1","-1","-1","act","act"], "nis": 0, "vars": {"row": "r0 contact", "tree0, tree1": "4, 5", "roots": "-"}, "caption": "A lane picks row r0, a contact between trees 4 and 5. <code>_dsu_activate</code> marks both as constrained with <code>atomic_max(tree_island, 0)</code> (shown as <em>act</em>; the stored value is 0)."},
+          {"line": 8, "parent": [0,1,2,3,4,4], "isl": ["-1","-1","-1","-1","act","act"], "nis": 0, "vars": {"row": "r0 contact", "tree0, tree1": "4, 5", "roots": "4, 5"}, "caption": "Roots are 4 and 5. The higher root is hooked under the lower: <code>atomic_cas(parent[5], 5, 4)</code> succeeds because <code>parent[5]</code> was still 5."},
+          {"line": 6, "parent": [0,1,2,3,4,4], "isl": ["-1","-1","act","-1","act","act"], "nis": 0, "vars": {"row": "r1 contact", "tree0, tree1": "2, 5", "roots": "2, 4"}, "caption": "Row r1 couples trees 2 and 5. <code>_dsu_find(5)</code> walks 5 → 4 and stops (4 is a root). Roots: 2 and 4."},
+          {"line": 8, "parent": [0,1,2,3,2,4], "isl": ["-1","-1","act","-1","act","act"], "nis": 0, "vars": {"row": "r1 contact", "tree0, tree1": "2, 5", "roots": "2, 4"}, "caption": "CAS hooks root 4 under root 2. Tree 5 now reaches the root through two hops: 5 → 4 → 2."},
+          {"line": 5, "parent": [0,1,2,3,2,4], "isl": ["-1","act","act","-1","act","act"], "nis": 0, "vars": {"row": "r2 contact", "tree0, tree1": "1, -1 (floor)", "roots": "-"}, "caption": "Row r2 is tree 1 on the static floor. The second side has tree -1, so <code>_dsu_union</code> only activates tree 1 and returns: constrained, but coupled to no one."},
+          {"line": 9, "parent": [0,1,2,3,2,2], "isl": ["act","act","act","-1","act","act"], "nis": 0, "vars": {"row": "r3 contact", "tree0, tree1": "5, 0", "roots": "2, 0"}, "caption": "Row r3 couples 5 and 0. While finding the root of 5, the grandparent (2) is smaller than the parent (4), so <code>atomic_min(parent[5], 2)</code> shortens the path. The roots are 2 and 0."},
+          {"line": 8, "parent": [0,1,0,3,2,2], "isl": ["act","act","act","-1","act","act"], "nis": 0, "vars": {"row": "r3 contact", "tree0, tree1": "5, 0", "roots": "2, 0"}, "caption": "CAS hooks root 2 under root 0. If another lane had changed <code>parent[2]</code> between the find and the CAS, the CAS would return a different value and the <code>while True</code> loop would retry with fresh roots."},
+          {"line": 10, "parent": [0,1,0,3,0,0], "isl": ["act","act","act","-1","act","act"], "nis": 0, "vars": {"row": "(all rows done)", "tree0, tree1": "-", "roots": "0, 1"}, "caption": "<code>_compress_roots</code> (one thread per tree) points every active tree straight at its root. Tree 3 had no rows: it stays inactive."},
+          {"line": 11, "parent": [0,1,0,3,0,0], "isl": ["0","1","act","-1","act","act"], "nis": 2, "vars": {"row": "-", "tree0, tree1": "-", "roots": "0, 1"}, "caption": "<code>_label_roots</code> is the one sequential step (one thread per world): it walks the trees in order and numbers the active roots 0, 1, ... That is MuJoCo's island order: island i has the i-th smallest root."},
+          {"line": 12, "parent": [0,1,0,3,0,0], "isl": ["0","1","0","-1","0","0"], "nis": 2, "vars": {"row": "-", "tree0, tree1": "-", "roots": "0, 1"}, "caption": "<code>_propagate_labels</code> copies each root's label to its trees. Result: <code>tree_island = [0, 1, 0, -1, 0, 0]</code>, <code>nisland = 2</code>."}
+        ]
+        </script>
+      </div>
+
+      <h3>How the launch is shaped</h3>
+      <p>The interesting kernel is <code>_island_dsu</code>. It is launched with <code>wp.launch_tiled</code> over
+        <code>(nworld, nchunk)</code> with <code>block_dim = BlockDim.island_dsu = 32</code>: each block owns one
+        chunk of one world's active rows (<code>[0, min(njmax, nefc))</code>), and its 32 lanes stride through the
+        chunk. <code>direct_dsu</code> picks <code>nchunk</code> so that a small batch with many rows is still split
+        into enough blocks, while a big batch keeps one block per world. It aims for about 2048 blocks:
+        <code>nchunk = min(ceil(2048 / nworld), ceil(njmax / 256))</code> and <code>chunk_size = ceil(njmax / nchunk)</code>,
+        so a world never gets more than one chunk per 256 rows of <code>njmax</code> (with <code>njmax = 300</code> and a
+        small batch that is 2 chunks of 150 rows). For each row the lane decides which trees it touches:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Row type (<code>efc.type</code>)</th><th>Trees taken from</th></tr></thead>
+          <tbody>
+            <tr><td>contact (frictionless, pyramidal, elliptic)</td><td>the bodies of <code>contact.geom[efc.id]</code>; flex contacts use the bodies of both sides</td></tr>
+            <tr><td>equality CONNECT / WELD</td><td><code>eq_obj1id</code>, <code>eq_obj2id</code> (via <code>site_bodyid</code> for site-based ones)</td></tr>
+            <tr><td>other equalities, tendons, anything else</td><td>generic path: every DOF with a non-zero Jacobian entry in the row (CSR columns when sparse)</td></tr>
+            <tr><td>FRICTION_DOF, LIMIT_JOINT</td><td>the tree of that DOF / joint (one tree: activates only)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Two details keep the work small. A pyramidal contact with condim 3 has four rows that all touch the same
+        trees; <code>_is_repeated_fixed_support_efc</code> skips a row whose type and id equal the previous row's.
+        And with sleep on, a sleeping tree is dropped from the union (<code>tree_awake == 0</code> → treated as -1), so
+        islands only ever contain awake trees.</p>
+
+      <div class="callout source"><p class="callout-title">Source</p><p><code>mujoco_warp/_src/island.py</code> · <code>island</code> → <code>direct_dsu</code>: <code>_reset_dsu</code>, then (only when <code>nflex &gt; 0</code>) <code>_flex_island_dsu</code> and <code>_passive_contact_island_dsu</code>, then <code>_island_dsu</code>, <code>_compress_roots</code>, <code>_label_roots</code>, <code>_propagate_labels</code>. With <code>ntree == 0</code>, <code>island</code> only zeroes <code>nisland</code> and <code>nidof</code>.</p></div>
+      <div class="callout version"><p class="callout-title">Version note</p><p>The dev tree at 8f5b9f1 adds unions that the 4.0.1 wheel does not have: <code>_union_tendon_trees</code> and a kernel <code>_island_dsu_metric_couplings</code> (actuators and tendons that couple trees through the mass metric). In 4.0.1, a tendon couples trees only through its constraint rows (generic Jacobian path).</p></div>
+
+      <p>Example 21.8 builds the scene of Figure 1 and checks the partition against C MuJoCo, then times
+        <code>mjw.island</code> on its own.</p>
+      <figure class="code-example" data-file="ex8_islands_vs_contacts.py">
+        <div class="code-head">
+          <span class="code-title">Example 21.8</span>
+          <span class="code-file">examples/21-islands-and-sleep/ex8_islands_vs_contacts.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 21.8 - contacts build islands: a stack shares one island, loose boxes get their own.
+
+Scene: a stack of three boxes (trees 0-2), three loose boxes (trees 3-5), and two boxes touching
+side by side (trees 6, 7). After forward we print tree_island and compare with C MuJoCo. Then we
+time mjw.island alone (the DSU over efc rows) for a few nworld values. CPU numbers are from
+Warp's CPU device; on a GPU the notebook prints its own table.
+
+Run: python ex8_islands_vs_contacts.py
+"""
+import time
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+ON_GPU = wp.get_device().is_cuda
+NWORLDS = [1024, 4096, 16384] if ON_GPU else [1, 4, 16]
+NCALL = 100 if ON_GPU else 10
+
+BOX = '&lt;freejoint/&gt;&lt;geom type="box" size=".1 .1 .1"/&gt;'
+XML = f"""
+&lt;mujoco&gt;
+  &lt;option timestep="0.005" solver="Newton"&gt;&lt;flag sleep="enable"/&gt;&lt;/option&gt;
+  &lt;worldbody&gt;
+    &lt;geom type="plane" size="5 5 .1"/&gt;
+    &lt;body name="s0" pos="0 0 .099"&gt;{BOX}&lt;/body&gt;
+    &lt;body name="s1" pos="0 0 .298"&gt;{BOX}&lt;/body&gt;
+    &lt;body name="s2" pos="0 0 .497"&gt;{BOX}&lt;/body&gt;
+    &lt;body name="a" pos=".6 0 .099"&gt;{BOX}&lt;/body&gt;
+    &lt;body name="b" pos="1.0 0 .099"&gt;{BOX}&lt;/body&gt;
+    &lt;body name="c" pos="1.4 0 .099"&gt;{BOX}&lt;/body&gt;
+    &lt;body name="p" pos="0 .8 .099"&gt;{BOX}&lt;/body&gt;
+    &lt;body name="q" pos=".199 .8 .099"&gt;{BOX}&lt;/body&gt;
+  &lt;/worldbody&gt;
+&lt;/mujoco&gt;
+"""
+
+mjm = mujoco.MjModel.from_xml_string(XML)
+m = mjw.put_model(mjm)
+d = mjw.make_data(mjm, nworld=2, nconmax=64, njmax=256)
+mjw.forward(m, d)
+print("ntree", mjm.ntree, "| nacon", d.nacon.numpy()[0], "| nefc w0", d.nefc.numpy()[0])
+print("MJWarp  nisland", d.nisland.numpy()[0], "tree_island", d.tree_island.numpy()[0])
+mjd = mujoco.MjData(mjm)
+mujoco.mj_forward(mjm, mjd)
+print("C       nisland", mjd.nisland, "tree_island", mjd.tree_island)
+print("same partition:", bool((d.tree_island.numpy()[0] == mjd.tree_island).all()))
+
+dev = "GPU" if ON_GPU else "CPU dev box"
+print(f"mjw.island timing ({dev}, {NCALL} calls each):")
+for nworld in NWORLDS:
+    d = mjw.make_data(mjm, nworld=nworld, nconmax=64, njmax=256)
+    mjw.forward(m, d)                        # fills the efc rows the DSU walks
+    mjw.island(m, d)                         # warm up (JIT)
+    wp.synchronize()
+    t0 = time.perf_counter()
+    for _ in range(NCALL):
+        mjw.island(m, d)
+    wp.synchronize()
+    dt = (time.perf_counter() - t0) / NCALL
+    print(f"  nworld {nworld:6d}: {dt * 1e3:7.3f} ms/call  {dt / nworld * 1e6:8.3f} us/world")
+print("overflow:", "none" if not d.overflow.numpy().any() else d.overflow.numpy())</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 21.8"</span><span>CPU: <code>python -I ex8_islands_vs_contacts.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run; timings are CPU dev box numbers, the notebook prints your GPU table (nworld 1024, 4096, 16384)</span></summary>
+<pre class="output">ntree 8 | nacon 72 | nefc w0 144
+MJWarp  nisland 5 tree_island [0 0 0 1 2 3 4 4]
+C       nisland 5 tree_island [0 0 0 1 2 3 4 4]
+same partition: True
+mjw.island timing (CPU dev box, 10 calls each):
+  nworld      1:   0.107 ms/call   107.027 us/world
+  nworld      4:   0.111 ms/call    27.699 us/world
+  nworld     16:   0.142 ms/call     8.887 us/world
+overflow: none</pre>
+        </details>
+      </figure>
+      <p>The CPU timings say only one thing that carries over: the cost per world falls as nworld grows, because
+        the launches are batched. Island discovery is a handful of small launches; on a GPU it is rarely what
+        limits a step.</p>
+    </section>
+
+    <!-- ===================================================== 3. WHERE SLEEP LIVES -->
+    <section class="sec" id="step-map">
+      <h2><span class="sec-num">3</span>Where sleep lives in one step</h2>
+      <p><abbr class="gl" data-term="sleep" title="Freezing a kinematic tree (zero qvel and qacc, no contacts with static geometry or other sleepers) after it has been still for mjMINAWAKE steps, until something wakes it.">Sleeping</abbr>
+        is off by default. You turn it on in MJCF with <code>&lt;option&gt;&lt;flag sleep="enable"/&gt;&lt;/option&gt;</code>
+        (which sets <code>EnableBit.SLEEP</code>), or after loading with
+        <code>mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP</code> before <code>put_model</code>. Once on, it
+        touches almost every stage of the pipeline. Figure 2 is the map; the next sections fill it in.</p>
+
+      <figure class="fig">
+        <div class="fig-frame">
+          <svg viewBox="0 0 640 470" role="img" aria-labelledby="f2t f2d">
+            <title id="f2t">Sleep-related calls inside mjw.step</title>
+            <desc id="f2d">Seven stages of a step from top to bottom, each with the sleep and island functions it calls when sleep is enabled.</desc>
+            <defs><marker id="f2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <text x="16" y="22" class="s-label">mjw.step(m, d) with sleep_enabled = SLEEP and not ISLAND</text>
+            <g class="hot" data-info="<strong>forward.py::_forward</strong> starts with <code>sleep.wake</code> (wake trees the user disturbed: non-zero qvel, qfrc_applied, xfrc_applied) and <code>sleep.update_sleep</code> (recompute tree_awake, body_awake, dof lists).">
+              <rect x="16" y="36" width="180" height="46" rx="10" class="s-box-2"/><text x="28" y="56" class="s-label">_forward (start)</text><text x="28" y="73" class="s-small s-mono">forward.py</text>
+              <rect x="212" y="42" width="120" height="32" rx="8" class="s-accent2-soft"/><text x="272" y="62" text-anchor="middle" class="s-small s-mono">sleep.wake</text>
+              <rect x="342" y="42" width="140" height="32" rx="8" class="s-box"/><text x="412" y="62" text-anchor="middle" class="s-small s-mono">update_sleep</text>
+            </g>
+            <g class="hot" data-info="<strong>fwd_kinematics</strong>: if the model has tendons, <code>sleep.wake_tendon</code> wakes sleeping trees on a tendon that has an awake tree and an active limit or frictionloss &gt; 0, then <code>update_sleep_trees</code> (a light update of tree_awake only).">
+              <rect x="16" y="94" width="180" height="46" rx="10" class="s-box-2"/><text x="28" y="114" class="s-label">fwd_kinematics</text><text x="28" y="131" class="s-small s-mono">ntendon &gt; 0 only</text>
+              <rect x="212" y="100" width="120" height="32" rx="8" class="s-accent2-soft"/><text x="272" y="120" text-anchor="middle" class="s-small s-mono">wake_tendon</text>
+              <rect x="342" y="100" width="140" height="32" rx="8" class="s-box"/><text x="412" y="120" text-anchor="middle" class="s-small s-mono">update_sleep_trees</text>
+            </g>
+            <g class="hot" data-info="<strong>fwd_position</strong>: collision in two passes with <code>wake_collision</code> and <code>update_sleep</code> between them (section 9), then <code>make_constraint</code>, <code>wake_equality</code> (if neq &gt; 0), <code>update_sleep</code>, and finally <code>island.island</code>.">
+              <rect x="16" y="152" width="180" height="104" rx="10" class="s-box-2"/><text x="28" y="172" class="s-label">fwd_position</text><text x="28" y="189" class="s-small s-mono">forward.py</text>
+              <rect x="212" y="158" width="120" height="32" rx="8" class="s-box"/><text x="272" y="178" text-anchor="middle" class="s-small s-mono">collision ×2</text>
+              <rect x="342" y="158" width="140" height="32" rx="8" class="s-accent2-soft"/><text x="412" y="178" text-anchor="middle" class="s-small s-mono">wake_collision</text>
+              <rect x="492" y="158" width="132" height="32" rx="8" class="s-box"/><text x="558" y="178" text-anchor="middle" class="s-small s-mono">update_sleep</text>
+              <rect x="212" y="200" width="120" height="32" rx="8" class="s-box"/><text x="272" y="220" text-anchor="middle" class="s-small s-mono">make_constraint</text>
+              <rect x="342" y="200" width="140" height="32" rx="8" class="s-accent2-soft"/><text x="412" y="220" text-anchor="middle" class="s-small s-mono">wake_equality</text>
+              <rect x="492" y="200" width="132" height="32" rx="8" class="s-accent-soft"/><text x="558" y="220" text-anchor="middle" class="s-small s-mono">island.island</text>
+              <text x="212" y="250" class="s-small">(update_sleep runs again before island.island)</text>
+            </g>
+            <g class="hot" data-info="<strong>fwd_acceleration</strong>: <code>island.update_active_dofs</code> packs the awake DOFs (needs contacts from fwd_position), then <code>solver.smooth_solve_compact</code> solves M qacc_smooth = qfrc_smooth in compact space (section 8).">
+              <rect x="16" y="268" width="180" height="46" rx="10" class="s-box-2"/><text x="28" y="288" class="s-label">fwd_acceleration</text><text x="28" y="305" class="s-small s-mono">forward.py</text>
+              <rect x="212" y="274" width="170" height="32" rx="8" class="s-warn" opacity=".35"/><text x="297" y="294" text-anchor="middle" class="s-small s-mono">update_active_dofs</text>
+              <rect x="392" y="274" width="190" height="32" rx="8" class="s-accent-soft"/><text x="487" y="294" text-anchor="middle" class="s-small s-mono">smooth_solve_compact</text>
+            </g>
+            <g class="hot" data-info="<strong>solver.solve</strong>: with SLEEP (and not the discrete integrator) it calls <code>update_active_dofs</code> and <code>solve_compact</code>, then <code>compute_island_mapping</code> when <code>ntree &gt; 1</code>. Note: this test reads only the SLEEP bit, not DisableBit.ISLAND (section 4 pitfall).">
+              <rect x="16" y="326" width="180" height="46" rx="10" class="s-box-2"/><text x="28" y="346" class="s-label">solver.solve</text><text x="28" y="363" class="s-small s-mono">solver.py</text>
+              <rect x="212" y="332" width="142" height="32" rx="8" class="s-warn" opacity=".35"/><text x="283" y="352" text-anchor="middle" class="s-small s-mono">update_active_dofs</text>
+              <rect x="360" y="332" width="104" height="32" rx="8" class="s-accent-soft"/><text x="412" y="352" text-anchor="middle" class="s-small s-mono">solve_compact</text>
+              <rect x="470" y="332" width="162" height="32" rx="8" class="s-box"/><text x="551" y="352" text-anchor="middle" class="s-small s-mono">compute_island_mapping</text>
+            </g>
+            <g class="hot" data-info="<strong>integrator, then the end of _advance</strong>: after time and overflow bookkeeping and the warmstart copy, <code>sleep.sleep</code> advances the countdowns and builds sleep cycles, then <code>fwd_velocity</code> and <code>update_sleep</code> refresh the velocity-dependent terms for the new sleep state.">
+              <rect x="16" y="384" width="180" height="60" rx="10" class="s-box-2"/><text x="28" y="404" class="s-label">integrate, _advance</text><text x="28" y="421" class="s-small s-mono">euler / implicit / rk4</text>
+              <rect x="212" y="390" width="120" height="32" rx="8" class="s-ok" opacity=".35"/><text x="272" y="410" text-anchor="middle" class="s-small s-mono">sleep.sleep</text>
+              <rect x="342" y="390" width="120" height="32" rx="8" class="s-box"/><text x="402" y="410" text-anchor="middle" class="s-small s-mono">fwd_velocity</text>
+              <rect x="472" y="390" width="132" height="32" rx="8" class="s-box"/><text x="538" y="410" text-anchor="middle" class="s-small s-mono">update_sleep</text>
+            </g>
+            <path d="M106 82 V94 M106 140 V152 M106 256 V268 M106 314 V326 M106 372 V384" class="s-line" marker-end="url(#f2-arrow)"/>
+            <text x="16" y="462" class="s-small">blue: wake calls · filled green: the sleep decision · green outline: island/compact work · amber: NVMAX can be set here</text>
+          </svg>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a stage to see what it does with sleep on."></div>
+        <figcaption><span class="fig-num">Figure 2.</span>Every sleep and island call in one <code>mjw.step</code>, read from <code>forward.py</code> and <code>solver.py</code> in the 4.0.1 wheel. Without sleep, none of the coloured boxes run.</figcaption>
+      </figure>
+      <p>Note the order: the <em>decision</em> to sleep happens at the very end of a step (<code>sleep.sleep</code> in
+        <code>_advance</code>), and the <em>wake</em> checks happen at the start and in the middle of the next
+        <code>forward</code>. A tree that falls asleep in step k is skipped from step k+1 on.</p>
+    </section>
+
+    <!-- ===================================================== 4. REQUIREMENTS -->
+    <section class="sec" id="requirements">
+      <h2><span class="sec-num">4</span>The sleep requirements in 4.0.1</h2>
+      <p>Sleep in MJWarp is built on the Newton solver and on compacted dense buffers, so it comes with rules.
+        <code>put_model</code> rejects what cannot work; <code>make_data</code> decides whether to allocate the
+        compacted workspace. All of these are from the 4.0.1 wheel:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Requirement</th><th>What happens otherwise</th><th>Where</th></tr></thead>
+          <tbody>
+            <tr><td>Enable with <code>&lt;flag sleep="enable"/&gt;</code> (<code>EnableBit.SLEEP</code>)</td><td>nothing sleeps; <code>nvmax</code> is ignored; no island discovery in <code>forward</code></td><td><code>forward.py</code></td></tr>
+            <tr><td>Do not set <code>&lt;flag island="disable"/&gt;</code></td><td>no error, but <code>sleep_enabled = SLEEP and not DSBL_ISLAND</code> is false: nothing ever sleeps. Pitfall below.</td><td><code>io.py::make_data</code>, <code>forward.py</code></td></tr>
+            <tr><td><code>solver="Newton"</code></td><td><code>ValueError: sleeping requires the Newton solver (got solver=CG)</code></td><td><code>io.py::put_model</code></td></tr>
+            <tr><td>body <code>sleep</code> attribute left at <code>auto</code></td><td><code>NotImplementedError: ['mjSLEEP_INIT'] not supported.</code> (same for <code>never</code>, <code>allowed</code>): <code>types.SleepPolicy</code> has only AUTO, AUTO_NEVER, AUTO_ALLOWED</td><td><code>io.py::put_model</code>, <code>types.py</code></td></tr>
+            <tr><td>no flex equality (<code>&lt;edge equality="true"/&gt;</code>, <code>mjEQ_FLEX</code>)</td><td><code>NotImplementedError: Flex equality constraints are not supported with sleeping enabled.</code></td><td><code>io.py::put_model</code></td></tr>
+            <tr><td><code>0 &lt;= nvmax &lt;= nv</code></td><td><code>ValueError: nvmax (40) must be in [0, nv (36)]</code>; awake DOFs &gt; nvmax at run time set the NVMAX bit</td><td><code>io.py::make_data</code>, <code>island.py</code></td></tr>
+            <tr><td>discrete integrator: islands on, no extra flex features</td><td><code>ValueError: Discrete integrator: sleep without islands not yet supported</code> (first forward); flex limits in <a href="23-soft-bodies-flex-discrete-integrator.html">Ch 23</a></td><td><code>forward.py::check_discrete</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>What does <code>auto</code> compile to? MuJoCo's compiler resolves each tree's policy into
+        <code>mjm.tree_sleep_policy</code>: a passive box gets <code>mjSLEEP_AUTO_ALLOWED</code>; an actuated tree gets
+        <code>mjSLEEP_AUTO_NEVER</code>, and <code>sleep._tree_can_sleep</code> returns False for it, so a robot never
+        falls asleep. Example 21.6 prints all of it.</p>
+
+      <figure class="fig widget" id="req-widget">
+        <p class="widget-title">Sleep requirements checklist <span class="badge illustrative">Rules from io.py / forward.py</span></p>
+        <div class="c21-row"><span class="c21-lbl">solver</span><div class="seg" data-k="solver" role="group" aria-label="solver"><button aria-pressed="true" data-v="Newton">Newton</button><button aria-pressed="false" data-v="CG">CG</button></div></div>
+        <div class="c21-row"><span class="c21-lbl">integrator</span><div class="seg" data-k="integ" role="group" aria-label="integrator"><button aria-pressed="true" data-v="euler">Euler / implicit / RK4</button><button aria-pressed="false" data-v="discrete">discrete</button></div></div>
+        <div class="c21-row"><span class="c21-lbl">island flag</span><div class="seg" data-k="island" role="group" aria-label="island flag"><button aria-pressed="true" data-v="on">enabled (default)</button><button aria-pressed="false" data-v="off">island="disable"</button></div></div>
+        <div class="c21-row"><span class="c21-lbl">body sleep=</span><div class="seg" data-k="policy" role="group" aria-label="body sleep policy"><button aria-pressed="true" data-v="auto">auto</button><button aria-pressed="false" data-v="never">never</button><button aria-pressed="false" data-v="allowed">allowed</button><button aria-pressed="false" data-v="init">init</button></div></div>
+        <div class="c21-row"><span class="c21-lbl">flex equality</span><div class="seg" data-k="flexeq" role="group" aria-label="flex equality"><button aria-pressed="true" data-v="no">none</button><button aria-pressed="false" data-v="yes">present</button></div></div>
+        <div class="c21-row"><span class="c21-lbl">nvmax</span><div class="seg" data-k="nvmax" role="group" aria-label="nvmax"><button aria-pressed="true" data-v="omit">omitted (= nv)</button><button aria-pressed="false" data-v="ok">≥ awake DOFs</button><button aria-pressed="false" data-v="small">&lt; awake DOFs</button><button aria-pressed="false" data-v="big">&gt; nv</button></div></div>
+        <div class="c21-verdict" id="req-verdict" aria-live="polite"></div>
+        <figcaption><span class="fig-num">Figure 3.</span>Toggle the options; the verdict shows the first check that fires, in the order the wheel runs them (enum checks, flex equality, Newton, then <code>make_data</code>, then the first step). The messages are the exact strings from the 4.0.1 source.</figcaption>
+      </figure>
+
+      <figure class="code-example" data-file="ex6_sleep_errors.py">
+        <div class="code-head">
+          <span class="code-title">Example 21.6</span>
+          <span class="code-file">examples/21-islands-and-sleep/ex6_sleep_errors.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 21.6 - the sleep requirements, as an error gallery.
+
+  (a) a body with sleep="init" (or "never" / "allowed")  -&gt; NotImplementedError from put_model
+  (b) sleep with solver="CG"                              -&gt; ValueError from put_model
+  (c) a flex equality constraint with sleep               -&gt; NotImplementedError from put_model
+  (d) SLEEP plus &lt;flag island="disable"/&gt;                 -&gt; no error, but nothing ever sleeps
+      4.0.1 pitfall: make_data then skips the compacted buffers (cM has shape (0, 0, 0)) although
+      solver.solve still takes the compacted path. Pass nvmax explicitly or the step reads
+      unallocated memory (a segfault on CPU). We only print the shapes, then step with nvmax=nv.
+  (e) what sleep="auto" compiles to: an actuated tree gets AUTO_NEVER, a passive one AUTO_ALLOWED
+
+Run: python ex6_sleep_errors.py
+"""
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 2
+
+
+def scene(option="", flags='sleep="enable"', body_attr="", extra=""):
+    return (f'&lt;mujoco&gt;&lt;option timestep="0.01" {option}&gt;&lt;flag {flags}/&gt;&lt;/option&gt;&lt;worldbody&gt;'
+            '&lt;geom type="plane" size="5 5 .1"/&gt;'
+            f'&lt;body pos="0 0 .099" {body_attr}&gt;&lt;freejoint/&gt;&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;'
+            f'&lt;body pos=".5 0 .099"&gt;&lt;freejoint/&gt;&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;'
+            f'{extra}&lt;/worldbody&gt;&lt;/mujoco&gt;')
+
+
+def try_put(label, xml):
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    try:
+        mjw.put_model(mjm)
+        print(f"{label}: put_model OK")
+    except (NotImplementedError, ValueError) as e:
+        print(f"{label}: {type(e).__name__}: {e}")
+
+
+for policy in ("init", "never", "allowed", "auto"):
+    try_put(f'(a) body sleep="{policy}"', scene(body_attr=f'sleep="{policy}"'))
+try_put('(b) solver="CG"', scene(option='solver="CG"'))
+CLOTH = ('&lt;flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2" '
+         'pos="0 0 .6"&gt;&lt;edge equality="true"/&gt;&lt;/flexcomp&gt;')
+try_put("(c) flex edge equality", scene(extra=CLOTH))
+
+xml = scene(flags='sleep="enable" island="disable"')
+mjm = mujoco.MjModel.from_xml_string(xml)
+m = mjw.put_model(mjm)
+d_bad = mjw.make_data(mjm, nworld=NWORLD, nconmax=16, njmax=64)
+print("(d) island disabled, no nvmax:  cM shape", d_bad.cM.shape, "-&gt; do not step this Data")
+d = mjw.make_data(mjm, nworld=NWORLD, nconmax=16, njmax=64, nvmax=mjm.nv)
+print("(d) island disabled, nvmax=nv:  cM shape", d.cM.shape)
+for _ in range(100):
+    mjw.step(m, d)
+print("(d) after 100 resting steps: tree_asleep", d.tree_asleep.numpy()[0],
+      "max |qvel|", round(float(np.abs(d.qvel.numpy()).max()), 6))
+print("overflow:", "none" if not d.overflow.numpy().any() else d.overflow.numpy())
+
+ARM = ('&lt;body pos="0 1 .5"&gt;&lt;joint name="hinge" type="hinge"/&gt;&lt;geom type="capsule" size=".03" '
+       'fromto="0 0 0 .3 0 0"/&gt;&lt;/body&gt;')
+mjm = mujoco.MjModel.from_xml_string(
+    scene(extra=ARM).replace("&lt;/mujoco&gt;", '&lt;actuator&gt;&lt;motor joint="hinge"/&gt;&lt;/actuator&gt;&lt;/mujoco&gt;'))
+print("(e) tree_sleep_policy:", [mujoco.mjtSleepPolicy(p).name for p in mjm.tree_sleep_policy],
+      "(trees: box, box, actuated arm)")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 21.6"</span><span>CPU: <code>python -I ex6_sleep_errors.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=2</span></summary>
+<pre class="output">(a) body sleep="init": NotImplementedError: ['mjSLEEP_INIT'] not supported.
+(a) body sleep="never": NotImplementedError: ['mjSLEEP_NEVER'] not supported.
+(a) body sleep="allowed": NotImplementedError: ['mjSLEEP_ALLOWED'] not supported.
+(a) body sleep="auto": put_model OK
+(b) solver="CG": ValueError: sleeping requires the Newton solver (got solver=CG)
+(c) flex edge equality: NotImplementedError: Flex equality constraints are not supported with sleeping enabled.
+(d) island disabled, no nvmax:  cM shape (0, 0, 0) -&gt; do not step this Data
+(d) island disabled, nvmax=nv:  cM shape (2, 16, 16)
+(d) after 100 resting steps: tree_asleep [-11 -11] max |qvel| 0.0
+overflow: none
+(e) tree_sleep_policy: ['mjSLEEP_AUTO_ALLOWED', 'mjSLEEP_AUTO_ALLOWED', 'mjSLEEP_AUTO_NEVER'] (trees: box, box, actuated arm)</pre>
+        </details>
+      </figure>
+
+      <div class="callout pitfall"><p class="callout-title">Pitfall: SLEEP plus island="disable" crashes without nvmax</p><p>In 4.0.1, <code>make_data</code> allocates the compacted buffers (<code>d.cM</code>, <code>d.cJ</code>, ...) only when <code>sleep_enabled or nvmax is not None</code>, and <code>sleep_enabled</code> is false when islands are disabled. But <code>solver.solve</code> tests only the SLEEP bit, so it still takes the compacted path and reads the empty <code>(0, 0, 0)</code> arrays. On the CPU device a single <code>mjw.step</code> on such a Data ends the process with a segmentation fault (exit code 139, checked while writing this chapter); on a GPU it is an out-of-bounds read. Either drop the SLEEP flag when you disable islands, or pass <code>nvmax=mjm.nv</code> as Example 21.6 (d) does. Do not pass a smaller nvmax here: the compact solve still runs, with every tree awake (nothing ever sleeps), so any <code>nvmax &lt; nv</code> sets NVMAX on every step and the DOFs past nvmax get qacc = 0.</p></div>
+
+      <p>The checklist is also a small function in the notebook (cell after Example 21.6), so you can run it on your own models before <code>put_model</code>:</p>
+      <div class="code-block"><pre><code class="language-python">ok, notes = sleep_checklist(mjm, nvmax=None)
+print(ok, notes)        # e.g. False ['put_model raises ValueError: sleeping requires the Newton solver']</code></pre></div>
+    </section>
+
+    <!-- ===================================================== 5. FALLING ASLEEP -->
+    <section class="sec" id="falling-asleep">
+      <h2><span class="sec-num">5</span>Falling asleep: countdowns and sleep cycles</h2>
+      <p>The whole sleep state of a world is one integer per tree, <code>d.tree_asleep</code>
+        (shape <code>(nworld, ntree)</code>). Its sign tells you the state:</p>
+
+      <figure class="fig">
+        <div class="fig-frame">
+          <svg viewBox="0 0 640 170" role="img" aria-labelledby="f3t f3d">
+            <title id="f3t">The tree_asleep encoding</title>
+            <desc id="f3d">A number line: values from -11 to -1 are an awake countdown, values from 0 to ntree-1 mean asleep and point to the next tree of the sleep cycle.</desc>
+            <defs><marker id="f3-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <line x1="20" y1="80" x2="620" y2="80" class="s-ink" stroke-width="2" marker-end="url(#f3-arrow)"/>
+            <g class="hot" data-info="<strong>-11 = K_AWAKE_VAL = -(1 + mjMINAWAKE)</strong>: fully awake. <code>make_data</code> starts every tree here, and user-change, equality and tendon wakes write it; contact and flex wakes copy the awake neighbour's countdown. <code>mjMINAWAKE = 10</code> in MuJoCo 4.0.1.">
+              <rect x="30" y="50" width="56" height="60" rx="8" class="s-accent-soft"/>
+              <text x="58" y="86" text-anchor="middle" class="s-label s-mono">-11</text>
+              <text x="58" y="130" text-anchor="middle" class="s-small">fully awake</text>
+            </g>
+            <g class="hot" data-info="<strong>-10 .. -2</strong>: awake and still counting. Each step in which the tree is slow enough adds 1; one fast step resets it to -11.">
+              <rect x="96" y="50" width="250" height="60" rx="8" class="s-accent2-soft"/>
+              <text x="221" y="86" text-anchor="middle" class="s-label s-mono">-10 … -2</text>
+              <text x="221" y="130" text-anchor="middle" class="s-small">awake, counting still steps</text>
+            </g>
+            <g class="hot" data-info="<strong>-1</strong>: ready to sleep. The counter stops here. The tree sleeps as soon as every tree of its island is at -1 too.">
+              <rect x="356" y="50" width="56" height="60" rx="8" class="s-surface"/>
+              <rect x="356" y="50" width="56" height="60" rx="8" class="s-warn" opacity=".35"/>
+              <text x="384" y="86" text-anchor="middle" class="s-label s-mono">-1</text>
+              <text x="384" y="130" text-anchor="middle" class="s-small">ready</text>
+            </g>
+            <g class="hot" data-info="<strong>0 .. ntree-1</strong>: asleep. The value is the id of the <em>next</em> tree in this tree's sleep cycle, a circular linked list over the trees that fell asleep together. A lone tree points to itself.">
+              <rect x="430" y="50" width="170" height="60" rx="8" class="s-surface" stroke="var(--border-strong)"/>
+              <text x="515" y="86" text-anchor="middle" class="s-label s-mono">0 … ntree-1</text>
+              <text x="515" y="130" text-anchor="middle" class="s-small">asleep: next tree in cycle</text>
+            </g>
+            <text x="20" y="28" class="s-small">awake ⟵ tree_asleep &lt; 0</text>
+            <text x="620" y="28" text-anchor="end" class="s-small">tree_asleep ≥ 0 ⟶ asleep</text>
+            <text x="20" y="160" class="s-small s-mono">tree_awake = (tree_asleep &lt; 0), recomputed by update_sleep</text>
+          </svg>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a range of values."></div>
+        <figcaption><span class="fig-num">Figure 4.</span>One int per tree holds both the awake countdown and the sleep cycle. <code>sleep.py</code> defines <code>K_AWAKE_VAL = -(1 + types.MJ_MINAWAKE)</code>.</figcaption>
+      </figure>
+
+      <h3>The three kernels of <code>sleep.sleep</code></h3>
+      <p><code>sleep.py::sleep</code> runs at the end of every step and launches three kernels (plus
+        <code>_wake_non_metric_flex</code> between the first two for flex models with a non-discrete integrator; see
+        <a href="23-soft-bodies-flex-discrete-integrator.html">Ch 23</a>). It also allocates <code>island_can_sleep</code> with
+        <code>wp.ones</code> on every call, an allocation that matters if you capture the step in a graph:</p>
+      <ol>
+        <li><strong><code>_sweep_awake_trees</code></strong> (one thread per world and tree). For every awake tree it
+          calls <code>_tree_can_sleep</code>. A tree <em>can</em> sleep when its policy is not AUTO_NEVER, every
+          body of the tree has <code>xfrc_applied == 0</code>, every DOF has <code>qfrc_applied == 0</code>, and
+          every DOF satisfies <span class="math">|\ell_i\, \dot q_i| &lt; \text{sleep\_tolerance}</span>, where
+          <span class="math">\ell_i</span> is <code>m.dof_length</code> (a length scale that turns an angular velocity
+          into a speed, so one tolerance works for both). If it can, the counter goes up by one (but never past -1);
+          if not, it is reset to -11. <code>opt.sleep_tolerance</code> defaults to <code>1e-3</code> and can be
+          batched per world.</li>
+        <li><strong><code>_check_island_can_sleep</code></strong>. An island may sleep only if <em>all</em> its trees
+          are at -1. Any tree still below -1 vetoes its island with <code>atomic_min(island_can_sleep, 0)</code>.</li>
+        <li><strong><code>_build_cycles</code></strong> (one thread per world). For each island that can sleep, it links
+          the island's trees in ascending order into a circle (<code>tree_asleep[prev] = next</code>, last → first)
+          and writes exactly zero into their <code>qvel</code> and <code>qacc</code>. A tree with no island
+          (<code>tree_island == -1</code>, no constraint rows) that reached -1 becomes a self-cycle,
+          <code>tree_asleep[t] = t</code>.</li>
+      </ol>
+      <p>From -11 it takes ten still steps to reach -1: that is <code>mjMINAWAKE = 10</code>. The island rule
+        matters: a box resting on a box that is still wobbling stays awake until both are still, because putting
+        only one of them to sleep would freeze a contact the other is still pushing on.</p>
+
+      <figure class="fig" data-anim>
+        <div class="fig-frame grid-bg">
+          <svg viewBox="0 0 640 250" role="img" aria-labelledby="f4t f4d">
+            <title id="f4t">An island of three trees falls asleep and is woken by a push</title>
+            <desc id="f4d">Countdown bars for trees t0, t2 and t5 fill up; when all reach -1 the trees are linked into a cycle t0 to t2 to t5 and back, and turn grey; a push on t2 wakes the whole cycle.</desc>
+            <defs><marker id="f4-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <text x="16" y="22" class="s-label">island 0 = trees 0, 2, 5 (all touching)</text>
+            <g class="anim-c21-sleep">
+              <circle cx="110" cy="120" r="30" class="s-w0"/><text x="110" y="125" text-anchor="middle" class="s-label" fill="#fff">t0</text>
+              <circle cx="320" cy="120" r="30" class="s-w2"/><text x="320" y="125" text-anchor="middle" class="s-label" fill="#fff">t2</text>
+              <circle cx="530" cy="120" r="30" class="s-w5"/><text x="530" y="125" text-anchor="middle" class="s-label" fill="#fff">t5</text>
+            </g>
+            <g>
+              <rect x="60" y="172" width="100" height="10" rx="5" class="s-surface" stroke="var(--border)"/><rect x="60" y="172" width="100" height="10" rx="5" class="s-accent anim-c21-bar"/>
+              <rect x="270" y="172" width="100" height="10" rx="5" class="s-surface" stroke="var(--border)"/><rect x="270" y="172" width="100" height="10" rx="5" class="s-accent anim-c21-bar" style="animation-duration:10s"/>
+              <rect x="480" y="172" width="100" height="10" rx="5" class="s-surface" stroke="var(--border)"/><rect x="480" y="172" width="100" height="10" rx="5" class="s-accent anim-c21-bar"/>
+            </g>
+            <g class="anim-c21-lbl-a">
+              <text x="110" y="204" text-anchor="middle" class="s-small s-mono">-11 → -1</text>
+              <text x="320" y="204" text-anchor="middle" class="s-small s-mono">-11 → -1</text>
+              <text x="530" y="204" text-anchor="middle" class="s-small s-mono">-11 → -1</text>
+              <text x="320" y="236" text-anchor="middle" class="s-small">awake: countdown runs while every tree is still</text>
+            </g>
+            <g class="anim-c21-lbl-s">
+              <text x="110" y="204" text-anchor="middle" class="s-small s-mono">tree_asleep = 2</text>
+              <text x="320" y="204" text-anchor="middle" class="s-small s-mono">tree_asleep = 5</text>
+              <text x="530" y="204" text-anchor="middle" class="s-small s-mono">tree_asleep = 0</text>
+              <text x="320" y="236" text-anchor="middle" class="s-small">asleep: one cycle 0 → 2 → 5 → 0, qvel = qacc = 0</text>
+            </g>
+            <g class="anim-c21-arrow">
+              <path d="M142 112 Q 215 80 288 112" class="s-line" fill="none" marker-end="url(#f4-arrow)"/>
+              <path d="M352 112 Q 425 80 498 112" class="s-line" fill="none" marker-end="url(#f4-arrow)"/>
+              <path d="M520 90 Q 320 20 120 90" class="s-line s-dashed" fill="none" marker-end="url(#f4-arrow)"/>
+            </g>
+            <g class="anim-c21-push">
+              <path d="M320 40 L320 82" class="s-danger-stroke" stroke-width="4" marker-end="url(#f4-arrow)"/>
+              <text x="332" y="52" class="s-small">push (xfrc_applied ≠ 0): _wake_tree walks the cycle</text>
+            </g>
+          </svg>
+        </div>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button><span class="badge illustrative">Illustrative</span></div>
+        <figcaption><span class="fig-num">Figure 5.</span>The countdown runs in all three trees; once all are at -1, <code>_build_cycles</code> links them and freezes them; a push on any one of them wakes the whole cycle (section 6).</figcaption>
+      </figure>
+
+      <figure class="fig widget" id="cd-widget">
+        <p class="widget-title">Play with the countdown <span class="badge illustrative">Same rules as sleep.py, 3 trees</span></p>
+        <p class="small">Trees t0 and t1 are a stack (one island); t2 is a box alone on the floor (its own island).
+          Mark a tree as moving, press Step, and watch <code>tree_asleep</code>.</p>
+        <div class="c21-trees" id="cd-trees"></div>
+        <div class="c21-row">
+          <button class="btn btn-sm btn-primary" id="cd-step" type="button">Step</button>
+          <button class="btn btn-sm" id="cd-step10" type="button">Step ×10</button>
+          <button class="btn btn-sm" id="cd-push" type="button">Push t1 (xfrc for 1 step)</button>
+          <button class="btn btn-sm btn-ghost" id="cd-reset" type="button">Reset</button>
+          <span class="c21-chip" id="cd-count">step 0</span>
+        </div>
+        <div class="c21-log" id="cd-log" aria-live="polite"></div>
+        <figcaption><span class="fig-num">Figure 6.</span>Each Step runs, in order: <code>wake</code> (a sleeping tree that moves or has a force wakes its cycle), <code>_sweep_awake_trees</code>, <code>_check_island_can_sleep</code>, <code>_build_cycles</code>. Try: let everything sleep, then keep t0 moving: t1 stays awake too, because they share an island.</figcaption>
+      </figure>
+
+      <p>Example 21.2 drops six tilted boxes from different heights and records the countdowns of world 0.</p>
+      <figure class="code-example" data-file="ex2_fall_asleep.py">
+        <div class="code-head">
+          <span class="code-title">Example 21.2</span>
+          <span class="code-file">examples/21-islands-and-sleep/ex2_fall_asleep.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 21.2 - boxes land, come to rest and fall asleep one island at a time.
+
+Six tilted boxes are dropped from different heights. Every step we read tree_asleep (the per-tree
+countdown / sleep-cycle array), ntree_awake and nefc. A tree's countdown starts at
+-(1 + mjMINAWAKE) = -11 and rises by one per still step; at -1 its island may sleep, and the tree
+then stores the next tree of its sleep cycle (&gt;= 0).
+
+Run: python ex2_fall_asleep.py [--dump-json PATH]
+  --dump-json PATH writes world 0's box heights, pitch angles and tree_asleep values for the
+  page's sleep replay (Rule D).
+"""
+import argparse
+import json
+import math
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dump-json", default=None)
+args, _ = parser.parse_known_args()  # parse_known_args: also works inside Jupyter
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 2
+NSTEP = 160                              # enough for every box to fall asleep (default tolerance)
+
+Z = [0.1, 0.2, 0.35, 0.5, 0.7, 0.9]      # drop heights; box i is pitched by 7*i degrees
+BODIES = "".join(
+    f'&lt;body name="box{i}" pos="{0.4 * i:.2f} 0 {z}" euler="0 {7 * i} 0"&gt;&lt;freejoint/&gt;'
+    f'&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;' for i, z in enumerate(Z))
+XML = ('&lt;mujoco&gt;&lt;option timestep="0.01" solver="Newton"&gt;&lt;flag sleep="enable"/&gt;&lt;/option&gt;'
+       f'&lt;worldbody&gt;&lt;geom name="floor" type="plane" size="5 5 .1"/&gt;{BODIES}&lt;/worldbody&gt;&lt;/mujoco&gt;')
+
+mjm = mujoco.MjModel.from_xml_string(XML)
+m = mjw.put_model(mjm)
+d = mjw.make_data(mjm, nworld=NWORLD, nconmax=32, njmax=128)
+print("ntree", mjm.ntree, "| MJ_MINAWAKE", mujoco.mjMINAWAKE,
+      "| sleep_tolerance", mjm.opt.sleep_tolerance)
+print("initial tree_asleep", d.tree_asleep.numpy()[0])
+
+frames, nefc_log, awake_log, first_all_asleep = [], [], [], None
+for i in range(NSTEP):
+    mjw.step(m, d)
+    asleep = d.tree_asleep.numpy()[0]       # host read every step: demo only
+    nefc = int(d.nefc.numpy()[0])
+    nawake = int(d.ntree_awake.numpy()[0])
+    if i % 10 == 0:
+        print(f"step {i:3d}  tree_asleep {asleep}  ntree_awake {nawake}  nefc {nefc}")
+    if nawake == 0 and first_all_asleep is None:
+        first_all_asleep = i
+    if args.dump_json and i % 2 == 0:
+        q = d.qpos.numpy()[0]
+        fr = []
+        for t in range(mjm.ntree):
+            z, qw, qy = q[7 * t + 2], q[7 * t + 3], q[7 * t + 5]
+            pitch = 2.0 * math.atan2(qy, qw)
+            fr.append([round(float(z), 3), round(pitch, 3), int(asleep[t])])
+        frames.append(fr)
+        nefc_log.append(nefc)
+        awake_log.append(nawake)
+wp.synchronize()
+
+print("all trees asleep from step", first_all_asleep)
+print("final tree_asleep (all worlds equal):",
+      bool((d.tree_asleep.numpy() == d.tree_asleep.numpy()[0]).all()))
+print("final qvel max |v|:", float(np.abs(d.qvel.numpy()).max()))
+print("overflow:", "none" if not d.overflow.numpy().any() else d.overflow.numpy())
+
+if args.dump_json:
+    with open(args.dump_json, "w") as f:
+        json.dump({"nworld": mjm.ntree, "dt": 2 * float(mjm.opt.timestep), "kind": "tiles",
+                   "labels": [f"tree {t}" for t in range(mjm.ntree)],
+                   "x": [round(0.4 * t, 2) for t in range(mjm.ntree)], "half": 0.1,
+                   "frames": frames, "nefc": nefc_log, "ntree_awake": awake_log},
+                  f, separators=(",", ":"))
+    print("wrote", args.dump_json, len(frames), "frames")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 21.2"</span><span>CPU: <code>python -I ex2_fall_asleep.py --dump-json data/ex2_sleep.json</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=2, 160 steps; GPU uses nworld=4096 and prints the same per-world values</span></summary>
+<pre class="output">ntree 6 | MJ_MINAWAKE 10 | sleep_tolerance 0.001
+initial tree_asleep [-11 -11 -11 -11 -11 -11]
+step   0  tree_asleep [-11 -11 -11 -11 -11 -11]  ntree_awake 6  nefc 0
+step  10  tree_asleep [-11 -11 -11 -11 -11 -11]  ntree_awake 6  nefc 16
+step  20  tree_asleep [ -2 -11 -11 -11 -11 -11]  ntree_awake 6  nefc 24
+step  30  tree_asleep [  0 -11 -11 -11 -11 -11]  ntree_awake 5  nefc 32
+step  40  tree_asleep [  0  -3 -11 -11 -11 -11]  ntree_awake 5  nefc 40
+step  50  tree_asleep [  0   1 -11 -11 -11 -11]  ntree_awake 4  nefc 40
+step  60  tree_asleep [  0   1 -11 -10 -11 -11]  ntree_awake 4  nefc 48
+step  70  tree_asleep [  0   1  -9   3 -11  -9]  ntree_awake 3  nefc 40
+step  80  tree_asleep [  0   1   2   3 -11   5]  ntree_awake 1  nefc 8
+step  90  tree_asleep [  0   1   2   3 -11   5]  ntree_awake 1  nefc 16
+step 100  tree_asleep [ 0  1  2  3 -2  5]  ntree_awake 1  nefc 16
+step 110  tree_asleep [0 1 2 3 4 5]  ntree_awake 0  nefc 0
+step 120  tree_asleep [0 1 2 3 4 5]  ntree_awake 0  nefc 0
+step 130  tree_asleep [0 1 2 3 4 5]  ntree_awake 0  nefc 0
+step 140  tree_asleep [0 1 2 3 4 5]  ntree_awake 0  nefc 0
+step 150  tree_asleep [0 1 2 3 4 5]  ntree_awake 0  nefc 0
+all trees asleep from step 101
+final tree_asleep (all worlds equal): True
+final qvel max |v|: 0.0
+overflow: none
+wrote data/ex2_sleep.json 80 frames</pre>
+        </details>
+      </figure>
+      <p>Three things to read off. Every box is alone on the floor, so each one is its own island and becomes a
+        self-cycle (<code>tree_asleep[t] = t</code>). <code>nefc</code> shrinks as boxes fall asleep: a sleeping box
+        touching only static geometry produces no contact at all, because the broadphase skips asleep-static pairs
+        (section 9). And once everything sleeps, <code>qvel</code> is exactly zero, not merely small:
+        <code>_build_cycles</code> writes 0.0.</p>
+
+      <figure class="fig replay" id="sleep-replay">
+        <div class="fig-frame"><canvas aria-label="Replay of six boxes landing and falling asleep, coloured while awake and grey while asleep"></canvas></div>
+        <div class="replay-controls"><button class="btn btn-sm anim-toggle"></button><input type="range"><span class="replay-time"></span><span class="badge data-driven">Real data</span></div>
+        <div class="fig-frame" style="margin-top:8px"><div id="sleep-grid" data-world-grid="6"></div></div>
+        <div class="fig-caption-line" data-placeholder="Tap a box (or a tile) to read its tree_asleep value."></div>
+        <figcaption><span class="fig-num">Figure 7.</span>Sleep replay of world 0 from <code>ex2_fall_asleep.py --dump-json</code>, mujoco-warp 4.0.1, CPU run, nworld=2, 160 steps (every 2nd step shown). One tile per tree (the course's world-grid view): coloured = awake with the countdown in the label, grey = asleep with "→" and the next tree of its cycle. Box heights and pitch angles are the real values.</figcaption>
+        <script type="application/json" id="data-ch21-ex2" data-json-file="examples/21-islands-and-sleep/data/ex2_sleep.json">{"nworld":6,"dt":0.02,"kind":"tiles","labels":["tree 0","tree 1","tree 2","tree 3","tree 4","tree 5"],"x":[0.0,0.4,0.8,1.2,1.6,2.0],"half":0.1,"frames":[[[0.099,0.0,-11],[0.199,0.122,-11],[0.349,0.244,-11],[0.499,0.367,-11],[0.699,0.489,-11],[0.899,0.611,-11]],[[0.099,-0.0,-11],[0.194,0.122,-11],[0.344,0.244,-11],[0.494,0.367,-11],[0.694,0.489,-11],[0.894,0.611,-11]],[[0.1,-0.0,-11],[0.185,0.122,-11],[0.335,0.244,-11],[0.485,0.367,-11],[0.685,0.489,-11],[0.885,0.611,-11]],[[0.1,-0.0,-11],[0.173,0.122,-11],[0.323,0.244,-11],[0.473,0.367,-11],[0.673,0.489,-11],[0.873,0.611,-11]],[[0.1,-0.0,-11],[0.156,0.122,-11],[0.306,0.244,-11],[0.456,0.367,-11],[0.656,0.489,-11],[0.856,0.611,-11]],[[0.1,-0.0,-11],[0.135,0.122,-11],[0.285,0.244,-11],[0.435,0.367,-11],[0.635,0.489,-11],[0.835,0.611,-11]],[[0.1,-0.0,-10],[0.111,0.122,-11],[0.261,0.244,-11],[0.411,0.367,-11],[0.611,0.489,-11],[0.811,0.611,-11]],[[0.1,-0.0,-8],[0.103,0.026,-11],[0.232,0.244,-11],[0.382,0.367,-11],[0.582,0.489,-11],[0.782,0.611,-11]],[[0.1,-0.0,-6],[0.099,-0.023,-11],[0.2,0.244,-11],[0.35,0.367,-11],[0.55,0.489,-11],[0.75,0.611,-11]],[[0.1,-0.0,-4],[0.1,-0.021,-11],[0.164,0.244,-11],[0.314,0.367,-11],[0.514,0.489,-11],[0.714,0.611,-11]],[[0.1,-0.0,-2],[0.1,-0.008,-11],[0.123,0.244,-11],[0.273,0.367,-11],[0.473,0.489,-11],[0.673,0.611,-11]],[[0.1,-0.0,0],[0.099,0.002,-11],[0.101,0.158,-11],[0.229,0.367,-11],[0.429,0.489,-11],[0.629,0.611,-11]],[[0.1,-0.0,0],[0.1,0.001,-11],[0.097,-0.015,-11],[0.181,0.367,-11],[0.381,0.489,-11],[0.581,0.611,-11]],[[0.1,-0.0,0],[0.1,0.001,-11],[0.106,-0.087,-11],[0.129,0.367,-11],[0.329,0.489,-11],[0.529,0.611,-11]],[[0.1,-0.0,0],[0.1,0.0,-11],[0.113,-0.152,-11],[0.121,0.24,-11],[0.273,0.489,-11],[0.473,0.611,-11]],[[0.1,-0.0,0],[0.1,0.0,-11],[0.118,-0.207,-11],[0.11,0.108,-11],[0.213,0.489,-11],[0.413,0.611,-11]],[[0.1,-0.0,0],[0.1,0.0,-11],[0.121,-0.25,-11],[0.097,-0.033,-11],[0.15,0.489,-11],[0.35,0.611,-11]],[[0.1,-0.0,0],[0.1,0.0,-9],[0.124,-0.283,-11],[0.102,-0.048,-11],[0.119,0.418,-11],[0.282,0.611,-11]],[[0.1,-0.0,0],[0.1,0.0,-7],[0.125,-0.306,-11],[0.104,-0.06,-11],[0.122,0.276,-11],[0.21,0.611,-11]],[[0.1,-0.0,0],[0.1,0.0,-5],[0.126,-0.319,-11],[0.105,-0.06,-11],[0.121,0.135,-11],[0.135,0.611,-11]],[[0.1,-0.0,0],[0.1,0.0,-3],[0.126,-0.323,-11],[0.104,-0.047,-11],[0.116,-0.007,-11],[0.136,0.53,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.126,-0.318,-11],[0.102,-0.021,-11],[0.106,-0.149,-11],[0.134,0.45,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.125,-0.303,-11],[0.098,0.019,-11],[0.114,-0.202,-11],[0.129,0.366,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.123,-0.278,-11],[0.099,0.012,-11],[0.12,-0.251,-11],[0.123,0.273,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.121,-0.244,-11],[0.099,0.004,-11],[0.123,-0.291,-11],[0.115,0.172,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.118,-0.199,-11],[0.099,0.002,-11],[0.126,-0.321,-11],[0.105,0.056,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.113,-0.142,-11],[0.1,0.001,-11],[0.127,-0.343,-11],[0.101,-0.011,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.107,-0.073,-11],[0.1,0.001,-11],[0.128,-0.356,-11],[0.102,-0.025,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.099,0.008,-11],[0.1,0.0,-11],[0.129,-0.361,-11],[0.102,-0.025,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.101,0.017,-11],[0.1,0.0,-11],[0.128,-0.357,-11],[0.101,-0.01,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.101,0.016,-11],[0.1,0.0,-10],[0.128,-0.344,-11],[0.1,0.002,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.001,-11],[0.1,0.0,-8],[0.126,-0.323,-11],[0.1,0.001,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.001,-11],[0.1,0.0,-6],[0.124,-0.292,-11],[0.1,0.001,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,-11],[0.1,0.0,-4],[0.122,-0.252,-11],[0.1,0.0,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,-11],[0.1,0.0,-2],[0.118,-0.2,-11],[0.1,0.0,-11]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,-9],[0.1,0.0,3],[0.113,-0.138,-11],[0.1,0.0,-9]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,-7],[0.1,0.0,3],[0.106,-0.066,-11],[0.1,0.0,-7]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,-5],[0.1,0.0,3],[0.097,0.024,-11],[0.1,0.0,-5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,-3],[0.1,0.0,3],[0.1,0.029,-11],[0.1,0.0,-3]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.101,0.026,-11],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,0.01,-11],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.099,-0.002,-11],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.001,-11],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.001,-11],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,-11],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,-11],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,-10],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,-8],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,-6],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,-4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,-2],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]],[[0.1,-0.0,0],[0.1,0.0,1],[0.1,0.0,2],[0.1,0.0,3],[0.1,-0.0,4],[0.1,0.0,5]]],"nefc":[0,16,16,16,16,16,16,24,32,24,24,24,24,24,24,32,24,40,40,32,40,40,32,32,32,40,48,40,40,40,48,48,56,56,56,40,32,40,40,40,8,16,16,16,16,16,16,16,16,16,16,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"ntree_awake":[6,6,6,6,6,6,6,6,6,6,6,5,5,5,5,5,5,5,5,5,5,4,4,4,4,4,4,4,4,4,4,4,4,4,4,3,3,3,3,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}</script>
+      </figure>
+    </section>
+
+    <!-- ===================================================== 6. WAKING -->
+    <section class="sec" id="waking">
+      <h2><span class="sec-num">6</span>Waking up</h2>
+      <p>A sleeping tree costs almost nothing, but it must wake the moment anything could move it. MJWarp checks
+        four kinds of triggers, at the points shown in Figure 2. All of them end in the same function,
+        <code>sleep.py::_wake_tree(ntree, worldid, treeid, wakeval, tree_asleep)</code>, which follows the cycle
+        from <code>treeid</code> and writes <code>wakeval</code> into every tree of it. Waking one tree of a
+        cycle wakes them all.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Trigger</th><th>Function (kernel)</th><th>Runs</th><th>Wake value</th></tr></thead>
+          <tbody>
+            <tr><td>you changed it: non-zero <code>qvel</code>, <code>qfrc_applied</code> or <code>xfrc_applied</code> on a sleeping tree, or <code>tree_awake</code> set to 1</td><td><code>wake</code> (<code>_wake_kernel</code>, zero tolerance)</td><td>start of <code>_forward</code></td><td>-11</td></tr>
+            <tr><td>a contact between a sleeping tree and an awake tree</td><td><code>wake_collision</code> (<code>_wake_collision_kernel</code>)</td><td>between the two collision passes</td><td>the awake tree's current countdown (its <code>tree_asleep</code>)</td></tr>
+            <tr><td>a contact between a sleeping tree and an awake mocap body (<code>body_awake == AWAKE</code>, tree &lt; 0); static bodies (world, static) never wake a tree. Contacts whose type is non-zero but has neither the CONSTRAINT nor the PASSIVE bit are ignored</td><td><code>wake_collision</code> (<code>_wake_collision_kernel</code>)</td><td>between the two collision passes</td><td>-11 (<code>K_AWAKE_VAL</code>)</td></tr>
+            <tr><td>an active equality (connect, weld, joint, tendon, flex) linking a sleeping tree to an awake one, or two sleeping trees in different sleep cycles (both are woken)</td><td><code>wake_equality</code> (<code>_wake_equality_kernel</code>)</td><td>after <code>make_constraint</code>, if <code>neq &gt; 0</code></td><td>-11 for connect/weld/joint/tendon; for flex, the smallest countdown among the awake trees on the flex</td></tr>
+            <tr><td>a tendon with at least one awake tree whose limit is active or that has <code>frictionloss &gt; 0</code> wakes its sleeping trees</td><td><code>wake_tendon</code> (<code>_wake_tendon_kernel</code>)</td><td>end of <code>fwd_kinematics</code>, if <code>ntendon &gt; 0</code></td><td>-11 (the code takes min(-11, awake values), which is always -11)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Two subtle points. The user-change check uses <em>zero</em> tolerance: a sleeping tree has exactly zero
+        velocity, so any value you write into its <code>qvel</code> wakes it. And <code>wake_collision</code> hands
+        the woken tree the countdown value of the tree that touched it, not -11; the pair then counts down
+        together, so they can fall asleep again in the same step.</p>
+
+      <figure class="code-example" data-file="ex3_wake.py">
+        <div class="code-head">
+          <span class="code-title">Example 21.3</span>
+          <span class="code-file">examples/21-islands-and-sleep/ex3_wake.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 21.3 - what wakes a sleeping tree.
+
+Scene: a stack of two boxes (trees 0 and 1, one island) and three single boxes (trees 2, 3, 4)
+spaced 0.1 m apart. We let everything fall asleep, then:
+  A. apply xfrc_applied to the bottom stack box in world 0: sleep.wake sees a non-zero applied
+     force and wakes the whole sleep cycle (both stack boxes), nothing else;
+  B. write a velocity into box 2 in world 1: sleep.wake wakes box 2, it slides into box 3, and
+     sleep.wake_collision wakes box 3 when an awake tree touches it.
+
+Run: python ex3_wake.py
+"""
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 2
+
+XML = """
+&lt;mujoco&gt;
+  &lt;option timestep="0.01" solver="Newton"&gt;&lt;flag sleep="enable"/&gt;&lt;/option&gt;
+  &lt;worldbody&gt;
+    &lt;geom name="floor" type="plane" size="5 5 .1"/&gt;
+    &lt;body name="stack0" pos="0 0 .1"&gt;&lt;freejoint/&gt;&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;
+    &lt;body name="stack1" pos="0 0 .3"&gt;&lt;freejoint/&gt;&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;
+    &lt;body name="box2" pos=".6 0 .1"&gt;&lt;freejoint/&gt;&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;
+    &lt;body name="box3" pos=".9 0 .1"&gt;&lt;freejoint/&gt;&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;
+    &lt;body name="box4" pos="1.2 0 .1"&gt;&lt;freejoint/&gt;&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;
+  &lt;/worldbody&gt;
+&lt;/mujoco&gt;
+"""
+
+mjm = mujoco.MjModel.from_xml_string(XML)
+m = mjw.put_model(mjm)
+d = mjw.make_data(mjm, nworld=NWORLD, nconmax=32, njmax=128)
+
+
+def awake_trees(world):
+    return [t for t, v in enumerate(d.tree_asleep.numpy()[world]) if v &lt; 0]
+
+
+for i in range(300):                              # settle until every tree sleeps
+    mjw.step(m, d)
+    if d.ntree_awake.numpy().max() == 0:
+        break
+print(f"all asleep after {i + 1} steps; tree_asleep w0 {d.tree_asleep.numpy()[0]}")
+print("  (stack0 -&gt; stack1 -&gt; stack0 is one sleep cycle; 2, 3, 4 are self-cycles)")
+
+# A. a force on the bottom stack box, world 0 only
+xfrc = np.zeros((NWORLD, mjm.nbody, 6), dtype=np.float32)
+xfrc[0, mjm.body("stack0").id, 0] = 5.0           # 5 N along +x
+d.xfrc_applied.assign(xfrc)
+mjw.step(m, d)
+print("A. xfrc_applied on stack0 (w0): awake w0", awake_trees(0), "| awake w1", awake_trees(1))
+d.xfrc_applied.zero_()
+
+# B. a velocity written into box 2, world 1 only
+qvel = d.qvel.numpy()
+qvel[1, mjm.jnt_dofadr[mjm.body("box2").jntadr[0]]] = 2.0   # vx = 2 m/s
+d.qvel.assign(qvel)
+seen = []
+for k in range(12):
+    mjw.step(m, d)
+    now = awake_trees(1)
+    if now != (seen[-1][1] if seen else None):
+        seen.append((k, now))
+for k, now in seen:
+    print(f"B. step {k:2d} after the qvel write: awake w1 {now}")
+
+for i in range(300):                              # everything settles again
+    mjw.step(m, d)
+    if d.ntree_awake.numpy().max() == 0:
+        break
+print(f"asleep again after {i + 1} more steps; tree_asleep w1 {d.tree_asleep.numpy()[1]}")
+print("overflow:", "none" if not d.overflow.numpy().any() else d.overflow.numpy())</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 21.3"</span><span>CPU: <code>python -I ex3_wake.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=2</span></summary>
+<pre class="output">all asleep after 25 steps; tree_asleep w0 [1 0 2 3 4]
+  (stack0 -&gt; stack1 -&gt; stack0 is one sleep cycle; 2, 3, 4 are self-cycles)
+A. xfrc_applied on stack0 (w0): awake w0 [0, 1] | awake w1 []
+B. step  0 after the qvel write: awake w1 [2]
+B. step 10 after the qvel write: awake w1 [2, 3]
+asleep again after 38 more steps; tree_asleep w1 [1 0 2 3 4]
+overflow: none</pre>
+        </details>
+      </figure>
+      <p>Part A pushes the bottom box of the stack in world 0 only: both stack boxes wake (one cycle), the loose
+        boxes stay asleep, and world 1 is untouched (sleep state is per world). Part B writes a velocity into box 2
+        of world 1: it wakes at once, slides 0.1 m, hits box 3, and <code>wake_collision</code> wakes box 3 when
+        the contact appears.</p>
+
+      <div class="callout tip"><p class="callout-title">Tip: reset needs no special care</p><p><code>mjw.reset_data</code> resets <code>tree_asleep</code> along with the rest of the state, and writing new <code>qpos</code>/<code>qvel</code> into a sleeping world is a "user change" that <code>sleep.wake</code> picks up at the next <code>forward</code> (non-zero velocity). One exception: writing only <code>qpos</code> with zero <code>qvel</code> into a sleeping tree does not wake it. Write the state, then set <code>tree_asleep</code> to -11 for the trees you moved (or reset the world).</p></div>
+    </section>
+
+    <!-- ===================================================== 7. INIT ASLEEP -->
+    <section class="sec" id="init-asleep">
+      <h2><span class="sec-num">7</span>Starting asleep without sleep="init"</h2>
+      <p>In C MuJoCo you can mark a body <code>sleep="init"</code> so a scene starts asleep: a warehouse that is
+        quiet until a robot arrives. The 4.0.1 wheel rejects that policy (section 4), so the CLI uses a host-side
+        trick. In <code>_src/cli.py</code>, the <code>--init_asleep</code> flag does, right before
+        <code>put_data</code>:</p>
+      <div class="code-block"><pre><code class="language-python">if INIT_ASLEEP.value:
+  mjd.tree_asleep[:] = np.arange(mjm.ntree, dtype=np.int32)</code></pre></div>
+      <p>Every tree becomes a cycle of itself: asleep. Why does this survive <code>put_data</code>? Because
+        <code>io.py::put_data</code> copies <code>mjd.tree_asleep</code> <em>before</em> it calls
+        <code>mujoco.mj_kinematics</code> (which would reset it: "Capture sleep state before mj_kinematics, which resets
+        tree_asleep as a side effect"), tiles it over all worlds and derives <code>tree_awake</code> from it.</p>
+      <figure class="code-example" data-file="ex7_init_asleep.py">
+        <div class="code-head">
+          <span class="code-title">Example 21.7</span>
+          <span class="code-file">examples/21-islands-and-sleep/ex7_init_asleep.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 21.7 - start every world asleep without sleep="init" (the cli.py --init_asleep pattern).
+
+4.0.1 rejects body sleep="init", so mujoco_warp/_src/cli.py does this instead: write
+mjd.tree_asleep[:] = np.arange(mjm.ntree) on the host (each tree is a sleep cycle of itself) and
+then call put_data, which copies the host tree_asleep before it runs mj_kinematics (that call
+would reset it). Every world starts asleep; a push wakes only the pushed tree.
+
+Run: python ex7_init_asleep.py
+"""
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 2
+
+BODIES = "".join(
+    f'&lt;body name="box{i}" pos="{0.5 * i:.2f} 0 0.099"&gt;&lt;freejoint/&gt;'
+    f'&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;' for i in range(6))
+XML = ('&lt;mujoco&gt;&lt;option timestep="0.01" solver="Newton"&gt;&lt;flag sleep="enable"/&gt;&lt;/option&gt;'
+       f'&lt;worldbody&gt;&lt;geom type="plane" size="5 5 .1"/&gt;{BODIES}&lt;/worldbody&gt;&lt;/mujoco&gt;')
+
+mjm = mujoco.MjModel.from_xml_string(XML)
+m = mjw.put_model(mjm)
+
+mjd = mujoco.MjData(mjm)
+mjd.tree_asleep[:] = np.arange(mjm.ntree, dtype=np.int32)    # the --init_asleep line
+d = mjw.put_data(mjm, mjd, nworld=NWORLD, nconmax=32, njmax=128)
+print("after put_data: tree_asleep", d.tree_asleep.numpy()[0],
+      "tree_awake", d.tree_awake.numpy()[0])
+
+mjw.step(m, d)
+print("after 1 step:   tree_asleep", d.tree_asleep.numpy()[0],
+      "ntree_awake", d.ntree_awake.numpy(), "nefc", d.nefc.numpy(), "nacon", d.nacon.numpy())
+
+xfrc = np.zeros((NWORLD, mjm.nbody, 6), dtype=np.float32)
+xfrc[0, mjm.body("box4").id, 2] = 200.0                      # lift box 4 in world 0
+d.xfrc_applied.assign(xfrc)
+mjw.step(m, d)
+print("after a push:   tree_asleep", d.tree_asleep.numpy()[0],
+      "ntree_awake", d.ntree_awake.numpy(), "nefc", d.nefc.numpy())
+
+ref = mjw.make_data(mjm, nworld=1, nconmax=32, njmax=128)
+print("for comparison, make_data starts awake:", ref.tree_asleep.numpy()[0])
+print("overflow:", "none" if not d.overflow.numpy().any() else d.overflow.numpy())</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 21.7"</span><span>CPU: <code>python -I ex7_init_asleep.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=2</span></summary>
+<pre class="output">after put_data: tree_asleep [0 1 2 3 4 5] tree_awake [0 0 0 0 0 0]
+after 1 step:   tree_asleep [0 1 2 3 4 5] ntree_awake [0 0] nefc [0 0] nacon [0]
+after a push:   tree_asleep [  0   1   2   3 -11   5] ntree_awake [1 0] nefc [16  0]
+for comparison, make_data starts awake: [-11 -11 -11 -11 -11 -11]
+overflow: none</pre>
+        </details>
+      </figure>
+      <p>After one step nothing is awake, no contact exists (<code>nacon 0</code>), and the solver has no rows. The
+        push wakes only box 4 of world 0, which immediately gets its floor contact back (16 rows in world 0, none in
+        world 1). Use self-cycles only: a box stack started this way would have each box asleep alone, which is
+        fine, because a contact with an awake neighbour wakes it.</p>
+      <div class="callout note"><p class="callout-title">Note</p><p>Starting asleep is also how the CLI benchmarks the sleep path: <code>mjwarp-testspeed --init_asleep --nvmax=...</code> (Ch 25). The flag only matters with a model that has sleep enabled.</p></div>
+    </section>
+
+    <!-- ===================================================== 8. COMPACT SOLVE -->
+    <section class="sec" id="compact">
+      <h2><span class="sec-num">8</span>The compacted solve and nvmax</h2>
+      <p>So far, sleeping removes contacts and rows. The second saving is in the linear algebra. The Newton solver
+        factors a dense matrix of size nv per world (<a href="20-solvers-cg-newton.html">Ch 20</a>). With sleep on,
+        MJWarp builds that matrix only over the awake DOFs:</p>
+      <ol>
+        <li><strong><code>island.update_active_dofs</code></strong> (launched from <code>fwd_acceleration</code> and
+          again from <code>solver.solve</code>). The kernel built by <code>_compact_dofs_builder</code> runs one
+          thread per world, walks the trees in order and, for every tree with <code>tree_awake == 1</code>, appends
+          its DOFs to a compact index: <code>dof_cdof[dof] = c</code> and <code>cdof_dof[c] = dof</code>. The count is
+          <code>d.ncdof</code>.</li>
+        <li><strong>Gather.</strong> There are two gathers. For the smooth acceleration,
+          <code>solver.smooth_solve_compact</code> (called from <code>fwd_acceleration</code> on the sleep path) runs for
+          every model, sparse or dense: <code>_init_compact_inertia</code> fills the dense buffer <code>d.cM</code>
+          (<code>(nworld, nvmax_pad, nvmax_pad)</code>) with the identity, <code>_gather_M_sparse</code> copies the awake
+          rows and columns of M into it, and <code>_cholesky_factorize_solve_blocked</code> factors it. The identity tail
+          keeps the factorization well posed. For the constraint solve, <code>solver._compact_gather</code> always
+          copies the awake DOF vectors (<code>cqfrc_smooth</code>, <code>cqacc_warmstart</code>, ...), and only for
+          dense-Jacobian models (<code>if not m.is_sparse</code>) it also copies M into <code>cM</code> and the awake
+          columns of the constraint Jacobian into <code>d.cJ</code> (<code>_gather_J_dense</code>). Sparse models (with
+          the default <code>jacobian="auto"</code>, <code>io.py::is_sparse</code> picks sparse when
+          <code>nv &gt; 32</code>, e.g. the 36-DOF six-box scene and Example 21.5's 96-DOF scene) skip that second copy:
+          <code>make_data</code> allocates <code>cM</code> whenever sleep is on (or <code>nvmax</code> is given) but <code>cJ</code> only for dense
+          models, and the compact constraint kernels read the full sparse M and J through
+          <code>dof_cdof</code>/<code>cdof_dof</code>.</li>
+        <li><strong>Solve.</strong> <code>solver.solve_compact</code> shallow-replaces <code>m</code> and
+          <code>d</code> with <code>dataclasses.replace</code> so that <code>nv = nvmax_pad</code> and the arrays are
+          the compact ones, then runs the stock dense Newton solver on them. <code>smooth_solve_compact</code> does
+          the same for the unconstrained acceleration with a blocked Cholesky.</li>
+        <li><strong>Scatter.</strong> <code>_compact_scatter</code> writes <code>qacc</code> and
+          <code>qfrc_constraint</code> back to full DOF space; every DOF without a compact slot gets exactly 0.
+          Then it recomputes <code>efc.Ma = M qacc</code> in full space for the integrator.</li>
+      </ol>
+      <p>The capacity of that compact space is <abbr class="gl" data-term="nvmax" title="make_data/put_data argument: the maximum number of awake DOFs per world the compacted sleep solve can hold. Defaults to nv.">nvmax</abbr>,
+        a <code>make_data</code>/<code>put_data</code> argument that defaults to <code>nv</code>. The buffers are
+        <code>nvmax_pad</code> wide, where <code>io.py::_nvmax_pad</code> reserves one augmented column and rounds up
+        to the dense tile size (<code>TILE_SIZE_JTDAJ_DENSE = 16</code>):</p>
+      <div class="math-block">p = 16 \left\lfloor \frac{\max(n, 1) + 16}{16} \right\rfloor</div>
+      <p>with <span class="math">n</span> = <code>nvmax</code> and <span class="math">p</span> = <code>nvmax_pad</code>:
+        12 → 16, 16 → 32 (the augmented column needs a new tile), 36 → 48.</p>
+      <p>If a world has more awake DOFs than <code>nvmax</code>, <code>_compact_dofs</code> maps only the first
+        <code>nvmax</code> of them (in tree order), sets <code>ncdof = nvmax</code>, prints a warning (unless
+        <code>warn_overflow</code> masks it) and ORs <code>OverflowType.NVMAX</code> into <code>d.overflow</code>.
+        The DOFs that did not fit get zero acceleration. That is the <em>only</em> place in the wheel that sets the
+        NVMAX bit, and it only runs on the sleep path: with SLEEP off (the flag itself, not just island), a too-small nvmax is simply ignored.</p>
+
+      <figure class="fig widget" id="gs-fig">
+        <p class="widget-title">Gather, solve, scatter <span class="badge illustrative">Illustrative, 6 free boxes (nv = 36)</span></p>
+        <div class="c21-row"><span class="c21-lbl">awake trees (tap)</span><div class="seg" id="gs-trees" role="group" aria-label="awake trees"></div></div>
+        <div class="control"><label for="gs-nvmax">nvmax</label><input id="gs-nvmax" type="range" min="1" max="36" step="1" value="18"><output id="gs-nvmax-out">18</output></div>
+        <canvas id="gs-canvas" aria-label="Awake DOFs slide into a compact buffer of nvmax_pad columns, a dense matrix is factored, and results slide back; DOFs past nvmax turn red"></canvas>
+        <div class="fig-toolbar"><button class="btn btn-sm anim-toggle"></button></div>
+        <div class="fig-caption-line" id="gs-line" data-placeholder="Change the awake trees or nvmax."></div>
+        <figcaption><span class="fig-num">Figure 8.</span>Top row: the 36 DOFs of six free boxes (grey = asleep). Awake DOFs slide down into the <code>nvmax_pad</code>-wide compact buffer, the dense <code>cM</code> block is factored, and the results slide back; sleeping DOFs keep qacc = 0. Awake DOFs past <code>nvmax</code> turn red: NVMAX overflow, frozen. The <code>cM</code> gather and blocked Cholesky factorization shown here do happen for this 36-DOF scene, in the smooth solve (<code>smooth_solve_compact</code>), even though it is sparse under <code>jacobian="auto"</code>; only the constraint solve's <code>cM</code>/<code>cJ</code> copy is skipped, and its kernels read M and J through the compaction maps instead.</figcaption>
+      </figure>
+
+      <figure class="code-example" data-file="ex4_nvmax.py">
+        <div class="code-head">
+          <span class="code-title">Example 21.4</span>
+          <span class="code-file">examples/21-islands-and-sleep/ex4_nvmax.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 21.4 - nvmax: capacity of the compacted (awake-DOF) solve.
+
+With sleep enabled, every step packs the DOFs of awake trees into a dense buffer of nvmax_pad
+columns (island.update_active_dofs) and runs the Newton solve there. If more DOFs are awake than
+nvmax, the NVMAX overflow bit is set. Part 1: the 6-box scene (nv = 36) with nvmax = 12 while all
+boxes are awake. Part 2: the right size. Part 3: the same small nvmax with sleep disabled: the
+compacted path never runs, so no bit is ever set (nvmax only matters with SLEEP).
+In part 1 the DOFs that did not fit are frozen (qacc 0), so those boxes look still and fall asleep:
+the physics is wrong and nothing but the overflow bit tells you.
+
+Run: python ex4_nvmax.py
+"""
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 2
+NSTEP = 20
+
+
+def boxes_xml(sleep):
+    flag = '&lt;flag sleep="enable"/&gt;' if sleep else ""
+    bodies = "".join(
+        f'&lt;body name="box{i}" pos="{0.5 * i:.2f} 0 0.099"&gt;&lt;freejoint/&gt;'
+        f'&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;' for i in range(6))
+    return (f'&lt;mujoco&gt;&lt;option timestep="0.01" solver="Newton"&gt;{flag}&lt;/option&gt;&lt;worldbody&gt;'
+            f'&lt;geom name="floor" type="plane" size="5 5 .1"/&gt;{bodies}&lt;/worldbody&gt;&lt;/mujoco&gt;')
+
+
+def decode(bits):
+    return [o.name for o in mjw.OverflowType if bits &amp; o] or ["none"]
+
+
+def run(sleep, nvmax, label):
+    mjm = mujoco.MjModel.from_xml_string(boxes_xml(sleep))
+    m = mjw.put_model(mjm)
+    m.opt.warn_overflow = 0                 # we decode the bits ourselves (no printf per world)
+    d = mjw.make_data(mjm, nworld=NWORLD, nconmax=32, njmax=128, nvmax=nvmax)
+    for _ in range(NSTEP):
+        mjw.step(m, d)
+    bits = int(np.bitwise_or.reduce(d.overflow.numpy()))
+    print(f"{label}: nv {mjm.nv}, nvmax {d.nvmax}, nvmax_pad {d.nvmax_pad}, "
+          f"ncdof {d.ncdof.numpy()[0]}, ntree_awake {d.ntree_awake.numpy()[0]} "
+          f"-&gt; overflow {decode(bits)}")
+    print("   tree_asleep w0", d.tree_asleep.numpy()[0])
+
+
+run(True, 12, "1. sleep on,  nvmax too small")
+run(True, 36, "2. sleep on,  nvmax = nv     ")
+run(False, 12, "3. sleep off, nvmax too small")
+
+try:
+    mjw.make_data(mujoco.MjModel.from_xml_string(boxes_xml(True)), nvmax=40)
+except ValueError as e:
+    print("nvmax &gt; nv:", e)</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 21.4"</span><span>CPU: <code>python -I ex4_nvmax.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=2, 20 steps</span></summary>
+<pre class="output">1. sleep on,  nvmax too small: nv 36, nvmax 12, nvmax_pad 16, ncdof 12, ntree_awake 2 -&gt; overflow ['NVMAX']
+   tree_asleep w0 [-2 -2  2  3  4  5]
+2. sleep on,  nvmax = nv     : nv 36, nvmax 36, nvmax_pad 48, ncdof 36, ntree_awake 6 -&gt; overflow ['none']
+   tree_asleep w0 [-2 -2 -2 -2 -2 -2]
+3. sleep off, nvmax too small: nv 36, nvmax 12, nvmax_pad 16, ncdof 0, ntree_awake 0 -&gt; overflow ['none']
+   tree_asleep w0 [-11 -11 -11 -11 -11 -11]
+nvmax &gt; nv: nvmax (40) must be in [0, nv (36)]</pre>
+        </details>
+      </figure>
+      <p>Look closely at part 1. All six boxes start awake (36 DOFs) but only 12 fit. Boxes 2-5 get no slot, so their
+        acceleration is exactly zero: they no longer respond to gravity or contact, <code>_tree_can_sleep</code> sees
+        zero velocity, and they fall asleep after ten steps (<code>tree_asleep</code> 2..5). By step 20 only boxes 0
+        and 1 are awake, and they fit. All six boxes start resting on the floor, so the frozen ones look almost the
+        same as correct ones: the simulation looks calm and plausible, and it is wrong, and the overflow bit is the
+        only signal. In part 2 all six are still counting down (-2). Part 3 shows the sleep-off case: same
+        <code>nvmax</code>, no bit, because the compacted path never ran.</p>
+
+      <div class="callout pitfall"><p class="callout-title">Pitfall: nvmax must cover the worst world, at the worst moment</p><p>nvmax is one number for all worlds and the buffers are allocated once. Size it for the largest number of DOFs that can be awake at the same time in any world: at startup (everything starts awake unless you use the section 7 pattern), after a reset, and when a robot walks through the clutter. Check <code>d.overflow</code> for NVMAX the same way you check NARROWPHASE and CONSTRAINT bits (<a href="09-contacts-and-buffer-sizing.html#overflow-detection">Ch 9</a>). <code>d.nv_awake</code> gives you the awake DOF count per world to measure the peak.</p></div>
+
+      <details class="callout deeper">
+        <summary class="callout-title">Going deeper: graph conditionals inside solve_compact</summary>
+        <p>The Newton loop normally runs inside <code>wp.capture_while</code> and stops when every world has
+          converged (<a href="20-solvers-cg-newton.html">Ch 20</a>). <code>solve_compact</code> keeps that only on
+          CUDA: it sets <code>graph_conditional = m.opt.graph_conditional and wp.get_device().is_cuda</code> on the
+          replaced options, so on Warp's CPU device the compacted loop runs all <code>opt.iterations</code>. That
+          is why Example 21.5 makes the sleep path look slow on a CPU.</p>
+        <p>The compact kernels also read the full-coordinate sparse <code>M</code> and <code>J</code> through the
+          compaction maps on the incremental Newton path (<code>sctx.compact_m_full</code>,
+          <code>sctx.compact_d_full</code>), instead of always multiplying gathered dense blocks.</p>
+      </details>
+    </section>
+
+    <!-- ===================================================== 9. COLLISION -->
+    <section class="sec" id="collision">
+      <h2><span class="sec-num">9</span>Collision with sleep: two passes</h2>
+      <p>Collision detection has to solve a chicken-and-egg problem. To skip sleeping bodies it needs to know who is
+        asleep; but a contact found this step may wake a sleeping body, and that body's other contacts must then be
+        found too. <code>fwd_position</code> solves it with two passes:</p>
+
+      <figure class="fig">
+        <div class="fig-frame">
+          <svg viewBox="0 0 640 330" role="img" aria-labelledby="f9t f9d">
+            <title id="f9t">Two-pass collision with sleep</title>
+            <desc id="f9d">Pass one runs the full collision with asleep pairs skipped, wake_collision wakes sleepers touched by awake bodies, the awake state is snapshotted and updated, then a capture_if diamond decides whether the incremental pass two runs.</desc>
+            <defs><marker id="f9-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <g class="hot" data-info="<strong>Pass 1</strong>: <code>collision_driver.collision(m, d)</code>. The broadphase skips a pair when both bodies are ASLEEP, or one is ASLEEP and the other STATIC (world or static body). Asleep-awake pairs are kept: those are the ones that may wake someone.">
+              <rect x="16" y="20" width="190" height="62" rx="10" class="s-box-2"/><text x="30" y="44" class="s-label">pass 1: collision</text><text x="30" y="64" class="s-small">skip asleep-asleep, asleep-static</text>
+            </g>
+            <g class="hot" data-info="<strong>sleep.wake_collision</strong>: one thread per contact. If one side is awake and the other asleep, the sleeping tree's cycle is woken with the awake tree's countdown value. A sleeping tree touching an awake mocap body is woken with -11 (K_AWAKE_VAL); static bodies never wake it.">
+              <rect x="226" y="20" width="170" height="62" rx="10" class="s-accent2-soft"/><text x="240" y="44" class="s-label">wake_collision</text><text x="240" y="64" class="s-small">sleeper touched → wake cycle</text>
+            </g>
+            <g class="hot" data-info="<strong>awake_prev = wp.clone(d.body_awake)</strong> snapshots the state pass 1 used; then <code>sleep.update_sleep</code> recomputes <code>tree_awake</code>, <code>body_awake</code> and the awake index lists. A body is 'newly awake' if awake_prev says ASLEEP and body_awake says AWAKE.">
+              <rect x="416" y="20" width="208" height="62" rx="10" class="s-box"/><text x="430" y="44" class="s-label s-mono">awake_prev = clone</text><text x="430" y="64" class="s-small s-mono">update_sleep(m, d)</text>
+            </g>
+            <path d="M206 51 H226 M396 51 H416" class="s-line" marker-end="url(#f9-arrow)"/>
+            <path d="M520 82 V120" class="s-line" marker-end="url(#f9-arrow)"/>
+            <g class="hot" data-info="<strong>wp.capture_if(cond, on_true=_launch)</strong> in <code>nxn_broadphase</code>: <code>_any_awake_changed</code> sets <code>cond</code> if any body changed state since pass 1. On steps where nothing woke, only the NXN broadphase launch is skipped: <code>collision()</code> still zeroes <code>ncollision</code> and launches the narrowphase, which is a no-op with 0 pairs. This applies whenever <code>m.opt.graph_conditional</code> is True, in a CUDA graph or in eager execution.">
+              <path d="M520 124 L600 170 L520 216 L440 170 Z" class="s-warn" opacity=".3"/>
+              <path d="M520 124 L600 170 L520 216 L440 170 Z" fill="none" class="s-warn-stroke" stroke-width="1.5"/>
+              <text x="520" y="155" text-anchor="middle" class="s-label s-mono">capture_if</text>
+              <text x="520" y="172" text-anchor="middle" class="s-small">graph_conditional, NXN:</text>
+              <text x="520" y="188" text-anchor="middle" class="s-small">anything woke?</text>
+            </g>
+            <g class="hot" data-info="<strong>Pass 2</strong>: <code>collision(m, d, awake_prev=awake_prev)</code>. The broadphase emits only pairs that pass 1 skipped and that now involve a newly awake body; <code>nacon</code> is kept and the new contacts are appended to the pass-1 buffer.">
+              <rect x="216" y="140" width="190" height="62" rx="10" class="s-box-2"/><text x="230" y="164" class="s-label">pass 2: incremental</text><text x="230" y="184" class="s-small">new pairs only, appended</text>
+            </g>
+            <path d="M440 170 H406" class="s-line" marker-end="url(#f9-arrow)"/><text x="424" y="160" text-anchor="middle" class="s-small">yes</text>
+            <path d="M520 216 V256 H330" class="s-line s-dashed" marker-end="url(#f9-arrow)"/><text x="420" y="276" class="s-small">no: skip NXN broadphase</text><text x="420" y="292" class="s-small">(narrowphase sees 0 pairs)</text>
+            <path d="M311 202 V240" class="s-line" marker-end="url(#f9-arrow)"/>
+            <g class="hot" data-info="<strong>make_constraint</strong> builds rows from all contacts of both passes; then <code>wake_equality</code>, <code>update_sleep</code> and <code>island.island</code> (Figure 2).">
+              <rect x="216" y="244" width="190" height="50" rx="10" class="s-box"/><text x="311" y="274" text-anchor="middle" class="s-label s-mono">make_constraint</text>
+            </g>
+            <g class="hot" data-info="<strong>SAP broadphase</strong>: its sort and scan helpers allocate scratch memory internally, which is not allowed inside a graph conditional body, so <code>sap_broadphase</code> cannot be wrapped in <code>capture_if</code>. Pass 2 always launches; the per-pair filter in the sweep kernel still emits only new pairs.">
+              <rect x="16" y="140" width="180" height="96" rx="10" class="s-danger" opacity=".12"/>
+              <rect x="16" y="140" width="180" height="96" rx="10" fill="none" class="s-danger-stroke"/>
+              <text x="30" y="164" class="s-label">SAP broadphase</text>
+              <text x="30" y="184" class="s-small">no capture_if: pass 2</text>
+              <text x="30" y="200" class="s-small">always launches, the</text>
+              <text x="30" y="216" class="s-small">filter drops old pairs</text>
+            </g>
+            <text x="16" y="318" class="s-small">forward.py::fwd_position · collision_driver.py::nxn_broadphase, sap_broadphase</text>
+          </svg>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a box or the diamond."></div>
+        <figcaption><span class="fig-num">Figure 9.</span>Collision with sleep enabled, from the 4.0.1 <code>fwd_position</code>. The conditional skip covers only the NXN broadphase launch and only with <code>graph_conditional</code>; the narrowphase still launches and finds 0 pairs.</figcaption>
+      </figure>
+
+      <p>In order, <code>fwd_position</code> does this when sleep is on:</p>
+      <ol>
+        <li><strong>Pass 1:</strong> <code>collision(m, d)</code>. The broadphase skips asleep-asleep and
+          asleep-static pairs and keeps asleep-awake pairs, the ones that may wake someone.</li>
+        <li><strong><code>sleep.wake_collision</code></strong> wakes the cycle of every sleeping tree that touches an
+          awake tree or an awake mocap body.</li>
+        <li><strong><code>awake_prev = wp.clone(d.body_awake)</code></strong> snapshots the state pass 1 used, then
+          <code>sleep.update_sleep</code> recomputes <code>tree_awake</code>, <code>body_awake</code> and the awake
+          index lists.</li>
+        <li><strong>Pass 2:</strong> <code>collision(m, d, awake_prev)</code>. <code>ncollision</code> is zeroed,
+          <code>nacon</code> is kept, and the broadphase appends only pairs that involve a body that was asleep in
+          <code>awake_prev</code> and is awake now. With <code>graph_conditional</code>, <code>nxn_broadphase</code>
+          wraps only its broadphase launch in <code>wp.capture_if(cond)</code>, where <code>_any_awake_changed</code>
+          sets <code>cond</code> if any body changed state; the narrowphase still launches and finds 0 pairs when
+          nothing woke.</li>
+      </ol>
+      <p>SAP cannot use <code>capture_if</code>: its sort and scan helpers allocate scratch memory internally, which a
+        graph conditional body does not allow. So with the SAP broadphase pass 2 always launches and relies on the
+        per-pair filter alone to drop the old pairs.</p>
+
+      <div class="callout recall"><p class="callout-title">Recall from Ch 7</p><p>A CUDA graph records launches once and replays them; conditional nodes loop on device; <a href="07-pipeline-tour.html#cuda-graphs">Ch 7 §10</a>. <code>capture_if</code> is the one-shot version of <code>capture_while</code>: the body runs or not depending on a device int, without a host round trip. Ch 24 owns graphs.</p></div>
+      <div class="callout version"><p class="callout-title">Version note</p><p>The dev tree at 8f5b9f1 moves this logic into <code>forward.py</code>: <code>sleep.wake</code>, <code>wake_tendon</code>, <code>wake_collision</code> and <code>wake_equality</code> take a <code>woke</code> flag, and <code>update_sleep</code> plus the second collision pass run inside <code>wp.capture_if(woke, ...)</code>. In 4.0.1 the only <code>capture_if</code> on this path is the one in <code>nxn_broadphase</code>.</p></div>
+    </section>
+
+    <!-- ===================================================== 10. WHEN IT HELPS -->
+    <section class="sec" id="when-it-helps">
+      <h2><span class="sec-num">10</span>When sleep helps, and when it does not</h2>
+      <p>Sleep pays when a large fraction of the scene is at rest most of the time: bins of parts, warehouse
+        shelves, piles of debris after a fall, a manipulation table where the robot touches one object at a time.
+        It does nothing for a scene where everything moves all the time (a walking humanoid, a cartpole), and the
+        bookkeeping (wake checks, island discovery, gather/scatter) then is pure overhead. Actuated trees default to
+        AUTO_NEVER anyway.</p>
+      <p>What exactly gets cheaper? Count the work that disappears for an asleep world:</p>
+      <ul>
+        <li><strong>Collision.</strong> Asleep-static and asleep-asleep pairs are dropped in the broadphase, so no
+          narrowphase runs for them and <code>nacon</code> falls to 0 (Example 21.7).</li>
+        <li><strong>Constraint rows.</strong> No contacts means no rows: <code>nefc = 0</code>, and the per-row
+          kernels exit early for that world.</li>
+        <li><strong>The solve.</strong> With fewer awake DOFs, the dense compact problem is smaller. But the launch
+          dimensions are fixed by <code>nvmax_pad</code>, not by the actual awake count. The large saving comes from
+          choosing an <code>nvmax</code> well below <code>nv</code>, which is only safe when you know how many DOFs
+          can be awake at once.</li>
+      </ul>
+      <p>Example 21.5 times a 4 x 4 grid of resting boxes in three states.</p>
+      <figure class="code-example" data-file="ex5_sleep_cost.py">
+        <div class="code-head">
+          <span class="code-title">Example 21.5</span>
+          <span class="code-file">examples/21-islands-and-sleep/ex5_sleep_cost.py</span>
+          <span class="spacer"></span>
+        </div>
+        <pre><code class="language-python">"""Example 21.5 - what sleep buys: step time of a resting clutter scene, awake vs asleep.
+
+A 4 x 4 grid of resting boxes (16 trees, nv = 96). We time mjw.step in three states:
+  off    sleep disabled (the normal pipeline),
+  awake  sleep enabled, first steps (every countdown starts at -11, so all trees are awake),
+  asleep sleep enabled, after every tree has fallen asleep.
+CPU numbers are from Warp's CPU device and say nothing about GPU speed; the notebook prints your
+own GPU numbers. On CPU the sleep path is slower: solver.solve_compact turns graph_conditional off
+off-CUDA, so the compacted Newton loop runs all opt.iterations instead of stopping at convergence.
+What carries over to the GPU is the work count: asleep worlds have no contacts and no efc rows.
+
+Run: python ex5_sleep_cost.py
+"""
+import time
+
+import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+np.set_printoptions(precision=4, suppress=True)
+
+ON_GPU = wp.get_device().is_cuda
+NWORLD = 4096 if ON_GPU else 8
+NTIME = 100 if ON_GPU else 8           # timed steps per state
+
+
+def clutter_xml(sleep):
+    flag = '&lt;flag sleep="enable"/&gt;' if sleep else ""
+    bodies = "".join(
+        f'&lt;body pos="{0.3 * (i % 4):.2f} {0.3 * (i // 4):.2f} 0.099"&gt;&lt;freejoint/&gt;'
+        f'&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;' for i in range(16))
+    return (f'&lt;mujoco&gt;&lt;option timestep="0.01" solver="Newton"&gt;{flag}&lt;/option&gt;&lt;worldbody&gt;'
+            f'&lt;geom type="plane" size="5 5 .1"/&gt;{bodies}&lt;/worldbody&gt;&lt;/mujoco&gt;')
+
+
+def time_steps(m, d, n):
+    wp.synchronize()
+    t0 = time.perf_counter()
+    for _ in range(n):
+        mjw.step(m, d)
+    wp.synchronize()
+    return (time.perf_counter() - t0) / n
+
+
+results, work = {}, {}
+for sleep in (False, True):
+    mjm = mujoco.MjModel.from_xml_string(clutter_xml(sleep))
+    m = mjw.put_model(mjm)
+    d = mjw.make_data(mjm, nworld=NWORLD, nconmax=96, njmax=512)
+    warm = mjw.make_data(mjm, nworld=NWORLD, nconmax=96, njmax=512)
+    for _ in range(3):
+        mjw.step(m, warm)                  # JIT compile + warm up on a throwaway Data
+    if not sleep:
+        results["off"] = (time_steps(m, d, NTIME), d)
+        work["off"] = (d.nacon.numpy()[0], d.nefc.numpy()[0])
+        continue
+    results["awake"] = (time_steps(m, d, NTIME), d)   # countdowns still running: all awake
+    work["awake"] = (d.nacon.numpy()[0], d.nefc.numpy()[0])
+    print("awake state:  ntree_awake", d.ntree_awake.numpy()[0])
+    for _ in range(200):
+        mjw.step(m, d)
+        if d.ntree_awake.numpy().max() == 0:
+            break
+    mjw.step(m, d)                          # one step in the asleep state before timing
+    print("asleep state: ntree_awake", d.ntree_awake.numpy()[0])
+    results["asleep"] = (time_steps(m, d, NTIME), d)
+    work["asleep"] = (d.nacon.numpy()[0], d.nefc.numpy()[0])
+
+dev = "GPU" if ON_GPU else "CPU dev box"
+for k, (dt, _) in results.items():
+    nacon, nefc = work[k]
+    print(f"{k:7s} {dt * 1e3:8.2f} ms/step  {NWORLD / dt:9.0f} world-steps/s  ({dev})"
+          f"  nacon (all worlds) {nacon:4d}  nefc w0 {nefc:4d}")
+print(f"asleep vs off: {results['off'][0] / results['asleep'][0]:.2f}x speed-up ({dev})")
+print(f"asleep vs awake (sleep on): {results['awake'][0] / results['asleep'][0]:.2f}x speed-up")
+print("overflow:", "none" if not any(r[1].overflow.numpy().any() for r in results.values())
+      else "set")</code></pre>
+        <div class="run-note"><span>Colab: notebook cell "Example 21.5" (prints your GPU numbers)</span><span>CPU: <code>python -I ex5_sleep_cost.py</code></span></div>
+        <details class="output">
+          <summary>Expected output <span class="out-note">CPU run, nworld=8, 8 timed steps per state; CPU dev box timings, shared machine: your numbers will differ</span></summary>
+<pre class="output">awake state:  ntree_awake 16
+asleep state: ntree_awake 0
+off         7.15 ms/step       1119 world-steps/s  (CPU dev box)  nacon (all worlds)  512  nefc w0  256
+awake      56.74 ms/step        141 world-steps/s  (CPU dev box)  nacon (all worlds)  512  nefc w0  256
+asleep     55.33 ms/step        145 world-steps/s  (CPU dev box)  nacon (all worlds)    0  nefc w0    0
+asleep vs off: 0.13x speed-up (CPU dev box)
+asleep vs awake (sleep on): 1.03x speed-up
+overflow: none</pre>
+        </details>
+      </figure>
+      <p>On the CPU dev box the sleep path is <em>slower</em>, and the reason is instructive. The compacted Newton loop
+        runs all <code>opt.iterations</code> on CPU (no graph conditional), at the full <code>nvmax_pad = 112</code>
+        width (nvmax defaults to nv = 96), whether 0 or 16 boxes are awake. The work counts are what carries over:
+        512 contacts across the 8 worlds (64 per world) and 256 rows in world 0 drop to zero once asleep. On a GPU, measure it yourself with the notebook;
+        the speed-up depends on how large the collision and constraint share of your step is and on how small you can
+        make <code>nvmax</code>.</p>
+
+      <figure class="fig widget" id="cost-widget">
+        <p class="widget-title">What shrinks as objects fall asleep <span class="badge illustrative">Illustrative work model, 64 free boxes</span></p>
+        <div class="control"><label for="cost-f">moving</label><input id="cost-f" type="range" min="0" max="100" step="5" value="25"><output id="cost-f-out">25%</output></div>
+        <div class="control"><label for="cost-nv">nvmax</label><input id="cost-nv" type="range" min="6" max="384" step="6" value="384"><output id="cost-nv-out">384</output></div>
+        <svg id="cost-svg" viewBox="0 0 640 210" role="img" aria-label="Bars comparing contacts, constraint rows and the dense solve width with sleep off and on"></svg>
+        <div class="fig-caption-line" id="cost-line"></div>
+        <figcaption><span class="fig-num">Figure 10.</span>A toy count, not a measurement: 4 contacts and 16 rows per box on the floor, 6 DOFs per box. Contacts and rows scale with the moving fraction; the dense solve width is fixed by <code>nvmax_pad</code>. Push nvmax below the awake DOFs to see the overflow you would get.</figcaption>
+      </figure>
+
+      <div class="callout note"><p class="callout-title">Note: one batch, many worlds</p><p>All worlds share the same launches. Sleep state is per world, so one busy world does not wake the others, but the fixed-size parts of the step (the <code>nvmax_pad</code>-wide solve, the per-tree kernels) are paid for every world. Think of sleep as removing per-world contact and row work, and of <code>nvmax</code> as the knob that shrinks the solve for everyone.</p></div>
+    </section>
+
+    <!-- ===================================================== QUIZ -->
+    <section class="sec" id="quiz">
+      <h2><span class="sec-num">11</span>Check yourself</h2>
+      <div class="quiz">
+        <div class="quiz-head"><h3>Quiz</h3><span class="quiz-score" aria-live="polite"></span></div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q">You call <code>mjw.forward</code> on a model without the sleep flag. What is in <code>d.tree_island</code>?</p>
+          <ul class="choices">
+            <li><button data-explain="C MuJoCo does that in mj_forward; MJWarp's forward does not.">The current islands</button></li>
+            <li><button data-explain="The arrays exist: make_data always allocates them.">Nothing: the array has shape (nworld, 0)</button></li>
+            <li><button>Whatever was there before (-1 from make_data); call mjw.island(m, d) to fill it</button></li>
+          </ul>
+          <div class="quiz-feedback"><code>fwd_position</code> calls <code>island.island</code> only under <code>if sleep_enabled</code>. The public <code>mjw.island</code> works on any Data (Example 21.1).</div>
+        </div>
+        <div class="quiz-q" data-answer="b">
+          <p class="q">A model has <code>&lt;flag sleep="enable" island="disable"/&gt;</code> and the Euler integrator. What happens?</p>
+          <ul class="choices">
+            <li><button data-explain="No check in put_model looks at the island flag for non-discrete integrators.">put_model raises a ValueError</button></li>
+            <li><button>No error, but nothing ever sleeps (and without nvmax the first step reads empty buffers)</button></li>
+            <li><button data-explain="sleep_enabled = SLEEP and not DSBL_ISLAND; the island flag wins.">Sleep works; only island discovery is skipped</button></li>
+          </ul>
+          <div class="quiz-feedback">Disabling islands disables sleep. In 4.0.1 <code>make_data</code> then skips the compact buffers, but <code>solver.solve</code> still takes the compact path: pass <code>nvmax</code> or drop the SLEEP flag.</div>
+        </div>
+        <div class="quiz-q" data-answer="a">
+          <p class="q">Which <code>SleepPolicy</code> values does 4.0.1 accept?</p>
+          <ul class="choices">
+            <li><button>AUTO, AUTO_NEVER, AUTO_ALLOWED</button></li>
+            <li><button data-explain="NEVER, ALLOWED and INIT are the user policies; types.py lists them as unsupported.">NEVER, ALLOWED, INIT</button></li>
+            <li><button data-explain="sleep='init' raises NotImplementedError in put_model.">All six</button></li>
+          </ul>
+          <div class="quiz-feedback"><code>types.py::SleepPolicy</code>: "unsupported: NEVER, ALLOWED, INIT". Only the compiler-chosen AUTO values pass <code>put_model</code>.</div>
+        </div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q">With sleep disabled you pass <code>nvmax=6</code> for a model with nv = 36. Why is no NVMAX bit ever set?</p>
+          <ul class="choices">
+            <li><button data-explain="make_data accepts any nvmax in [0, nv].">make_data silently raises nvmax to nv</button></li>
+            <li><button data-explain="warn_overflow only controls the printf, not the bit.">warn_overflow is 0 by default</button></li>
+            <li><button>The bit is set only in island._compact_dofs, which runs only on the sleep path</button></li>
+          </ul>
+          <div class="quiz-feedback"><code>update_active_dofs</code> is called from <code>fwd_acceleration</code> and <code>solver.solve</code> only when SLEEP is on. Without sleep the full-size solver runs and nvmax is unused (Example 21.4, part 3).</div>
+        </div>
+        <div class="quiz-q" data-answer="b">
+          <p class="q">A tree has <code>tree_asleep = -4</code> and its island partner is at -1. Both stay perfectly still. When do they fall asleep?</p>
+          <ul class="choices">
+            <li><button data-explain="The partner cannot sleep alone: its island is vetoed by the tree at -4.">The partner now, the tree in 3 steps</button></li>
+            <li><button>Both together, at the end of the 3rd step from now</button></li>
+            <li><button data-explain="The countdown is 10 steps from -11, not from any value.">Both in 10 steps</button></li>
+          </ul>
+          <div class="quiz-feedback">-4 → -3 → -2 → -1 takes three sweeps; in the third, <code>_check_island_can_sleep</code> finds every tree at -1 and <code>_build_cycles</code> links both.</div>
+        </div>
+        <div class="quiz-q" data-answer="a">
+          <p class="q">World 0 has <code>tree_asleep = [2, 3, 1, 0, 4]</code>. You write a velocity into tree 1. Which trees wake?</p>
+          <ul class="choices">
+            <li><button>0, 1, 2 and 3</button></li>
+            <li><button data-explain="_wake_tree follows the cycle and wakes every tree in it.">Only 1</button></li>
+            <li><button data-explain="Tree 4 is a self-cycle (4 → 4), a separate cycle.">All five</button></li>
+          </ul>
+          <div class="quiz-feedback">Follow the pointers from 1: 1 → 3 → 0 → 2 → 1. That is one cycle of four trees; tree 4 points to itself.</div>
+        </div>
+        <div class="quiz-q" data-answer="b">
+          <p class="q">In <code>_dsu_union</code>, why is the higher root always hooked under the lower root?</p>
+          <ul class="choices">
+            <li><button data-explain="Union by rank balances depth; MJWarp does not track ranks.">It keeps the trees balanced (union by rank)</button></li>
+            <li><button>Pointers only decrease, so concurrent unions cannot form cycles and each island's root is its smallest tree</button></li>
+            <li><button data-explain="Floats are not involved: parent is an int array.">It avoids floating-point non-determinism</button></li>
+          </ul>
+          <div class="quiz-feedback">Monotone pointers make the CAS-based union safe without locks, and <code>_label_roots</code> can number islands in MuJoCo's order (ascending smallest tree).</div>
+        </div>
+        <div class="quiz-q" data-answer="c">
+          <p class="q">Where does sleep save the most work?</p>
+          <ul class="choices">
+            <li><button data-explain="A humanoid's trees are actuated (AUTO_NEVER) and always moving: sleep is pure overhead.">A batch of walking humanoids</button></li>
+            <li><button data-explain="The cartpole never rests, and its tree is actuated.">A cartpole RL task</button></li>
+            <li><button>A bin of 200 parts where a gripper touches one part at a time</button></li>
+          </ul>
+          <div class="quiz-feedback">Most parts rest most of the time: their contacts with the bin and with each other vanish, and nvmax can be sized for the few parts that move.</div>
+        </div>
+        <div class="quiz-q" data-answer="a">
+          <p class="q">An awake box (countdown -5) lands on a sleeping box. What value does <code>wake_collision</code> write into the sleeping box's cycle?</p>
+          <ul class="choices">
+            <li><button>-5, the awake box's value</button></li>
+            <li><button data-explain="That is what sleep.wake writes for user changes.">-11</button></li>
+            <li><button data-explain="Values >= 0 mean asleep.">0</button></li>
+          </ul>
+          <div class="quiz-feedback"><code>_wake_collision_kernel</code> passes <code>wakeval = tree_asleep[awake tree]</code>, so the pair counts down together.</div>
+        </div>
+        <button class="btn btn-sm quiz-reset" type="button">Reset quiz</button>
+      </div>
+    </section>
+
+    <!-- ===================================================== EXERCISES -->
+    <section class="sec" id="exercises">
+      <h2><span class="sec-num">12</span>Exercises</h2>
+      <div class="exercise">
+        <div class="exercise-head"><h3>Exercise 21.1: size nvmax</h3><span class="ex-level auto">Auto-checked</span></div>
+        <p>Six boxes start asleep (section 7 pattern). In every world, box 0 is lifted and box 1 is pushed sideways
+          for five steps; nothing else ever moves, and the boxes are 0.5 m apart so they never touch. Choose the
+          smallest <code>NVMAX</code> that never sets the NVMAX bit, and confirm that 6 is too small. The asserts are
+          in the stub.</p>
+        <div class="code-block"><pre><code class="language-python">import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+BODIES = "".join(
+    f'&lt;body name="box{i}" pos="{0.5 * i:.2f} 0 0.099"&gt;&lt;freejoint/&gt;'
+    f'&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;' for i in range(6))
+XML = ('&lt;mujoco&gt;&lt;option timestep="0.01" solver="Newton"&gt;&lt;flag sleep="enable"/&gt;&lt;/option&gt;'
+       f'&lt;worldbody&gt;&lt;geom type="plane" size="5 5 .1"/&gt;{BODIES}&lt;/worldbody&gt;&lt;/mujoco&gt;')
+mjm = mujoco.MjModel.from_xml_string(XML)
+NWORLD = 4
+
+
+def run(nvmax, nstep=60):
+    m = mjw.put_model(mjm)
+    m.opt.warn_overflow = 0
+    mjd = mujoco.MjData(mjm)
+    mjd.tree_asleep[:] = np.arange(mjm.ntree, dtype=np.int32)      # start asleep
+    d = mjw.put_data(mjm, mjd, nworld=NWORLD, nconmax=32, njmax=128, nvmax=nvmax)
+    xfrc = np.zeros((NWORLD, mjm.nbody, 6), dtype=np.float32)
+    xfrc[:, mjm.body("box0").id, 2] = 150.0                          # lift box 0 ...
+    xfrc[:, mjm.body("box1").id, 0] = 30.0                           # ... and slide box 1
+    d.xfrc_applied.assign(xfrc)
+    peak = 0
+    for i in range(nstep):
+        if i == 5:
+            d.xfrc_applied.zero_()
+        mjw.step(m, d)
+        peak = max(peak, int(d.nv_awake.numpy().max()))
+    bits = int(np.bitwise_or.reduce(d.overflow.numpy()))
+    return bits, peak
+
+
+NVMAX = ...          # your choice: the smallest capacity that never overflows
+bits, peak = run(NVMAX)
+print("nvmax", NVMAX, "peak awake dofs", peak, "overflow bits", bits)
+assert NVMAX &lt; mjm.nv
+assert not bits &amp; mjw.OverflowType.NVMAX
+bits6, _ = run(6)
+print("nvmax 6 -&gt; overflow", [o.name for o in mjw.OverflowType if bits6 &amp; o])
+assert bits6 &amp; mjw.OverflowType.NVMAX
+print("OK")</code></pre></div>
+        <details class="solution">
+          <summary>Show solution</summary>
+          <div class="solution-body">
+            <p>Two free boxes can be awake at once: <code>NVMAX = 12</code> (2 trees x 6 DOFs). The other four never
+              wake, because nothing touches them. With 6, box 1 does not fit while both are awake.</p>
+            <div class="code-block"><pre><code class="language-python">NVMAX = 12</code></pre></div>
+            <p>Output (CPU run):</p>
+<pre class="output">nvmax 12 peak awake dofs 12 overflow bits 0
+nvmax 6 -&gt; overflow ['NVMAX']
+OK</pre>
+          </div>
+        </details>
+      </div>
+
+      <div class="exercise">
+        <div class="exercise-head"><h3>Exercise 21.2: all_asleep(d)</h3><span class="ex-level auto">Auto-checked</span></div>
+        <p>Write <code>all_asleep(d)</code>, which returns True when every tree of every world sleeps, and assert that
+          three boxes dropped from different heights reach it within 200 steps.</p>
+        <div class="code-block"><pre><code class="language-python">import mujoco
+import numpy as np
+import warp as wp
+wp.config.log_level = wp.LOG_WARNING
+import mujoco_warp as mjw
+
+Z = [0.1, 0.3, 0.5]
+BODIES = "".join(
+    f'&lt;body pos="{0.4 * i:.2f} 0 {z}"&gt;&lt;freejoint/&gt;&lt;geom type="box" size=".1 .1 .1"/&gt;&lt;/body&gt;'
+    for i, z in enumerate(Z))
+XML = ('&lt;mujoco&gt;&lt;option timestep="0.01" solver="Newton"&gt;&lt;flag sleep="enable"/&gt;&lt;/option&gt;'
+       f'&lt;worldbody&gt;&lt;geom type="plane" size="5 5 .1"/&gt;{BODIES}&lt;/worldbody&gt;&lt;/mujoco&gt;')
+mjm = mujoco.MjModel.from_xml_string(XML)
+m = mjw.put_model(mjm)
+d = mjw.make_data(mjm, nworld=4, nconmax=16, njmax=64)
+
+
+def all_asleep(d):
+    """True when every tree in every world is asleep."""
+    ...      # read d.tree_asleep (or d.ntree_awake) on the host
+
+
+assert not all_asleep(d)                 # make_data starts every tree awake
+N = 200
+for i in range(N):
+    mjw.step(m, d)
+    if all_asleep(d):
+        break
+print("all asleep after", i + 1, "steps")
+assert all_asleep(d)
+assert (d.ntree_awake.numpy() == 0).all()
+print("OK")</code></pre></div>
+        <details class="solution">
+          <summary>Show solution</summary>
+          <div class="solution-body">
+            <p>A tree is asleep exactly when <code>tree_asleep &gt;= 0</code>. Reading it every step costs a device-to-host
+              copy; in a real loop check it every few hundred steps, or use <code>d.ntree_awake</code> inside a kernel.</p>
+            <div class="code-block"><pre><code class="language-python">def all_asleep(d):
+    """True when every tree in every world is asleep."""
+    return bool((d.tree_asleep.numpy() &gt;= 0).all())</code></pre></div>
+            <p>Output (CPU run):</p>
+<pre class="output">all asleep after 68 steps
+OK</pre>
+          </div>
+        </details>
+      </div>
+
+      <div class="exercise">
+        <div class="exercise-head"><h3>Stretch: throughput against the fraction of moving objects</h3><span class="ex-level stretch">Stretch</span></div>
+        <p>On a Colab GPU, build a 64-box clutter scene and start every world asleep. Keep a fraction f of the boxes
+          moving with a small periodic <code>xfrc_applied</code>. For f in 0, 0.1, 0.25, 0.5 and 1, measure
+          world-steps/s with sleep off, sleep on with the default nvmax, and sleep on with
+          <code>nvmax = 6 * ceil(f * 64)</code> (check the NVMAX bit). Plot the speed-up against f and find the
+          break-even fraction. Which part of the step (use <code>EventTracer</code>, Ch 25) shrinks the most?</p>
+      </div>
+    </section>
+
+    <!-- ===================================================== SUMMARY -->
+    <section class="sec" id="summary">
+      <h2><span class="sec-num">13</span>Summary</h2>
+      <div class="takeaways">
+        <h3>Key takeaways</h3>
+        <ul>
+          <li>An island is a group of kinematic trees connected by constraint rows; <code>tree_island</code> holds the id per tree, -1 for trees with no rows.</li>
+          <li><code>island.py</code> finds islands with a lock-free DSU: hook the higher root under the lower with <code>atomic_cas</code>, shorten paths with <code>atomic_min</code>, then compress, label in ascending order and propagate.</li>
+          <li><code>forward</code> runs island discovery only with sleep enabled; <code>mjw.island(m, d)</code> runs it on demand.</li>
+          <li><code>tree_asleep</code>: -11 .. -1 is an awake countdown, ≥ 0 is the next tree in a sleep cycle. Ten still steps (<code>mjMINAWAKE</code>) and a whole island at -1 make a cycle; qvel and qacc become exactly 0.</li>
+          <li>User changes, contacts with awake trees, active equalities and tendons wake a tree, and waking one tree wakes its cycle.</li>
+          <li>4.0.1 requires Newton, the default island flag, <code>sleep="auto"</code> bodies and no flex equality; start asleep by writing <code>tree_asleep = arange(ntree)</code> before <code>put_data</code>.</li>
+          <li>The awake DOFs are solved in <code>nvmax_pad</code>-wide compact buffers. Size <code>nvmax</code> for the worst moment and check the NVMAX bit, which exists only on the sleep path.</li>
+          <li>Sleep pays for mostly resting clutter, not for always-moving robots; measure it on the GPU.</li>
+        </ul>
+      </div>
+      <p class="stuck">Stuck? See <a href="../reference/troubleshooting.html">Troubleshooting</a> or the <a href="../reference/course-map.html">course map</a>.</p>
+    </section>
+
+    <!-- ===================================================== SOURCE MAP -->
+    <section class="sec" id="source-map">
+      <h2><span class="sec-num">14</span>Source map</h2>
+      <div class="table-wrap">
+        <table class="source-map">
+          <thead><tr><th>Concept</th><th>File</th><th>Function</th></tr></thead>
+          <tbody>
+            <tr><td>Public island entry point</td><td>_src/island.py</td><td>island</td></tr>
+            <tr><td>DSU orchestration, chunk sizing</td><td>_src/island.py</td><td>direct_dsu</td></tr>
+            <tr><td>DSU find / union / activate</td><td>_src/island.py</td><td>_dsu_find, _dsu_union, _dsu_activate</td></tr>
+            <tr><td>DSU kernels</td><td>_src/island.py</td><td>_reset_dsu, _island_dsu, _compress_roots, _label_roots, _propagate_labels</td></tr>
+            <tr><td>Repeated-row skip</td><td>_src/island.py</td><td>_is_repeated_fixed_support_efc</td></tr>
+            <tr><td>Flex unions</td><td>_src/island.py</td><td>_flex_island_dsu, _passive_contact_island_dsu</td></tr>
+            <tr><td>Per-DOF / per-row island maps</td><td>_src/island.py</td><td>compute_island_mapping</td></tr>
+            <tr><td>Awake-DOF compaction, NVMAX bit</td><td>_src/island.py</td><td>update_active_dofs, _compact_dofs_builder, _reset_compact_maps</td></tr>
+            <tr><td>Countdown start value</td><td>_src/sleep.py</td><td>K_AWAKE_VAL</td></tr>
+            <tr><td>Sleep decision</td><td>_src/sleep.py</td><td>sleep, _sweep_awake_trees, _tree_can_sleep, _check_island_can_sleep, _build_cycles</td></tr>
+            <tr><td>Waking</td><td>_src/sleep.py</td><td>wake, _wake_kernel, _wake_tree, wake_collision, wake_equality, wake_tendon</td></tr>
+            <tr><td>Derived awake arrays</td><td>_src/sleep.py</td><td>update_sleep, update_sleep_trees</td></tr>
+            <tr><td>Sleep in the pipeline</td><td>_src/forward.py</td><td>_forward, fwd_kinematics, fwd_position, fwd_acceleration, _advance</td></tr>
+            <tr><td>Discrete integrator sleep checks</td><td>_src/forward.py</td><td>check_discrete</td></tr>
+            <tr><td>Compacted solves</td><td>_src/solver.py</td><td>solve, solve_compact, smooth_solve_compact, _compact_gather, _compact_scatter</td></tr>
+            <tr><td>Gather kernels</td><td>_src/solver.py</td><td>_init_compact_inertia, _gather_M_sparse, _gather_J_dense, _scatter_solution</td></tr>
+            <tr><td>Two-pass broadphase</td><td>_src/collision_driver.py</td><td>collision, nxn_broadphase, sap_broadphase, _any_awake_changed</td></tr>
+            <tr><td>Sleep checks in put_model</td><td>_src/io.py</td><td>put_model</td></tr>
+            <tr><td>Compact buffers, nvmax</td><td>_src/io.py</td><td>make_data, put_data, _nvmax_pad, _allocate_compact_arrays</td></tr>
+            <tr><td>Enums and constants</td><td>_src/types.py</td><td>SleepPolicy, SleepState, EnableBit.SLEEP, DisableBit.ISLAND, OverflowType.NVMAX, MJ_MINAWAKE</td></tr>
+            <tr><td>Start asleep</td><td>_src/cli.py</td><td>INIT_ASLEEP (--init_asleep)</td></tr>
+            <tr><td>Tests</td><td>_src/island_test.py, _src/sleep_test.py</td><td>island and sleep test cases</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="chapter-footer">
+      <div class="complete-row"><button class="btn complete-btn" data-slug="21-islands-and-sleep">Mark chapter as complete</button></div>
+      <nav class="pager" aria-label="Chapter pager">
+        <a class="prev" href="20-solvers-cg-newton.html"><span class="dir">Previous</span><span class="ttl">Ch 20 · The Primal Solvers: CG, Newton and the Exact Linesearch</span></a>
+        <a class="index" href="../index.html"><span class="dir">All chapters</span><span class="ttl">Index</span></a>
+        <a class="next" href="22-determinism-and-reproducibility.html"><span class="dir">Next</span><span class="ttl">Ch 22 · Determinism and Reproducibility</span></a>
+      </nav>
+      <p class="site-footer">MuJoCo Warp course · mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1</p>
+    </footer>
+  </main>
+</div>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/xml.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="../assets/course.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  MW.onReady(function () {
+    var SVGNS = "http://www.w3.org/2000/svg";
+
+    /* ---------- Stepper: DSU (manual drawing of nodes and arrays) ---------- */
+    (function () {
+      var el = document.getElementById("dsu-stepper");
+      var nodes = document.getElementById("dsu-nodes"), cells = document.getElementById("dsu-cells");
+      var nis = document.getElementById("dsu-nis");
+      var X = [36, 92, 148, 204, 260, 316], circ = [], ptxt = [], itxt = [], prect = [], irect = [];
+      for (var t = 0; t < 6; t++) {
+        var c = MW.svgEl("circle", { cx: X[t], cy: 70, r: 15, "class": "c21-node" }, nodes); circ.push(c);
+        var tx = MW.svgEl("text", { x: X[t], y: 75, "text-anchor": "middle", "class": "s-mono", "font-size": 12, fill: "#fff" }, nodes); tx.textContent = "t" + t;
+        var cx = 120 + t * 40;
+        prect.push(MW.svgEl("rect", { x: cx - 18, y: 144, width: 36, height: 24, rx: 4, "class": "c21-cell" }, cells));
+        var p = MW.svgEl("text", { x: cx, y: 161, "text-anchor": "middle", "class": "s-mono", "font-size": 12, fill: "currentColor" }, cells); ptxt.push(p);
+        irect.push(MW.svgEl("rect", { x: cx - 18, y: 192, width: 36, height: 24, rx: 4, "class": "c21-cell" }, cells));
+        var q = MW.svgEl("text", { x: cx, y: 209, "text-anchor": "middle", "class": "s-mono", "font-size": 12, fill: "currentColor" }, cells); itxt.push(q);
+        var lab = MW.svgEl("text", { x: cx, y: 140, "text-anchor": "middle", "class": "s-small s-mono" }, cells); lab.textContent = t;
+      }
+      function root(par, t) { while (par[t] !== t) t = par[t]; return t; }
+      var prev = null;
+      MW.stepper(el, null, { onFrame: function (i, f) {
+        for (var t = 0; t < 6; t++) {
+          var active = f.isl[t] !== "-1";
+          circ[t].style.fill = active ? MW.worldColor(root(f.parent, t)) : MW.css("--muted");
+          circ[t].style.opacity = active ? 1 : .55;
+          ptxt[t].textContent = f.parent[t];
+          itxt[t].textContent = f.isl[t];
+          prect[t].setAttribute("class", prev && prev.parent[t] !== f.parent[t] ? "c21-cell-hi" : "c21-cell");
+          irect[t].setAttribute("class", prev && prev.isl[t] !== f.isl[t] ? "c21-cell-hi" : "c21-cell");
+        }
+        nis.textContent = "nisland = " + f.nis + "   (colour = current root)";
+        prev = f;
+      } });
+    })();
+
+    /* ---------- Requirements checklist ---------- */
+    (function () {
+      var w = document.getElementById("req-widget"), out = document.getElementById("req-verdict");
+      var st = { solver: "Newton", integ: "euler", island: "on", policy: "auto", flexeq: "no", nvmax: "omit" };
+      function verdict() {
+        var P = { never: "mjSLEEP_NEVER", allowed: "mjSLEEP_ALLOWED", init: "mjSLEEP_INIT" };
+        if (st.policy !== "auto") return ["error", "<strong>put_model</strong> raises <code>NotImplementedError: ['" + P[st.policy] + "'] not supported.</code> (the enum check runs first; <code>types.SleepPolicy</code> has only AUTO, AUTO_NEVER, AUTO_ALLOWED). Workaround for <code>init</code>: section 7."];
+        if (st.flexeq === "yes") return ["error", "<strong>put_model</strong> raises <code>NotImplementedError: Flex equality constraints are not supported with sleeping enabled.</code>"];
+        if (st.solver === "CG") return ["error", "<strong>put_model</strong> raises <code>ValueError: sleeping requires the Newton solver (got solver=CG)</code>"];
+        if (st.nvmax === "big") return ["error", "<strong>make_data</strong> raises <code>ValueError: nvmax (40) must be in [0, nv (36)]</code> (numbers for a 36-DOF model)."];
+        if (st.island === "off") {
+          if (st.integ === "discrete") return ["error", "The first <strong>forward</strong> raises <code>ValueError: Discrete integrator: sleep without islands not yet supported</code> (<code>check_discrete</code>)."];
+          if (st.nvmax === "omit") return ["error", "No error from <code>put_model</code>/<code>make_data</code>, but <code>sleep_enabled</code> is false, so <code>make_data</code> leaves <code>cM</code> at shape (0, 0, 0) while <code>solver.solve</code> still takes the compact path: the first step reads unallocated memory (segfault on CPU). Pass <code>nvmax</code> or drop the SLEEP flag."];
+          if (st.nvmax === "small") return ["error", "No error is raised, but the physics is wrong: <code>solver.solve</code> tests only the SLEEP bit, so <code>update_active_dofs</code> and <code>solve_compact</code> still run with every tree awake (nothing ever sleeps). Any nvmax below nv sets <code>OverflowType.NVMAX</code> on every step and the DOFs past nvmax get qacc = 0. Use <code>nvmax = nv</code> or drop the SLEEP flag."];
+          return ["warn", "Runs, but nothing ever sleeps: <code>sleep_enabled = SLEEP and not DSBL_ISLAND</code> is false, so <code>sleep.sleep</code> and island discovery never run. The SLEEP bit still routes the solve through the compact buffers."];
+        }
+        if (st.nvmax === "small") return ["warn", "Runs. Whenever a world has more awake DOFs than nvmax, <code>_compact_dofs</code> sets <code>OverflowType.NVMAX</code> and prints <code>nvmax overflow: world %d needs %d active DOFs but nvmax = %d (behavior undefined)</code>; the DOFs past nvmax get qacc = 0."];
+        if (st.integ === "discrete") return ["ok", "Allowed for rigid models: the discrete integrator solves in full DOF space (<code>solver.solve</code> skips <code>solve_compact</code>). Flex models have extra limits in <code>check_discrete</code> (Ch 23)."];
+        return ["ok", "All checks pass. Trees fall asleep after <code>mjMINAWAKE = 10</code> still steps once their whole island is still" + (st.nvmax === "omit" ? "; nvmax defaults to nv (always enough)." : ".")];
+      }
+      function render() { var v = verdict(); out.setAttribute("data-kind", v[0]); out.innerHTML = (v[0] === "ok" ? "OK: " : v[0] === "warn" ? "Warning: " : "Error: ") + v[1]; }
+      MW.$$(".seg[data-k]", w).forEach(function (seg) {
+        seg.addEventListener("click", function (e) {
+          var b = e.target.closest("button"); if (!b) return;
+          MW.$$("button", seg).forEach(function (o) { o.setAttribute("aria-pressed", o === b ? "true" : "false"); });
+          st[seg.getAttribute("data-k")] = b.getAttribute("data-v"); render();
+        });
+      });
+      render();
+    })();
+
+    /* ---------- Countdown simulator (rules of sleep.py) ---------- */
+    (function () {
+      var K = -11, N = 3, ISL = [0, 0, 1];          // t0, t1 share island 0 (stack); t2 is island 1
+      var val, moving, pushed, nstep;
+      var box = document.getElementById("cd-trees"), log = document.getElementById("cd-log");
+      var cards = [];
+      for (var t = 0; t < N; t++) {
+        var d = document.createElement("div"); d.className = "c21-tree";
+        d.innerHTML = "<h5><span>t" + t + (t < 2 ? " (stack)" : " (alone)") + "</span><span class='c21-val'></span></h5>" +
+          "<div class='c21-bar'><span></span></div><div class='small muted c21-state'></div>" +
+          "<button class='btn btn-sm c21-tbtn' type='button' aria-pressed='false' style='margin-top:6px'>moving: no</button>";
+        box.appendChild(d);
+        (function (k, card) { MW.$("button", card).addEventListener("click", function () { moving[k] = !moving[k]; draw(); }); })(t, d);
+        cards.push(d);
+      }
+      function reset() { val = [K, K, K]; moving = [false, false, false]; pushed = [false, false, false]; nstep = 0; log.textContent = "make_data: tree_asleep = [-11, -11, -11] (all awake)"; draw(); }
+      function cycleOf(t) { var c = [t], cur = val[t]; while (cur >= 0 && cur !== t && c.length <= N) { c.push(cur); cur = val[cur]; } return c; }
+      function step() {
+        var msgs = [];
+        // 1. sleep.wake: sleeping tree that moves or has a force -> wake its cycle with -11
+        for (var t = 0; t < N; t++) if (val[t] >= 0 && (moving[t] || pushed[t])) {
+          var c = cycleOf(t); c.forEach(function (k) { val[k] = K; }); msgs.push("wake: t" + t + " disturbed -> cycle [" + c.map(function (k) { return "t" + k; }).join(", ") + "] = -11");
+        }
+        // 2. _sweep_awake_trees
+        for (var u = 0; u < N; u++) if (val[u] < 0) {
+          if (moving[u] || pushed[u]) val[u] = K; else if (val[u] < -1) val[u] += 1;
+        }
+        // 3./4. island check + build cycles (islands hold awake trees only)
+        [0, 1].forEach(function (isl) {
+          var mem = []; for (var k = 0; k < N; k++) if (ISL[k] === isl && val[k] < 0) mem.push(k);
+          if (!mem.length) return;
+          if (mem.every(function (k) { return val[k] === -1; })) {
+            for (var j = 0; j < mem.length; j++) val[mem[j]] = mem[(j + 1) % mem.length];
+            msgs.push("_build_cycles: island " + isl + " -> " + mem.map(function (k) { return "t" + k; }).join(" -> ") + " -> t" + mem[0] + ", qvel = qacc = 0");
+          } else if (mem.some(function (k) { return val[k] === -1; }) && mem.some(function (k) { return val[k] < -1; })) {
+            msgs.push("_check_island_can_sleep: island " + isl + " vetoed (a tree is still below -1)");
+          }
+        });
+        pushed = [false, false, false];
+        nstep++;
+        msgs.unshift("step " + nstep + ": tree_asleep = [" + val.join(", ") + "]");
+        return msgs;
+      }
+      function draw() {
+        for (var t = 0; t < N; t++) {
+          var c = cards[t], v = val[t], asleep = v >= 0;
+          c.setAttribute("data-asleep", asleep ? "1" : "0");
+          MW.$(".c21-val", c).textContent = v;
+          MW.$(".c21-bar > span", c).style.width = (asleep ? 100 : (v - K) / 10 * 100) + "%";
+          MW.$(".c21-state", c).textContent = asleep ? "asleep, next in cycle: t" + v : (v === -1 ? "ready (-1)" : "awake, " + (-1 - v) + " still steps to go");
+          var b = MW.$("button", c); b.setAttribute("aria-pressed", moving[t] ? "true" : "false"); b.textContent = "moving: " + (moving[t] ? "yes" : "no");
+        }
+        document.getElementById("cd-count").textContent = "step " + nstep;
+      }
+      document.getElementById("cd-step").addEventListener("click", function () { log.textContent = step().join("\n"); draw(); });
+      document.getElementById("cd-step10").addEventListener("click", function () { var m = []; for (var i = 0; i < 10; i++) m = m.concat(step().filter(function (s, j) { return j > 0 || i === 9; })); log.textContent = m.join("\n"); draw(); });
+      document.getElementById("cd-push").addEventListener("click", function () { pushed[1] = true; log.textContent = "xfrc_applied set on t1 for the next step. Press Step."; });
+      document.getElementById("cd-reset").addEventListener("click", reset);
+      reset();
+    })();
+
+    /* ---------- Sleep replay (ex2 data) + world grid ---------- */
+    (function () {
+      var fig = document.getElementById("sleep-replay"), data = MW.readJSON("data-ch21-ex2");
+      if (!data) return;
+      var gridEl = document.getElementById("sleep-grid"), grid = gridEl._mwGrid || MW.worldGrid(gridEl, data.nworld);
+      var line = MW.$(".fig-caption-line", fig);
+      function treeLabel(k) { return (data.labels && data.labels[k]) || ("tree " + k); }
+      gridEl.querySelectorAll(".world-tile").forEach(function (tile, k) { tile.setAttribute("aria-label", treeLabel(k)); });
+      var xs = data.x, half = data.half, x0 = -0.3, x1 = xs[xs.length - 1] + 0.3, zmax = 1.0;
+      fig._mw = MW.replay(fig, data, {
+        aspect: 2.6, cols: 6,
+        draw: function (ctx, fr, st, fi, hi) {
+          var sx = st.w / (x1 - x0), sz = (st.h - 34) / zmax, s = Math.min(sx, sz), base = st.h - 22;
+          ctx.fillStyle = MW.css("--border-strong"); ctx.fillRect(0, base, st.w, 2);
+          for (var t = 0; t < data.nworld; t++) {
+            var z = fr[t][0], a = fr[t][1], v = fr[t][2], asleep = v >= 0;
+            var cx = (xs[t] - x0) * sx, cy = base - z * s, hw = half * s;
+            ctx.save(); ctx.translate(cx, cy); ctx.rotate(-a);
+            ctx.globalAlpha = hi >= 0 && hi !== t ? 0.35 : 1;
+            ctx.fillStyle = asleep ? MW.css("--muted") : MW.worldColor(t);
+            ctx.fillRect(-hw, -hw, 2 * hw, 2 * hw);
+            ctx.restore(); ctx.globalAlpha = 1;
+            ctx.fillStyle = MW.css("--text"); ctx.font = "11px " + MW.css("--font-mono"); ctx.textAlign = "center";
+            ctx.fillText((asleep ? "→" : "") + v, cx, base + 15);
+          }
+          ctx.textAlign = "left"; ctx.fillStyle = MW.css("--muted");
+          ctx.fillText("ntree_awake " + data.ntree_awake[fi] + "  nefc " + data.nefc[fi], 6, 14);
+        },
+        onFrame: function (fi, fr) {
+          for (var t = 0; t < data.nworld; t++) {
+            var v = fr[t][2];
+            grid.setState(t, v >= 0 ? "asleep" : "running", "t" + t + " " + (v >= 0 ? "→" + v : String(v)));
+            if (grid.tiles[t]) grid.tiles[t].setAttribute("aria-label", treeLabel(t) + ": " + (v >= 0 ? "asleep, next " + v : "awake, countdown " + v));
+          }
+        }
+      });
+      function sayTree(e) {
+        var tile = e.target.closest(".world-tile"); if (!tile || !line) return;
+        var t = +tile.getAttribute("data-world"), fi = fig._mw ? fig._mw.frame : 0, v = data.frames[fi][t][2];
+        line.textContent = treeLabel(t) + ": tree_asleep = " + v + (v >= 0 ? " (asleep, next tree in cycle " + v + ")" : " (awake countdown)");
+      }
+      ["mouseover", "focusin", "click"].forEach(function (ev) { gridEl.addEventListener(ev, sayTree); });
+    })();
+
+    /* ---------- Gather / solve / scatter canvas ---------- */
+    (function () {
+      var NT = 6, DPT = 6, NV = 36, awake = [true, true, true, false, false, false];
+      var segEl = document.getElementById("gs-trees"), nvIn = document.getElementById("gs-nvmax"), nvOut = document.getElementById("gs-nvmax-out");
+      var line = document.getElementById("gs-line");
+      for (var t = 0; t < NT; t++) {
+        var b = document.createElement("button"); b.type = "button"; b.textContent = "t" + t; b.setAttribute("aria-pressed", awake[t] ? "true" : "false");
+        (function (k, btn) { btn.addEventListener("click", function () { awake[k] = !awake[k]; btn.setAttribute("aria-pressed", awake[k] ? "true" : "false"); update(); anim.redraw(); }); })(t, b);
+        segEl.appendChild(b);
+      }
+      function pad(n) { return Math.floor((Math.max(n, 1) + 16) / 16) * 16; }
+      var map = [], ncdof = 0, need = 0, nvmax = 18;
+      function update() {
+        nvmax = +nvIn.value; nvOut.textContent = nvmax; map = []; need = 0; ncdof = 0;
+        for (var t = 0; t < NT; t++) for (var j = 0; j < DPT; j++) {
+          var dof = t * DPT + j;
+          if (awake[t]) { map[dof] = need < nvmax ? need : -2; if (need < nvmax) ncdof++; need++; } else map[dof] = -1;
+        }
+        var over = need > nvmax;
+        line.innerHTML = "awake DOFs " + need + " · nvmax " + nvmax + " · nvmax_pad " + pad(nvmax) + " · ncdof " + ncdof +
+          (over ? " · <strong style='color:var(--danger)'>NVMAX overflow: " + (need - nvmax) + " DOFs frozen</strong>" : " · overflow: none");
+      }
+      nvIn.addEventListener("input", function () { update(); anim.redraw(); });
+      update();
+      var anim = MW.canvasAnim(document.getElementById("gs-canvas"), function (ctx, st) {
+        var P = pad(nvmax), cols = Math.max(NV, P), cw = Math.min(16, (st.w - 16) / cols), x0 = 8;
+        var yTop = 22, yBot = 120, ch = 16, T = 6, ph = (st.t % T) / T;
+        var mv = ph < 0.3 ? ph / 0.3 : ph < 0.55 ? 1 : ph < 0.85 ? 1 - (ph - 0.55) / 0.3 : 0;
+        if (!anim || !anim.playing) mv = 1;
+        mv = mv * mv * (3 - 2 * mv);
+        ctx.font = "11px " + MW.css("--font-mono"); ctx.textAlign = "left"; ctx.fillStyle = MW.css("--muted");
+        ctx.fillText("full DOF space (nv = 36)", x0, 14);
+        ctx.fillText("compact buffer: nvmax_pad = " + P + " columns", x0, yBot - 6);
+        for (var c = 0; c < P; c++) { ctx.strokeStyle = MW.css("--border"); ctx.strokeRect(x0 + c * cw + .5, yBot + .5, cw - 1, ch - 1); }
+        ctx.fillStyle = MW.css("--danger"); ctx.fillRect(x0 + nvmax * cw - 1, yBot - 3, 2, ch + 6);
+        ctx.fillText("nvmax", Math.min(st.w - 44, x0 + nvmax * cw + 3), yBot + ch + 13);
+        for (var dof = 0; dof < NV; dof++) {
+          var t = Math.floor(dof / DPT), m = map[dof], xa = x0 + dof * cw, col;
+          if (m === -1) col = MW.css("--muted"); else if (m === -2) col = MW.css("--danger"); else col = MW.worldColor(t);
+          ctx.globalAlpha = m === -1 ? 0.35 : 1;
+          ctx.fillStyle = col; ctx.fillRect(xa + 1, yTop + 1, cw - 2, ch - 2);
+          ctx.globalAlpha = 1;
+          if (m >= 0) {
+            var xb = x0 + m * cw, x = xa + (xb - xa) * mv, y = yTop + (yBot - yTop) * mv;
+            ctx.fillStyle = MW.worldColor(t); ctx.fillRect(x + 1, y + 1, cw - 2, ch - 2);
+          }
+        }
+        for (var tt = 0; tt < NT; tt++) { ctx.fillStyle = MW.css("--muted"); ctx.fillText("t" + tt, x0 + tt * DPT * cw + 2, yTop + ch + 12); }
+        // dense factor block
+        var narrow = st.w < 520, sz = narrow ? 60 : Math.min(90, st.h - yBot - ch - 30), fx = x0, fy = yBot + ch + 22, k = ncdof / Math.max(P, 1);
+        var tx = narrow ? fx : fx + sz + 10, ty = narrow ? fy + sz + 16 : fy + 14;
+        var pulse = ph > 0.3 && ph < 0.55 && anim && anim.playing ? 0.5 + 0.5 * Math.sin((ph - 0.3) / 0.25 * Math.PI) : 0.6;
+        ctx.strokeStyle = MW.css("--border-strong"); ctx.strokeRect(fx + .5, fy + .5, sz, sz);
+        ctx.globalAlpha = 0.25 + 0.6 * pulse; ctx.fillStyle = MW.css("--accent"); ctx.fillRect(fx + 1, fy + 1, sz * k, sz * k); ctx.globalAlpha = 1;
+        ctx.strokeStyle = MW.css("--muted"); ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(fx + sz * k, fy + sz * k); ctx.lineTo(fx + sz, fy + sz); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = MW.css("--text"); ctx.fillText("cM (" + P + " x " + P + "): awake block " + ncdof + " x " + ncdof + (narrow ? "" : ", identity tail"), tx, ty);
+        ctx.fillStyle = MW.css("--muted");
+        var phase = !anim || !anim.playing ? "paused: compact layout" : ph < 0.3 ? (narrow ? "gather M into cM" : "gather M into cM (smooth_solve_compact, sparse or dense)") : ph < 0.55 ? (narrow ? "factor + Newton" : "blocked Cholesky, then Newton (solve_compact)") : ph < 0.85 ? (narrow ? "scatter: asleep DOFs keep qacc = 0" : "scatter (_compact_scatter): asleep DOFs keep qacc = 0") : "next step";
+        ctx.fillText(phase, tx, ty + 16);
+      }, { height: 260 });
+    })();
+
+    /* ---------- Cost widget (illustrative counts) ---------- */
+    (function () {
+      var fIn = document.getElementById("cost-f"), nvIn = document.getElementById("cost-nv"), svg = document.getElementById("cost-svg");
+      var line = document.getElementById("cost-line"), NB = 64;
+      function pad(n) { return Math.floor((Math.max(n, 1) + 16) / 16) * 16; }
+      function draw() {
+        var f = +fIn.value / 100, nvmax = +nvIn.value;
+        document.getElementById("cost-f-out").textContent = Math.round(f * 100) + "%";
+        document.getElementById("cost-nv-out").textContent = nvmax;
+        var moving = Math.round(f * NB), awakeDof = 6 * moving;
+        var rows = [
+          ["contacts", 4 * NB, 4 * moving, 4 * NB],
+          ["efc rows", 16 * NB, 16 * moving, 16 * NB],
+          ["solve width", 384, pad(nvmax), 400]
+        ];
+        while (svg.firstChild) svg.removeChild(svg.firstChild);
+        var W = svg.clientWidth && svg.clientWidth < 500 ? 360 : 640, L = W < 500 ? 96 : 110, BW = W - L - 72;
+        svg.setAttribute("viewBox", "0 0 " + W + " 210");
+        rows.forEach(function (r, i) {
+          var y = 18 + i * 64;
+          var t = MW.svgEl("text", { x: 8, y: y + 22, "class": "s-label" }, svg); t.textContent = r[0];
+          MW.svgEl("rect", { x: L, y: y, width: BW * r[1] / r[3], height: 18, rx: 4, "class": "s-box" }, svg);
+          var a = MW.svgEl("text", { x: L + BW * r[1] / r[3] + 6, y: y + 14, "class": "s-small s-mono" }, svg); a.textContent = "off " + r[1];
+          MW.svgEl("rect", { x: L, y: y + 24, width: Math.max(1, BW * r[2] / r[3]), height: 18, rx: 4, "class": "s-accent" }, svg);
+          var b = MW.svgEl("text", { x: L + BW * r[2] / r[3] + 6, y: y + 38, "class": "s-small s-mono" }, svg); b.textContent = "on " + r[2];
+        });
+        var over = awakeDof > nvmax;
+        line.innerHTML = moving + " of 64 boxes moving · awake DOFs " + awakeDof + " · nvmax " + nvmax + " → nvmax_pad " + pad(nvmax) +
+          (over ? " · <strong style='color:var(--danger)'>NVMAX overflow (" + (awakeDof - nvmax) + " DOFs frozen)</strong>" : " · fits");
+      }
+      fIn.addEventListener("input", draw); nvIn.addEventListener("input", draw); window.addEventListener("resize", draw); draw();
+    })();
+  });
+});
+</script>
+</body>
+</html>

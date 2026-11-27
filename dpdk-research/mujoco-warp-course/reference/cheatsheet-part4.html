@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en" class="no-js">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part IV Cheat Sheet</title>
+<meta name="description" content="Code-first summary of Part IV: static pair filtering, broadphase filters and choice, the MJ_COLLISION_TABLE dispatch, write_contact thresholds, material mixing, GJK/EPA, heightfields and SDFs.">
+<script>try{var t=localStorage.getItem("mwc-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="../assets/course.css">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+  /* cheat-sheet layout: dense cards that stack on phones and do not split when printed */
+  .cs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 14px; margin: 1rem 0 1.4rem; }
+  .cs-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 12px 14px; min-width: 0; }
+  .cs-card > h3 { margin: 0 0 6px; font-size: .98rem; }
+  .cs-card > p { margin: .3rem 0; font-size: .93rem; }
+  .cs-card .code-block { margin: .5rem 0 .2rem; }
+  .cs-card ul { margin: .3rem 0; padding-left: 1.1em; font-size: .93rem; }
+  .cs-more { font-size: .85rem; color: var(--muted); margin: .4rem 0 0; }
+  .cs-table td, .cs-table th { font-size: .9rem; vertical-align: top; }
+  .cs-table code { white-space: nowrap; }
+  .cs-table td.wrap code { white-space: normal; }
+  .cs-pitfalls li { margin-bottom: .45rem; }
+  .cs-pitfalls li strong { color: var(--warn-ink); }
+  .cs-chapters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 6px 18px; padding-left: 0; list-style: none; }
+  .cs-chapters li a { font-weight: 600; }
+  .cs-print { margin-top: 12px; }
+  .cs-cell-p { background: var(--accent-2-soft); color: var(--accent-2-ink); font-weight: 700; text-align: center; }
+  .cs-cell-c { background: var(--accent-soft); color: var(--accent-ink); font-weight: 700; text-align: center; }
+  .cs-cell-n { background: var(--surface-2); color: var(--muted); text-align: center; }
+  .cs-cell-f { outline: 2px dashed var(--warn); outline-offset: -3px; }
+  .cs-yes { color: var(--ok); font-weight: 700; }
+  .cs-no { color: var(--danger-ink); font-weight: 700; }
+  .cs-maybe { color: var(--warn-ink); font-weight: 700; }
+
+  @media print {
+    body { font-size: 10pt; }
+    .hero-actions, .cs-print, .p-stuck { display: none !important; }
+    .cs-card, figure, .table-wrap, .code-block, .callout { break-inside: avoid; }
+    .sec > h2 { break-after: avoid; }
+    .cs-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .layout { padding: 0; }
+  }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="progress-bar" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="icon-btn toc-toggle" type="button" aria-label="Table of contents">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+  </button>
+  <a class="brand" href="../index.html">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><circle cx="10" cy="11" r="3" fill="#10200a"/><circle cx="22" cy="11" r="3" fill="#10200a" opacity=".7"/><circle cx="10" cy="22" r="3" fill="#10200a" opacity=".7"/><circle cx="22" cy="22" r="3" fill="#10200a" opacity=".45"/></svg>
+    <span class="brand-text">MuJoCo Warp Course</span>
+  </a>
+  <span class="chap-count">Cheat sheet 4 of 6</span>
+  <span class="topbar-spacer"></span>
+  <nav class="topnav" aria-label="Cheat sheet navigation">
+    <a href="cheatsheet-part3.html" class="prev" aria-label="Part III cheat sheet"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span class="lbl">Prev</span></a>
+    <a href="cheatsheet-part5.html" class="next" aria-label="Part V cheat sheet"><span class="lbl">Next</span><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></a>
+  </nav>
+  <button class="icon-btn theme-toggle" type="button" aria-label="Toggle dark mode">
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page">
+    <p class="toc-title">On this page</p>
+    <ol data-auto></ol>
+    <p class="toc-progress" aria-live="off"></p>
+  </aside>
+
+  <main id="main" class="content">
+    <header class="chapter-hero">
+      <p class="eyebrow">Reference · Part IV cheat sheet</p>
+      <h1>Part IV cheat sheet: Collision</h1>
+      <p class="lede">The collision funnel, pair filters, the dispatch table and contact rules. Dense, printable, and checked against mujoco-warp 4.0.1 and the chapters. Every block
+        links back to the section that teaches it.</p>
+      <div class="hero-meta">
+        <span class="badge level-advanced">Advanced to expert</span>
+        <span>Chapters 15-18</span><span class="sep">·</span>
+        <span>Print: about 5 pages</span>
+      </div>
+      <div class="hero-actions cs-print">
+        <button class="btn btn-sm" type="button" onclick="window.print()">Print this sheet</button>
+        <a class="btn btn-sm btn-ghost" href="../index.html#reference">All reference pages</a>
+      </div>
+    </header>
+
+    <section class="recap" aria-labelledby="recap-h">
+      <h2 id="recap-h" data-toc="Chapters">Chapters on this sheet</h2>
+      <ul class="cs-chapters">
+        <li><a href="../chapters/15-geometry-toolkit-and-broadphase.html">Ch 15 · Collision I: Geometry Toolkit, Pair Filtering and the Broadphase</a></li>
+        <li><a href="../chapters/16-primitive-narrowphase.html">Ch 16 · Collision II: Geom Types and Primitive Colliders</a></li>
+        <li><a href="../chapters/17-convex-collision-gjk-epa.html">Ch 17 · Convex Shapes with GJK, EPA and Multi-Contact</a></li>
+        <li><a href="../chapters/18-heightfields-and-sdfs.html">Ch 18 · Collision IV: Heightfields, SDFs and User SDF Plugins</a></li>
+      </ul>
+    </section>
+
+    <div class="mw-breadcrumb" data-here="st-collision"></div>
+
+    <section class="sec" id="at-a-glance">
+      <h2><span class="sec-num">1</span>Part IV at a glance: the funnel</h2>
+      <p>Collision narrows all geom pairs down to contacts in three stages. The first runs once in
+        <code>put_model</code>; the other two run every step, for every world, and share buffers of size
+        <code>naconmax</code>.</p>
+      <figure class="fig">
+        <div class="fig-frame scroll-x">
+          <svg viewBox="0 0 760 250" role="img" aria-labelledby="cs4-f1t cs4-f1d" style="min-width:600px">
+            <title id="cs4-f1t">The collision funnel</title>
+            <desc id="cs4-f1d">All geom pairs are filtered once by put_model into a static work list. Each step the broadphase keeps candidates whose bounding volumes overlap, counted in ncollision. The narrowphase dispatches each candidate by type pair to a primitive collider, the convex GJK/EPA path, the heightfield prism path or the SDF path, and writes contacts counted in nacon.</desc>
+            <defs><marker id="cs4-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" class="s-arrowhead"/></marker></defs>
+            <g class="hot" data-info="All unordered pairs: <code>ngeom(ngeom-1)/2</code>, in <code>np.triu_indices(ngeom, k=1)</code> order (<code>m.nxn_geom_pair</code>).">
+              <path d="M10 30 H 200 L 180 220 H 30 Z" class="s-box"/>
+              <text x="105" y="60" text-anchor="middle" class="s-label">all pairs</text>
+              <text x="105" y="80" text-anchor="middle" class="s-small s-mono">ngeom(ngeom-1)/2</text>
+            </g>
+            <g class="hot" data-info="<code>put_model</code>, once, in NumPy: contype/conaffinity, same weld body, both dof-less, parent-child (unless FILTERPARENT disabled), <code>&lt;exclude&gt;</code>. Result: <code>m.nxn_geom_pair_filtered</code> and <code>m.nxn_pairid_filtered</code>.">
+              <path d="M210 50 H 360 L 345 200 H 225 Z" class="s-accent-soft"/>
+              <text x="285" y="88" text-anchor="middle" class="s-label">static list</text>
+              <text x="285" y="108" text-anchor="middle" class="s-small">put_model</text>
+              <text x="285" y="126" text-anchor="middle" class="s-small s-mono">masks, once</text>
+            </g>
+            <g class="hot" data-info="Broadphase every step: NXN or SAP plus the bounding-volume filter (default PLANE|SPHERE|OBB = 11). Candidates go to a buffer of <code>naconmax</code> slots; <code>d.ncollision</code> counts them. Full: BROADPHASE.">
+              <path d="M370 70 H 500 L 488 180 H 382 Z" class="s-accent2-soft"/>
+              <text x="435" y="108" text-anchor="middle" class="s-label">candidates</text>
+              <text x="435" y="128" text-anchor="middle" class="s-small s-mono">ncollision</text>
+              <text x="435" y="146" text-anchor="middle" class="s-small">broadphase</text>
+            </g>
+            <g class="hot" data-info="Narrowphase: <code>MJ_COLLISION_TABLE</code> sends each ordered type pair to PRIMITIVE, CONVEX (GJK/EPA, or the heightfield prism path), or the SDF path. <code>write_contact</code> fills the pool; <code>d.nacon</code> counts. Full: NARROWPHASE.">
+              <path d="M510 90 H 610 L 600 160 H 520 Z" class="s-box-2"/>
+              <text x="560" y="120" text-anchor="middle" class="s-label">contacts</text>
+              <text x="560" y="140" text-anchor="middle" class="s-small s-mono">nacon</text>
+            </g>
+            <path d="M612 125 H 650" class="s-accent-stroke" marker-end="url(#cs4-arrow)"/>
+            <g class="hot" data-info="Contacts become constraint rows in <code>make_constraint</code> (Part V sheet). Flex contacts are found after rigid ones and de-duplicated first.">
+              <rect x="655" y="96" width="98" height="58" rx="10" class="s-box"/>
+              <text x="704" y="122" text-anchor="middle" class="s-label">efc rows</text>
+              <text x="704" y="140" text-anchor="middle" class="s-small">Part V</text>
+            </g>
+            <text x="105" y="240" text-anchor="middle" class="s-small">host, static</text>
+            <text x="285" y="240" text-anchor="middle" class="s-small">host, static</text>
+            <text x="435" y="240" text-anchor="middle" class="s-small">device, per step</text>
+            <text x="560" y="240" text-anchor="middle" class="s-small">device, per step</text>
+          </svg>
+        </div>
+        <div class="fig-caption-line" data-placeholder="Hover, tap or tab to a stage."></div>
+        <figcaption><span class="fig-num">Figure 1.</span>The funnel (<a href="../chapters/15-geometry-toolkit-and-broadphase.html#funnel">Ch 15 §2</a>). <span class="badge illustrative">Diagram</span></figcaption>
+      </figure>
+    </section>
+
+    <section class="sec" id="filters">
+      <h2><span class="sec-num">2</span>Filters: static and per step</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Static masks in <code>put_model</code></h3>
+          <ul>
+            <li><code>(contype1 &amp; conaffinity2) | (contype2 &amp; conaffinity1) != 0</code> (either direction).</li>
+            <li>Same weld body; both weld bodies dof-less.</li>
+            <li>Parent-child (both not world) unless <code>DisableBit.FILTERPARENT</code>.</li>
+            <li><code>&lt;contact&gt;&lt;exclude&gt;</code> body pairs.</li>
+          </ul>
+          <p><code>m.nxn_pairid</code> column 0: <code>-2</code> never, <code>-1</code> default materials, <code>≥ 0</code> explicit <code>&lt;pair&gt;</code> id; column 1: collision-sensor id or <code>-1</code> (<a href="../chapters/15-geometry-toolkit-and-broadphase.html#prefilter">Ch 15 §3</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Bounding-volume filter (<code>m.opt.broadphase_filter</code>)</h3>
+          <div class="table-wrap"><table class="cs-table">
+            <thead><tr><th>Bit</th><th class="num">Value</th><th>Test</th></tr></thead>
+            <tbody>
+              <tr><td>PLANE</td><td class="num">1</td><td>other centre within <code>rbound + margins</code> of the plane</td></tr>
+              <tr><td>SPHERE</td><td class="num">2</td><td><code>|x2 - x1|² ≤ (r1 + r2 + m1 + m2)²</code></td></tr>
+              <tr><td>AABB</td><td class="num">4</td><td>world AABBs of the rotated local boxes</td></tr>
+              <tr><td>OBB</td><td class="num">8</td><td>6 face-normal separating axes</td></tr>
+            </tbody>
+          </table></div>
+          <p>Default 11 = PLANE|SPHERE|OBB, baked in with <code>wp.static</code>. Planes (<code>rbound == 0</code>) only see the plane test; margins are margin + gap (<a href="../chapters/15-geometry-toolkit-and-broadphase.html#filters">Ch 15 §4</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Broadphase choice (<code>put_model</code>)</h3>
+          <div class="code-block"><pre><code class="language-python">if npairs_listed &lt; 250_000:   opt.broadphase = NXN
+elif mjm.ngeom &lt; 1000:        opt.broadphase = SAP_TILE
+else:                         opt.broadphase = SAP_SEGMENTED
+m.opt.broadphase = mjw.BroadphaseType.SAP_TILE  # switch any time (new kernels once)</code></pre></div>
+          <p>Same candidates with the default filter, except collision-sensor pairs SAP's sweep does not reach. SAP allocates scratch per call and cannot sit inside a graph conditional (<a href="../chapters/15-geometry-toolkit-and-broadphase.html#choosing">Ch 15 §7</a>, <a href="../chapters/15-geometry-toolkit-and-broadphase.html#performance">§9</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>Skipped every step</h3>
+          <ul>
+            <li>asleep + asleep and asleep + static pairs (Part V sleep).</li>
+            <li>missing per-world meshes; NaN geom centres (<a href="../chapters/15-geometry-toolkit-and-broadphase.html#skip-rules">Ch 15 §8</a>).</li>
+          </ul>
+          <p>NXN: <code>dim=(nworld, nnxn_geom_pair_filtered)</code>, atomic compaction. SAP: oblique-axis projection, per-world sort, <code>nsweep = 5·nworld·ngeom</code> threads (<a href="../chapters/15-geometry-toolkit-and-broadphase.html#nxn">§5</a>, <a href="../chapters/15-geometry-toolkit-and-broadphase.html#sap">§6</a>).</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="dispatch">
+      <h2><span class="sec-num">3</span>The dispatch table</h2>
+      <p><code>collision_driver.py::MJ_COLLISION_TABLE</code>, keyed by the ordered pair <code>(type1 ≤ type2)</code>.
+        P = primitive collider, C = convex path (GJK/EPA, or heightfield prisms when one side is HFIELD), · = never
+        collides. Printed by Ch 16's Example 16.1 from the 4.0.1 wheel.</p>
+      <div class="table-wrap"><table class="cs-table" aria-label="Collision dispatch table">
+        <thead><tr><th></th><th>plane</th><th>hfield</th><th>sphere</th><th>capsule</th><th>ellipsoid</th><th>cylinder</th><th>box</th><th>mesh</th></tr></thead>
+        <tbody>
+          <tr><th>plane</th><td class="cs-cell-n">·</td><td class="cs-cell-n">·</td><td class="cs-cell-p">P</td><td class="cs-cell-p">P</td><td class="cs-cell-p">P</td><td class="cs-cell-p">P</td><td class="cs-cell-p">P</td><td class="cs-cell-p">P</td></tr>
+          <tr><th>hfield</th><td class="cs-cell-n">·</td><td class="cs-cell-n">·</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td></tr>
+          <tr><th>sphere</th><td class="cs-cell-p">P</td><td class="cs-cell-c">C</td><td class="cs-cell-p">P</td><td class="cs-cell-p">P</td><td class="cs-cell-c">C</td><td class="cs-cell-p">P</td><td class="cs-cell-p">P</td><td class="cs-cell-c">C</td></tr>
+          <tr><th>capsule</th><td class="cs-cell-p">P</td><td class="cs-cell-c">C</td><td class="cs-cell-p">P</td><td class="cs-cell-p">P</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-p">P</td><td class="cs-cell-c">C</td></tr>
+          <tr><th>ellipsoid</th><td class="cs-cell-p">P</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td></tr>
+          <tr><th>cylinder</th><td class="cs-cell-p">P</td><td class="cs-cell-c">C</td><td class="cs-cell-p">P</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td></tr>
+          <tr><th>box</th><td class="cs-cell-p">P</td><td class="cs-cell-c">C</td><td class="cs-cell-p">P</td><td class="cs-cell-p">P</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c cs-cell-f">C*</td><td class="cs-cell-c">C</td></tr>
+          <tr><th>mesh</th><td class="cs-cell-p">P</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td><td class="cs-cell-c">C</td></tr>
+        </tbody>
+      </table></div>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Counts and exceptions</h3>
+          <ul>
+            <li>12 PRIMITIVE, 21 CONVEX, 3 missing (plane-plane, plane-hfield, hfield-hfield).</li>
+            <li>* box-box is CONVEX by default; <code>DisableBit.NATIVECCD</code> flips only this cell to PRIMITIVE (<code>box_box</code>, up to 8 clipped vertices).</li>
+            <li>SDF is not in the table: SDF pairs go to <code>sdf_narrowphase</code>.</li>
+            <li>Flex: plane, sphere, capsule, box, cylinder → PRIMITIVE; mesh, ellipsoid → CONVEX; no hfield (<code>MJ_FLEX_COLLISION_TABLE</code>).</li>
+          </ul>
+          <p class="cs-more"><a href="../chapters/16-primitive-narrowphase.html#dispatch-table">Ch 16 §1</a></p>
+        </div>
+        <div class="cs-card">
+          <h3>GeomType values</h3>
+          <p>PLANE 0, HFIELD 1, SPHERE 2, CAPSULE 3, ELLIPSOID 4, CYLINDER 5, BOX 6, MESH 7, SDF 8, FLEX 105; Warp-only TRIANGLE 999.</p>
+          <p><code>_add_geom_pair</code> orders every candidate by type, so <code>geom[0]</code> is the lower type and the normal points from geom[0] to geom[1] (<a href="../chapters/16-primitive-narrowphase.html#pair-order">Ch 16 §2</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>How it launches</h3>
+          <ul>
+            <li>Primitive: one fused launch over pool slots (<code>dim = d.naconmax</code>), a static if-chain of the type pairs the model has; lanes can diverge.</li>
+            <li>Convex: one kernel per present type pair, grid-stride (<code>_ccd_grid_size</code>); heightfield pairs one thread per slot.</li>
+            <li>Changing which geom types exist recompiles; sizes, poses, materials do not (<a href="../chapters/16-primitive-narrowphase.html#dispatch">Ch 16 §4</a>).</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="contact-rules">
+      <h2><span class="sec-num">4</span>Contact rules and materials</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3><code>write_contact</code></h3>
+          <ul>
+            <li><strong>detected</strong> if <code>dist &lt; margin + gap</code> (strict, float32); <strong>active</strong> (a constraint) if <code>dist &lt; margin</code>, or in the gap with adhesion (then condim 1).</li>
+            <li><code>pos</code> is midway between the surfaces; <code>geomcollisionid</code> numbers a pair's contacts.</li>
+            <li>Slot from <code>wp.atomic_add(nacon_out, 0, 1)</code>, then <code>contact_worldid_out[cid] = worldid</code>.</li>
+          </ul>
+          <p class="cs-more"><a href="../chapters/16-primitive-narrowphase.html#write-contact">Ch 16 §5</a></p>
+        </div>
+        <div class="cs-card">
+          <h3>Material mixing (no explicit pair)</h3>
+          <ul>
+            <li>Higher <code>priority</code> wins; otherwise max condim, element-wise max friction, solmix-weighted solref/solimp, summed adhesion; friction clamped to <code>mjMINMU</code>.</li>
+            <li>4.0.1 detail: a direct solref on either side gives the element-wise min.</li>
+            <li>An explicit <code>&lt;pair&gt;</code> uses its own margin, gap, friction, condim, solref, solimp.</li>
+          </ul>
+          <p class="cs-more"><a href="../chapters/16-primitive-narrowphase.html#materials">Ch 16 §6</a></p>
+        </div>
+        <div class="cs-card">
+          <h3>Collider facts</h3>
+          <ul>
+            <li>Capsule-capsule gives 2 contacts only when parallel within the 1e-8 test (about 0.006°).</li>
+            <li>Plane-box keeps every corner inside the margin; box-box (convex) gives up to 4 via multi-contact.</li>
+            <li>Surface velocity: a batched geom field → <code>contact.surfacevel</code> → friction rows' <code>efc.Jqvel</code> (conveyors, <a href="../chapters/16-primitive-narrowphase.html#surfacevel">Ch 16 §9</a>).</li>
+            <li>Core colliders are <code>@wp.func</code>s callable from your kernels (private API, <a href="../chapters/16-primitive-narrowphase.html#own-kernel">§10</a>).</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="convex">
+      <h2><span class="sec-num">5</span>The convex path: GJK, EPA, multi-contact</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Pipeline</h3>
+          <p>support functions → GJK → (EPA) → (multi-contact) → <code>write_contact</code>. No MPR.
+            Minkowski support: <code>support(A, d) - support(B, -d)</code>; the origin is inside exactly when the shapes overlap
+            (<a href="../chapters/17-convex-collision-gjk-epa.html#support-functions">Ch 17 §2</a>).</p>
+          <ul>
+            <li>GJK: signed-volume sub-algorithm, stops on the Frank-Wolfe gap (<a href="../chapters/17-convex-collision-gjk-epa.html#gjk">§3</a>).</li>
+            <li><code>gjk_phase</code> shrinks spheres/capsules to their cores and inflates back; only deep penetration needs EPA (<a href="../chapters/17-convex-collision-gjk-epa.html#gjk-phase">§4</a>).</li>
+            <li>EPA: horizons longer than 24 set EPA_HORIZON (<a href="../chapters/17-convex-collision-gjk-epa.html#epa">§5</a>).</li>
+            <li>Multi-contact: Sutherland-Hodgman clipping, max-area 4 points; always on for box-box, else <code>DisableBit.MULTICCD</code> controls it (<a href="../chapters/17-convex-collision-gjk-epa.html#multicontact">§6</a>).</li>
+          </ul>
+        </div>
+        <div class="cs-card">
+          <h3>Knobs</h3>
+          <div class="table-wrap"><table class="cs-table">
+            <thead><tr><th>Option</th><th>Default</th><th>Kind</th></tr></thead>
+            <tbody>
+              <tr><td><code>opt.ccd_iterations</code></td><td>35</td><td>int, compiled in; sizes scratch rows</td></tr>
+              <tr><td><code>opt.ccd_tolerance</code></td><td>1e-6</td><td>array, live</td></tr>
+              <tr><td><code>nccdmax</code> (make_data)</td><td>contact budget</td><td>shared scratch block; CCD bit when full</td></tr>
+              <tr><td><code>opt.sdf_initpoints</code></td><td>40</td><td>int</td></tr>
+              <tr><td><code>opt.sdf_iterations</code></td><td>10</td><td>int</td></tr>
+            </tbody>
+          </table></div>
+          <p>Meshes collide as their convex hulls (hill-climbing on the hull graph): decompose non-convex meshes (<a href="../chapters/17-convex-collision-gjk-epa.html#meshes">Ch 17 §8</a>, scratch: <a href="../chapters/17-convex-collision-gjk-epa.html#kernels-scratch">§7</a>).</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="hfield-sdf">
+      <h2><span class="sec-num">6</span>Heightfields and SDFs</h2>
+      <div class="cs-grid">
+        <div class="cs-card">
+          <h3>Heightfield pairs (CONVEX)</h3>
+          <p><code>_hfield_filter</code> → sub-grid → two prisms per cell → GJK/EPA per prism → at most 50 candidates →
+            at most 4 contacts (deepest, farthest, farthest from the line, farthest from the edges)
+            (<a href="../chapters/18-heightfields-and-sdfs.html#hfield-prisms">Ch 18 §2</a>, <a href="../chapters/18-heightfields-and-sdfs.html#four-contacts">§3</a>).</p>
+          <p>HFIELD bit: the 50-slot buffer filled with prisms left; use coarser grids under big geoms. Defaults grow with nv when a heightfield exists: measure and pass explicit sizes (<a href="../chapters/18-heightfields-and-sdfs.html#hfield-overflow">§4</a>, <a href="../chapters/18-heightfields-and-sdfs.html#hfield-spec">§5</a>).</p>
+        </div>
+        <div class="cs-card">
+          <h3>SDF pairs</h3>
+          <p><code>sdf_initpoints</code> Halton starts in the AABB intersection, <code>sdf_iterations</code> Armijo steps; one contact per converged start (<a href="../chapters/18-heightfields-and-sdfs.html#sdf-narrowphase">Ch 18 §7</a>). Mesh SDFs are octree samples: less exact, costlier per query (<a href="../chapters/18-heightfields-and-sdfs.html#octree">§11</a>).</p>
+          <div class="code-block"><pre><code class="language-python"># top of a FRESH process, before the first MJWarp call (private API)
+from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
+sdf_types = register_sdf_plugins(mjw)   # nut, bolt, torus, gear</code></pre></div>
+          <p>A late patch is silently ignored (<a href="../chapters/18-heightfields-and-sdfs.html#fresh-process">Ch 18 §9</a>); your own SDF: <a href="../chapters/18-heightfields-and-sdfs.html#custom-sdf">§10</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="pitfalls">
+      <h2><span class="sec-num">7</span>Pitfalls</h2>
+      <ul class="cs-pitfalls">
+        <li><strong>contype/conaffinity is symmetric-OR</strong>: a (2, 1) geom touches a (1, 1) geom.</li>
+        <li><strong>Overflow in collision is silent</strong>: BROADPHASE / NARROWPHASE light up in every world; CCD, HFIELD and EPA_HORIZON have their own bits (<a href="cheatsheet-part2.html#overflow">Part II sheet</a>).</li>
+        <li><strong>Adding a geom type recompiles</strong> the fused narrowphase; changing sizes does not.</li>
+        <li><strong>Comparing contact counts with MuJoCo C</strong> is misleading for heightfields; compare physics (<a href="../chapters/18-heightfields-and-sdfs.html#four-contacts">Ch 18 §3</a>).</li>
+        <li><strong>Non-convex meshes</strong> collide as hulls: decompose them.</li>
+        <li><strong>SDF plugins registered too late</strong> are ignored without an error.</li>
+        <li><strong>Flex + heightfield</strong> is refused in 4.0.1 (Part V sheet).</li>
+        <li><strong>SAP inside a graph conditional</strong> does not work: it allocates scratch per call.</li>
+      </ul>
+      <p class="cs-more">Part IV checkpoint, profiling rigid collision paths: <a href="../chapters/18-heightfields-and-sdfs.html#checkpoint">Ch 18 §12</a>.</p>
+    </section>
+
+    <section class="sec" id="more-help">
+      <h2><span class="sec-num">8</span>More help</h2>
+      <p class="stuck p-stuck">Stuck? See <a href="troubleshooting.html">Troubleshooting</a> (symptom, cause, fix,
+        owning chapter) or the <a href="course-map.html">course map</a>. Terms are defined in the
+        <a href="glossary.html">glossary</a>; public names and CLI flags are in
+        <a href="api-at-a-glance.html">API at a glance</a>.</p>
+      <p class="small muted">Other cheat sheets: <a href="cheatsheet-part1.html">Part I</a>, <a href="cheatsheet-part2.html">Part II</a>, <a href="cheatsheet-part3.html">Part III</a>, <a href="cheatsheet-part5.html">Part V</a>, <a href="cheatsheet-part6.html">Part VI</a>.</p>
+    </section>
+
+    <footer class="chapter-footer">
+      <nav class="pager" aria-label="Reference pager">
+        <a class="prev" href="cheatsheet-part3.html"><span class="dir">Previous</span><span class="ttl">Part III cheat sheet</span></a>
+        <a class="index" href="../index.html"><span class="dir">All chapters</span><span class="ttl">Course home</span></a>
+        <a class="next" href="cheatsheet-part5.html"><span class="dir">Next</span><span class="ttl">Part V cheat sheet</span></a>
+      </nav>
+      <p class="site-footer">MuJoCo Warp course · mujoco-warp 4.0.1 · warp-lang 1.19.0 · mujoco-core 4.0.1 · source commit 8f5b9f1</p>
+    </footer>
+  </main>
+</div>
+
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/xml.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+<script defer src="../assets/course.js"></script>
+
+</body>
+</html>

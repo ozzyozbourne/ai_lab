@@ -1,0 +1,89 @@
+{
+"device": "cpu",
+"nworld": 4,
+"nstep": 150,
+"nconmax": 192,
+"njmax": 256,
+"rows": [
+{
+"integrator": "implicitfast",
+"solver": "Newton",
+"cone": "pyramidal",
+"niter_mean": 1.47,
+"niter_max": 2,
+"stable": true,
+"overflow": "none",
+"wsps": 334.9
+},
+{
+"integrator": "implicitfast",
+"solver": "Newton",
+"cone": "elliptic",
+"niter_mean": 1.47,
+"niter_max": 3,
+"stable": true,
+"overflow": "none",
+"wsps": 362.6
+},
+{
+"integrator": "implicitfast",
+"solver": "CG",
+"cone": "pyramidal",
+"niter_mean": 21.27,
+"niter_max": 29,
+"stable": true,
+"overflow": "none",
+"wsps": 248.7
+},
+{
+"integrator": "implicitfast",
+"solver": "CG",
+"cone": "elliptic",
+"niter_mean": 23.53,
+"niter_max": 32,
+"stable": true,
+"overflow": "none",
+"wsps": 171.5
+},
+{
+"integrator": "discrete",
+"solver": "Newton",
+"cone": "pyramidal",
+"niter_mean": 2.0,
+"niter_max": 3,
+"stable": true,
+"overflow": "none",
+"wsps": 167.5
+},
+{
+"integrator": "discrete",
+"solver": "Newton",
+"cone": "elliptic",
+"niter_mean": 1.73,
+"niter_max": 3,
+"stable": true,
+"overflow": "none",
+"wsps": 141.8
+},
+{
+"integrator": "discrete",
+"solver": "CG",
+"cone": "pyramidal",
+"niter_mean": 26.33,
+"niter_max": 33,
+"stable": true,
+"overflow": "none",
+"wsps": 64.6
+},
+{
+"integrator": "discrete",
+"solver": "CG",
+"cone": "elliptic",
+"niter_mean": 29.33,
+"niter_max": 38,
+"stable": true,
+"overflow": "none",
+"wsps": 108.0
+}
+]
+}

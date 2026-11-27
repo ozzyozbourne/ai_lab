@@ -1,0 +1,93 @@
+[
+{
+"key": "snh",
+"what": "stable Neo-Hookean, integrator Euler",
+"stage": "put_model",
+"error": "ValueError",
+"message": "stable Neo-Hookean elasticity requires integrator='discrete'"
+},
+{
+"key": "quadratic",
+"what": "dof=\"quadratic\" interpolation",
+"stage": "put_model",
+"error": "NotImplementedError",
+"message": "Quadratic flex interpolation (dof=quadratic) is not supported."
+},
+{
+"key": "eq_sleep",
+"what": "flex edge equality + sleep",
+"stage": "put_model",
+"error": "NotImplementedError",
+"message": "Flex equality constraints are not supported with sleeping enabled."
+},
+{
+"key": "hfield",
+"what": "flex + hfield geom (contype=0)",
+"stage": "put_model",
+"error": "NotImplementedError",
+"message": "Flex-HField collision is not implemented."
+},
+{
+"key": "sdf",
+"what": "flex + SDF geom",
+"stage": "put_model",
+"error": "NotImplementedError",
+"message": "Flex-SDF collision is not implemented."
+},
+{
+"key": "rigid",
+"what": "rigid flex (flexcomp rigid=\"true\")",
+"stage": "put_model",
+"error": "NotImplementedError",
+"message": "Rigid flexes are not implemented."
+},
+{
+"key": "passive_interp",
+"what": "passive contact, trilinear flex",
+"stage": "put_model",
+"error": "NotImplementedError",
+"message": "Passive contact of interpolated flexes (dof=trilinear or quadratic) is not implemented."
+},
+{
+"key": "self_interp",
+"what": "self-collision, trilinear flex",
+"stage": "put_model",
+"error": "NotImplementedError",
+"message": "Self-collision of interpolated flexes (dof=trilinear or quadratic) is not implemented."
+},
+{
+"key": "noslip",
+"what": "discrete + noslip_iterations",
+"stage": "put_model",
+"error": "NotImplementedError",
+"message": "noslip solver not implemented for the discrete integrator."
+},
+{
+"key": "attach_newton",
+"what": "discrete + Newton, cloth on a moving body",
+"stage": "put_model",
+"error": "ValueError",
+"message": "discrete integrator: flex with general attachments requires solver='CG'"
+},
+{
+"key": "implicitfast",
+"what": "implicitfast + flex elasticity",
+"stage": "forward",
+"error": "ValueError",
+"message": "flex elasticity is no longer integrated implicitly under integrator='implicit' and 'implicitfast': set integrator='discrete', or 'Euler' with a small timestep"
+},
+{
+"key": "passive_euler",
+"what": "passive contact, integrator Euler",
+"stage": "forward",
+"error": "ValueError",
+"message": "passive flex contact requires an integrator with the effective metric: set integrator='discrete'"
+},
+{
+"key": "edge_stiff",
+"what": "discrete + edge stiffness (1-D rope)",
+"stage": "forward",
+"error": "ValueError",
+"message": "discrete integrator: flex edge stiffness and damping are not supported; use <elasticity> or <edge equality> instead"
+}
+]

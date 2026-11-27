@@ -1,0 +1,1 @@
+{"device":"cpu","nworld":8,"reps":20,"models":{"PLAYGROUND":{"step_ms":3.175,"stage_ms":{"fwd_position":1.522,"fwd_velocity":0.279,"fwd_actuation":0.098,"fwd_acceleration":0.086,"solve":0.798,"euler":0.237}},"HUMANOID":{"step_ms":3.395,"stage_ms":{"fwd_position":1.728,"fwd_velocity":0.314,"fwd_actuation":0.109,"fwd_acceleration":0.084,"solve":0.991,"euler":0.12}}}}
